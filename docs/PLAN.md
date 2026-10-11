@@ -54,10 +54,40 @@ Non-goals: replacing vanilla's sound assets, server-side anything, changing game
 - An IR swap blocks the calling thread for 10–20 ms while OpenAL Soft prepares it. Swaps therefore run on an Earshot thread, never on Minecraft's sound thread or the client thread.
 - EAX reverb is cheap (about 1 % per slot), so the parametric tier is nearly free.
 
-**Still to do in M0**
-- The in-game probe: Minecraft's own context, its aux sends and HRTF list.
-- The mixin targets from the 26.3 jar.
-- CI.
+**The same bench on GitHub's runners** (macos-latest, ubuntu-latest x86):
+- One 1.5 s convolution: 13–14 % of a core.
+- Two convolutions: about 21 %.
+- HRTF + filters + 1 EAX reverb: about 6 %.
+- So moderate hardware costs about 1.4× the M3.
+
+**In game** (client gametest, OpenAL Soft's null backend):
+- `1.1 ALSOFT 1.25.2`, 48 kHz.
+- 255 mono and 1 stereo sources.
+- EFX with EAX reverb.
+- `AL_SOFTX_convolution_effect`, and the convolution effect type works.
+- `AL_SOFT_callback_buffer`.
+- HRTF: `Built-In HRTF` only.
+- Minecraft's context allows only **2 auxiliary sends per source**, so Earshot must ask for 4 when the context is created.
+
+**Mixin targets in 26.3** (`./gradlew dumpSoundClasses`):
+- `com.mojang.blaze3d.audio.Library`
+  - `init(String, DeviceList, boolean)`
+  - `createAttributes(MemoryStack, boolean)` builds the context attributes: add `ALC_MAX_AUXILIARY_SENDS` here.
+  - `getChannelCount()`: reserve voice sources.
+  - `acquireChannel(Library.Pool)`, `releaseChannel(Channel)`, `cleanup()`.
+- `com.mojang.blaze3d.audio.Channel`
+  - private `int source`
+  - `create()`, `destroy()`, `play()`, `stop()`
+  - `setSelfPosition(Vec3)`, `setRelative(boolean)`
+  - `linearAttenuation(float)`, `disableAttenuation()`
+  - `attachStaticBuffer(SoundBuffer)`, `attachBufferStream(AudioStream)`
+- `net.minecraft.client.sounds.SoundEngine`
+  - `play(SoundInstance)`, `tick(boolean)`, `updateSource(Camera)`
+  - the channel setup lambda in `play`, where a `SoundInstance` meets its `Channel`
+- `ChannelAccess.createHandle(Library.Pool)`
+- `ChannelAccess.ChannelHandle.execute(Consumer<Channel>)`
+
+M0 is done apart from tidying: the convolution tier is confirmed, the mixin targets exist, and CI builds, tests and benchmarks on every push.
 
 ## Approaches considered
 
