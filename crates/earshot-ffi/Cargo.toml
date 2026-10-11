@@ -1,0 +1,14 @@
+[package]
+name = "earshot-ffi"
+description = "C ABI to the Earshot acoustics engine, called by the Fabric mod through FFM"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
