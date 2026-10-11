@@ -259,7 +259,10 @@ fn dist(from: Option<&Path>) -> Result<()> {
     run(Command::new(root().join("mod").join(gradlew))
         .current_dir(root().join("mod"))
         .arg("build")
-        .arg(format!("-Pearshot.prebuiltNatives={}", natives_dir.display())))?;
+        .arg(format!(
+            "-Pearshot.prebuiltNatives={}",
+            natives_dir.display()
+        )))?;
 
     let jar = format!("earshot-{VERSION}.jar");
     let dist = root().join("dist");
