@@ -55,7 +55,7 @@ public final class OpenAlProbe {
 					"  EAX reverb effect: " + eaxReverb,
 					"  convolution: extension " + convolutionExtension + ", effect type " + convolutionEffect,
 					"  callback buffers: " + callbackBuffer,
-					"  HRTF: extension " + hrtfExtension + ", status " + hrtfStatus(hrtfStatus) + ", available " + hrtfs,
+					"  HRTF: extension " + hrtfExtension + ", status " + describeHrtfStatus(hrtfStatus) + ", available " + hrtfs,
 					"  AL extensions: " + alExtensions,
 					"  ALC extensions: " + alcExtensions);
 		}
@@ -132,7 +132,7 @@ public final class OpenAlProbe {
 		return works;
 	}
 
-	private static String hrtfStatus(int status) {
+	private static String describeHrtfStatus(int status) {
 		return switch (status) {
 			case SOFTHRTF.ALC_HRTF_DISABLED_SOFT -> "disabled";
 			case SOFTHRTF.ALC_HRTF_ENABLED_SOFT -> "enabled";
