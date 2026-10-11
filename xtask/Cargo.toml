@@ -1,0 +1,17 @@
+[package]
+name = "xtask"
+description = "Build and packaging helper for Earshot (`cargo xtask`)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+cbindgen.workspace = true
+clap.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

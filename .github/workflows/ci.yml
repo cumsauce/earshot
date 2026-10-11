@@ -1,0 +1,193 @@
+name: CI
+
+# Modelled on yakvc's: every push to main and every pull request builds the
+# natives on Linux, Windows and macOS, packs them into one jar and runs the
+# client gametest. A version tag also publishes the release.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+# Actions from outside GitHub's own `actions/` are pinned to a commit, since
+# a tag can be moved to other code; the comment names the release it was.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo xtask header --check
+      - run: cargo test --workspace --locked
+
+  # earshot-ffi for every platform. Each OS builds its own targets; the mod
+  # job merges them into one jar.
+  natives:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Install zig
+        if: runner.os == 'Linux'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.16.0
+      - if: runner.os == 'Linux'
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
+        with:
+          tool: cargo-zigbuild
+      - run: cargo xtask natives --target all --out natives
+      - uses: actions/upload-artifact@v7
+        with:
+          name: natives-${{ runner.os }}
+          path: natives/
+
+  mod:
+    needs: natives
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      # Xvfb and Mesa's software Vulkan for the gametest, as in yakvc.
+      - name: Install system libraries
+        run: sudo apt-get update && sudo apt-get install -y xvfb mesa-vulkan-drivers libvulkan1
+      - name: Install toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 25
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: natives-*
+          path: natives
+          merge-multiple: true
+      - name: Build the jar
+        run: cargo xtask dist --from natives
+      - name: Check the jar
+        run: |
+          jar=$(ls dist/earshot-*.jar)
+          unzip -l "$jar" | tee contents
+          entries="natives/natives.sha256 natives/linux-x86_64/libearshot_ffi.so.xz
+            natives/linux-aarch64/libearshot_ffi.so.xz natives/windows-x86_64/earshot_ffi.dll.xz
+            natives/macos-universal/libearshot_ffi.dylib.xz META-INF/jars/xz-1.10.jar earshot.mixins.json"
+          for entry in $entries; do
+            grep -q " $entry\$" contents || { echo "$jar has no $entry" >&2; exit 1; }
+          done
+          unzip -p "$jar" META-INF/MANIFEST.MF | grep -q '^Enable-Native-Access: ALL-UNNAMED'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: earshot-mod
+          path: dist/*.jar
+      # What the sound mixins can target in this Minecraft version.
+      - name: Dump the sound engine classes
+        working-directory: mod
+        run: |
+          ./gradlew dumpSoundClasses
+          { echo '<details><summary>Sound engine classes (26.3)</summary>'; echo; echo '```'
+            cat build/sound-classes.txt; echo '```'; echo '</details>'; } >> "$GITHUB_STEP_SUMMARY"
+      # Loom runs client gametests under Xvfb when CI is set. There is no sound
+      # card, so OpenAL Soft's null backend stands in for one.
+      - name: Client gametest
+        working-directory: mod
+        env:
+          ALSOFT_DRIVERS: "null"
+        run: ./gradlew runClientGameTest -Pearshot.prebuiltNatives="$GITHUB_WORKSPACE/target/dist/natives"
+      - name: Report the OpenAL probe
+        if: always()
+        run: |
+          probe=mod/build/run/clientGameTest/openal-probe.txt
+          if [ -f "$probe" ]; then
+            { echo '### OpenAL probe (in game)'; echo; echo '```'; cat "$probe"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: m0-reports
+          path: |
+            mod/build/sound-classes.txt
+            mod/build/run/clientGameTest/openal-probe.txt
+            mod/build/run/clientGameTest/logs/
+
+  # The OpenAL cost benchmark from M0, on the runners' Apple Silicon and x86.
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 25
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      - name: OpenAL bench
+        working-directory: mod
+        run: ./gradlew alBench
+
+  # The one check branch protection requires.
+  ci-ok:
+    if: always()
+    needs: [rust, natives, mod, bench]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "$RESULTS"
+          for result in $RESULTS; do
+            [ "$result" = success ] || [ "$result" = skipped ] || exit 1
+          done
+
+  # On a version tag: a GitHub prerelease with the jar.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [rust, mod]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: earshot-mod
+          path: dist
+      - name: GitHub release
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          test -f "dist/earshot-$version.jar" || { echo "tag $GITHUB_REF_NAME, but built $(ls dist)" >&2; exit 1; }
+          flags=(--generate-notes)
+          if [[ $version == *-* ]]; then flags+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" "${flags[@]}" "dist/earshot-$version.jar"

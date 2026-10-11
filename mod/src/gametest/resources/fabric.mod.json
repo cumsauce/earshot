@@ -1,0 +1,15 @@
+{
+	"schemaVersion": 1,
+	"id": "earshot-gametest",
+	"version": "0.0.0",
+	"name": "Earshot game tests",
+	"environment": "client",
+	"entrypoints": {
+		"fabric-client-gametest": [
+			"io.github.cumsauce.earshot.gametest.EarshotClientGameTest"
+		]
+	},
+	"depends": {
+		"earshot": "*"
+	}
+}

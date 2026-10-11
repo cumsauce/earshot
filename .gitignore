@@ -1,0 +1,9 @@
+/target
+/dist
+mod/build/
+mod/.gradle/
+mod/run/
+mod/logs/
+.idea/
+.vscode/
+.DS_Store

@@ -1,0 +1,232 @@
+// For CompressNatives below.
+buildscript {
+	repositories { mavenCentral() }
+	dependencies { classpath "org.tukaani:xz:${xz_version}" }
+}
+
+plugins {
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
+}
+
+base {
+	archivesName = 'earshot'
+}
+
+sourceSets {
+	// The M0 OpenAL cost benchmark: plain LWJGL, no Minecraft (`./gradlew alBench`).
+	bench
+}
+
+/** The LWJGL natives classifier for this machine, for the bench. */
+def lwjglNatives = {
+	String os = System.getProperty('os.name').toLowerCase(Locale.ROOT)
+	boolean arm = System.getProperty('os.arch') in ['aarch64', 'arm64']
+	if (os.contains('mac')) return arm ? 'natives-macos-arm64' : 'natives-macos'
+	if (os.contains('win')) return arm ? 'natives-windows-arm64' : 'natives-windows'
+	return arm ? 'natives-linux-arm64' : 'natives-linux'
+}()
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+	// Unpacks the xz-compressed natives (CompressNatives below). 0BSD licence, bundled in the jar.
+	implementation "org.tukaani:xz:${project.xz_version}"
+	include "org.tukaani:xz:${project.xz_version}"
+
+	testImplementation platform("org.junit:junit-bom:${project.junit_version}")
+	testImplementation 'org.junit.jupiter:junit-jupiter'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+
+	benchImplementation "org.lwjgl:lwjgl:${project.lwjgl_version}"
+	benchImplementation "org.lwjgl:lwjgl-openal:${project.lwjgl_version}"
+	benchRuntimeOnly "org.lwjgl:lwjgl:${project.lwjgl_version}:${lwjglNatives}"
+	benchRuntimeOnly "org.lwjgl:lwjgl-openal:${project.lwjgl_version}:${lwjglNatives}"
+}
+
+java {
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(25)
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 25
+}
+
+// Native library staging, as in yakvc. By default `cargo xtask natives` builds earshot-ffi for the host;
+// `-Pearshot.prebuiltNatives=<dir>` uses an already staged directory instead (CI packaging) and skips cargo.
+def prebuiltNatives = providers.gradleProperty('earshot.prebuiltNatives')
+def hostNativesDir = layout.buildDirectory.dir('natives')
+
+def cargoNatives = tasks.register('cargoNatives', Exec) {
+	description = 'Builds earshot-ffi for the host with `cargo xtask natives`.'
+	workingDir = rootDir.parentFile
+	def out = hostNativesDir.get().asFile
+	commandLine 'cargo', 'xtask', 'natives', '--target', 'host', '--out', out.absolutePath
+	outputs.dir(out)
+	// Cargo does its own up-to-date checking.
+	outputs.upToDateWhen { false }
+}
+
+/**
+ * Copies staged natives with each library xz-compressed (`<platform>/<library>.xz`), which makes them about 30 %
+ * smaller than the jar's own deflate. `natives.sha256` is copied as is: it holds the hashes of the uncompressed
+ * libraries, which NativeLoader checks after unpacking.
+ */
+abstract class CompressNatives extends DefaultTask {
+	@InputFiles
+	abstract ConfigurableFileCollection getNatives()
+
+	@OutputDirectory
+	abstract DirectoryProperty getOutput()
+
+	@TaskAction
+	void compress() {
+		File out = output.get().asFile
+		out.deleteDir()
+		natives.asFileTree.visit { FileVisitDetails entry ->
+			if (entry.directory) return
+			boolean manifest = entry.name == 'natives.sha256'
+			File target = new File(out, entry.relativePath.pathString + (manifest ? '' : '.xz'))
+			target.parentFile.mkdirs()
+			if (manifest) {
+				entry.copyTo(target)
+				return
+			}
+			def options = new org.tukaani.xz.LZMA2Options(9)
+			options.dictSize = 32 << 20
+			target.withOutputStream { stream ->
+				def xz = new org.tukaani.xz.XZOutputStream(stream, options)
+				entry.file.withInputStream { it.transferTo(xz) }
+				xz.finish()
+			}
+		}
+	}
+}
+
+def compressNatives = tasks.register('compressNatives', CompressNatives) {
+	natives.from(prebuiltNatives.isPresent() ? prebuiltNatives.map { file(it) } : cargoNatives)
+	output = layout.buildDirectory.dir('natives-xz')
+}
+
+processResources {
+	def version = project.version
+	inputs.property 'version', version
+	filesMatching('fabric.mod.json') {
+		expand 'version': version
+	}
+
+	from(compressNatives) { into 'natives' }
+}
+
+fabricApi {
+	configureTests {
+		createSourceSet = true
+		modId = "earshot-gametest"
+		// Client-only mod: no server game tests, so no EULA acceptance is needed.
+		enableGameTests = false
+		enableClientGameTests = true
+	}
+}
+
+loom {
+	runs {
+		configureEach {
+			vmArg '--enable-native-access=ALL-UNNAMED'
+		}
+	}
+}
+
+test {
+	useJUnitPlatform()
+	jvmArgs '--enable-native-access=ALL-UNNAMED'
+}
+
+tasks.register('alBench', JavaExec) {
+	description = 'Measures what OpenAL Soft costs with the features Earshot plans to use (docs/PLAN.md, M0).'
+	group = 'verification'
+	classpath = sourceSets.bench.runtimeClasspath
+	mainClass = 'io.github.cumsauce.earshot.bench.OpenAlBench'
+	jvmArgs '--enable-native-access=ALL-UNNAMED'
+	javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(25) }
+}
+
+// Lists the sound engine's classes in this Minecraft version with their members, to check the mixin targets
+// against the real jar (M0) and again after each Minecraft update. Writes build/sound-classes.txt.
+tasks.register('dumpSoundClasses') {
+	description = 'Writes the signatures of Minecraft\'s sound engine classes to build/sound-classes.txt.'
+	notCompatibleWithConfigurationCache('reads the compile classpath when it runs')
+	def classpath = sourceSets.main.compileClasspath
+	def out = layout.buildDirectory.file('sound-classes.txt')
+	def launcher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(25) }
+	outputs.file(out)
+	outputs.upToDateWhen { false }
+	doLast {
+		def packages = ['com/mojang/blaze3d/audio/', 'net/minecraft/client/sounds/']
+		def names = new TreeSet<String>()
+		classpath.files.findAll { it.name.endsWith('.jar') }.each { jar ->
+			new java.util.zip.ZipFile(jar).withCloseable { zip ->
+				zip.entries().each { entry ->
+					if (entry.name.endsWith('.class') && packages.any { entry.name.startsWith(it) }) {
+						names << entry.name.substring(0, entry.name.length() - 6).replace('/', '.')
+					}
+				}
+			}
+		}
+		if (names.isEmpty()) throw new GradleException('no sound engine classes on the compile classpath')
+		File javap = launcher.get().metadata.installationPath.file('bin/javap').asFile
+		def process = new ProcessBuilder([javap.path, '-p', '-cp', classpath.asPath] + (names as List))
+				.redirectErrorStream(true).start()
+		String signatures = process.inputStream.text
+		process.waitFor()
+		File file = out.get().asFile
+		file.text = "Classes:\n" + names.join('\n') + "\n\n" + signatures
+		println "wrote ${file} (${names.size()} classes)"
+	}
+}
+
+jar {
+	from(rootProject.file('../LICENSE-MIT'))
+	from(rootProject.file('../LICENSE-APACHE'))
+	// JEP 472: lets FFM load the natives without a warning where the jar is the launched application. Minecraft
+	// launchers don't launch mod jars, so players still need --enable-native-access=ALL-UNNAMED (see README).
+	manifest {
+		attributes 'Enable-Native-Access': 'ALL-UNNAMED'
+	}
+	doLast {
+		StoreXz.rewrite(archiveFile.get().asFile)
+	}
+}
+
+/**
+ * Gradle compresses every jar entry the same way, so the already compressed `.xz` natives get deflated again, which
+ * only adds bytes and work when unpacking. This rewrites the jar with them stored as they are and every other entry
+ * unchanged.
+ */
+class StoreXz {
+	static void rewrite(File jar) {
+		File tmp = new File(jar.path + '.tmp')
+		new java.util.zip.ZipFile(jar).withCloseable { zip ->
+			new java.util.zip.ZipOutputStream(new FileOutputStream(tmp)).withCloseable { out ->
+				for (def entry : zip.entries()) {
+					byte[] data = zip.getInputStream(entry).readAllBytes()
+					def copy = new java.util.zip.ZipEntry(entry.name)
+					copy.time = entry.time
+					if (entry.name.endsWith('.xz')) {
+						def crc = new java.util.zip.CRC32()
+						crc.update(data)
+						copy.method = java.util.zip.ZipEntry.STORED
+						copy.size = data.length
+						copy.compressedSize = data.length
+						copy.crc = crc.value
+					}
+					out.putNextEntry(copy)
+					out.write(data)
+					out.closeEntry()
+				}
+			}
+		}
+		java.nio.file.Files.move(tmp.toPath(), jar.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+	}
+}
