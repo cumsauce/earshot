@@ -17,8 +17,9 @@
  * 6: Yak VC's voice: `earshot_voice_sink`, `earshot_voice_callback`,
  *    `earshot_voice_stream` and `earshot_voice_streams`.
  * 7: `earshot_set_quality` and `earshot_stats`.
+ * 8: `earshot_room_at`.
  */
-#define EARSHOT_ABI_VERSION 7
+#define EARSHOT_ABI_VERSION 8
 
 #define EARSHOT_OK 0
 
@@ -221,6 +222,24 @@ int32_t earshot_hear(struct EarshotEngine *engine,
  * doubles.
  */
 int32_t earshot_room(struct EarshotEngine *engine, double *out);
+
+/**
+ * Measures the room around `at` now, on the calling thread, with `rays` ×
+ * `bounces`, and writes it with the EAX reverb for it into `out`
+ * ([`EARSHOT_ROOM_DOUBLES`] doubles, as `earshot_room`). For the reverb of
+ * the space a sound is in when the listener is elsewhere. A point inside a
+ * solid block is measured from the open block beside it.
+ *
+ * # Safety
+ * `engine` must be live; `at` must point to 3 doubles; `out` must be
+ * writable for `EARSHOT_ROOM_DOUBLES` doubles.
+ */
+int32_t earshot_room_at(struct EarshotEngine *engine,
+                        const double *at,
+                        uint32_t rays,
+                        uint32_t bounces,
+                        uint64_t seed,
+                        double *out);
 
 /**
  * Synthesizes an impulse response for the room around the listener, for

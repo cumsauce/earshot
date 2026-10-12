@@ -58,7 +58,7 @@ public final class SoundShaper {
 	 */
 	private static final float ROOM_ROLLOFF = 0.5f;
 	/** The EAX reverb parameters in the order the native room gives them. */
-	private static final int[] EAX_PARAMETERS = {EXTEfx.AL_EAXREVERB_DENSITY, EXTEfx.AL_EAXREVERB_DIFFUSION,
+	static final int[] EAX_PARAMETERS = {EXTEfx.AL_EAXREVERB_DENSITY, EXTEfx.AL_EAXREVERB_DIFFUSION,
 			EXTEfx.AL_EAXREVERB_GAIN, EXTEfx.AL_EAXREVERB_GAINHF, EXTEfx.AL_EAXREVERB_GAINLF,
 			EXTEfx.AL_EAXREVERB_DECAY_TIME, EXTEfx.AL_EAXREVERB_DECAY_HFRATIO, EXTEfx.AL_EAXREVERB_DECAY_LFRATIO,
 			EXTEfx.AL_EAXREVERB_REFLECTIONS_GAIN, EXTEfx.AL_EAXREVERB_REFLECTIONS_DELAY,
@@ -71,6 +71,7 @@ public final class SoundShaper {
 	private final NativeBridge bridge;
 	private final MemorySegment engine;
 	private final ConvolutionReverb convolution;
+	private final SpaceReverb spaces;
 	private final VoicePlayer voice;
 	private volatile List<Snapshot> snapshot = List.of();
 	/** The EAX reverb's effect and slot in the game's context; 0 until made, and again when the context goes. */
@@ -86,17 +87,25 @@ public final class SoundShaper {
 	private volatile float airAbsorption = AIR_ABSORPTION;
 	private volatile boolean underwaterMuffling = true;
 	private volatile boolean doppler = true;
+	/** Whether sounds in another space get that space's reverb (High and Ultra). */
+	private volatile boolean spaceReverb;
 	/** The listener's velocity, estimated on the client thread. */
 	private final SourceState.Motion listenerMotion = new SourceState.Motion();
 
-	/** One shaped sound, for the debug command and tests; {@code voice} for a Yak VC voice. */
-	public record Snapshot(Vec3 position, Vec3 heardFrom, float[] gains, boolean voice) {
+	/**
+	 * One shaped sound, for the debug command and tests: {@code voice} for a Yak VC voice, {@code elsewhere} when it
+	 * gets the reverb of another space than the listener's.
+	 */
+	public record Snapshot(Vec3 position, Vec3 heardFrom, float[] gains, boolean voice, boolean elsewhere) {
 		@Override
 		public String toString() {
 			return "Snapshot[position=" + position + ", heardFrom=" + heardFrom + ", gains="
-					+ java.util.Arrays.toString(gains) + ", voice=" + voice + "]";
+					+ java.util.Arrays.toString(gains) + ", voice=" + voice + ", elsewhere=" + elsewhere + "]";
 		}
 	}
+
+	/** The listener's right, up and forward, in world axes. */
+	private record Axes(Vec3 right, Vec3 up, Vec3 forward) {}
 
 	/** A source to shape: the OpenAL source, its smoothed shaping, where it is, and the voice it plays if any. */
 	private record Target(int source, SourceState state, Vec3 position, VoicePlayer.@Nullable Voice voice) {}
@@ -105,7 +114,13 @@ public final class SoundShaper {
 		this.bridge = bridge;
 		this.engine = engine;
 		this.convolution = new ConvolutionReverb(bridge, engine);
+		this.spaces = new SpaceReverb(bridge, engine);
 		this.voice = new VoicePlayer(bridge);
+	}
+
+	/** The rooms measured for sounds in other spaces, as {@link NativeBridge#room}'s doubles. For tests. */
+	public List<double[]> spaceRooms() {
+		return spaces.rooms();
 	}
 
 	/** What plays Yak VC's voices. */
@@ -143,6 +158,10 @@ public final class SoundShaper {
 		airAbsorption = active && config.airAbsorption() ? AIR_ABSORPTION : 0;
 		underwaterMuffling = active && config.underwater();
 		doppler = active && config.doppler();
+		var preset = config.preset().resolve();
+		spaceReverb = active && config.reverb() != io.github.cumsauce.earshot.config.EarshotConfig.Reverb.OFF
+				&& (preset == io.github.cumsauce.earshot.config.EarshotConfig.Preset.HIGH
+						|| preset == io.github.cumsauce.earshot.config.EarshotConfig.Preset.ULTRA);
 		wantMode(!active ? ReverbMode.OFF : switch (config.reverb()) {
 			case AUTO -> null;
 			case CONVOLUTION -> ReverbMode.CONVOLUTION;
@@ -161,6 +180,7 @@ public final class SoundShaper {
 			slot = 0;
 		}
 		convolution.contextClosing();
+		spaces.contextClosing();
 		voice.contextClosing();
 	}
 
@@ -175,6 +195,9 @@ public final class SoundShaper {
 		boolean underwater = underwaterMuffling && camera.getFluidInCamera() == FogType.WATER;
 		Vec3 listenerVelocity = doppler ? listenerMotion.update(eye, System.nanoTime()) : Vec3.ZERO;
 		float[] orientation = worldAxesFor(camera);
+		Vector3fc left = camera.leftVector();
+		Axes axes = new Axes(new Vec3(-left.x(), -left.y(), -left.z()), new Vec3(camera.upVector()),
+				new Vec3(camera.forwardVector()));
 		OpenAlProbe.Report report = OpenAlProbe.last();
 		boolean efx = report != null && report.efx();
 		ReverbMode mode = chooseMode(report, underwater);
@@ -189,7 +212,7 @@ public final class SoundShaper {
 		}
 		channels.executeOnChannels(
 				stream -> update(stream, listener, underwater, efx, mode, orientation, players, voiceVolume,
-						listenerVelocity));
+						listenerVelocity, axes));
 	}
 
 	/** The wanted reverb, if the game's OpenAL can do it, else the best it can; underwater, EAX's preset. */
@@ -217,8 +240,12 @@ public final class SoundShaper {
 
 	/** On the sound thread: shapes every positional source, the game's and Yak VC's voices. */
 	private void update(Stream<Channel> channels, double[] listener, boolean underwater, boolean efx,
-			ReverbMode mode, float[] orientation, Map<UUID, Vec3> players, float voiceVolume, Vec3 listenerVelocity) {
+			ReverbMode mode, float[] orientation, Map<UUID, Vec3> players, float voiceVolume, Vec3 listenerVelocity,
+			Axes axes) {
 		int[] sends = reverb(mode, underwater, orientation);
+		boolean spacesOn = spaceReverb && efx && mode != ReverbMode.OFF && !underwater;
+		Vec3 ear = new Vec3(listener[0], listener[1], listener[2]);
+		spaces.begin();
 		AL10.alListener3f(AL10.AL_VELOCITY, (float) listenerVelocity.x, (float) listenerVelocity.y,
 				(float) listenerVelocity.z);
 		long now = System.nanoTime();
@@ -236,6 +263,7 @@ public final class SoundShaper {
 		if (count == 0) {
 			snapshot = List.of();
 			voice.report();
+			spaces.end(System.nanoTime(), !spacesOn, ear, axes.right(), axes.up(), axes.forward());
 			return;
 		}
 		double[] sources = new double[3 * count];
@@ -260,11 +288,15 @@ public final class SoundShaper {
 			if (underwater) {
 				for (int band = 0; band < gains.length; band++) gains[band] *= UNDERWATER[band];
 			}
+			Vec3 heardFrom = state.heardFrom(position);
+			double straight = position.distanceTo(ear);
+			boolean elsewhere = spacesOn && straight > 3
+					&& (heard[at + 6] > straight + SpaceReverb.ROUND || heard[at + 1] < SpaceReverb.WALLED);
+			int spaceSlot = elsewhere ? spaces.slotFor(position, heardFrom, now) : 0;
 			if (efx) {
 				filter(target.source(), state, gains);
-				send(target.source(), state, gains, sends);
+				send(target.source(), state, gains, sends, spaceSlot);
 			}
-			Vec3 heardFrom = state.heardFrom(position);
 			AL10.alSource3f(target.source(), AL10.AL_POSITION, (float) heardFrom.x, (float) heardFrom.y,
 					(float) heardFrom.z);
 			Vec3 velocity = state.velocity(position, now);
@@ -278,10 +310,11 @@ public final class SoundShaper {
 				target.voice().heardFrom = heardFrom;
 				target.voice().gains = gains;
 			}
-			shots.add(new Snapshot(position, heardFrom, gains, target.voice() != null));
+			shots.add(new Snapshot(position, heardFrom, gains, target.voice() != null, spaceSlot != 0));
 		}
 		snapshot = List.copyOf(shots);
 		voice.report();
+		spaces.end(now, !spacesOn, ear, axes.right(), axes.up(), axes.forward());
 	}
 
 	/**
@@ -340,7 +373,7 @@ public final class SoundShaper {
 	 * Sends a source to the reverb slots. What reaches the listener's space excites its reverb, so the send follows
 	 * the direct gains, but softened (square root): a muffled sound behind a wall still fills the room a little.
 	 */
-	private static void send(int source, SourceState state, float[] gains, int[] slots) {
+	private static void send(int source, SourceState state, float[] gains, int[] slots, int spaceSlot) {
 		if (state.sendFilter == 0) {
 			state.sendFilter = EXTEfx.alGenFilters();
 			EXTEfx.alFilteri(state.sendFilter, EXTEfx.AL_FILTER_TYPE, EXTEfx.AL_FILTER_LOWPASS);
@@ -354,6 +387,22 @@ public final class SoundShaper {
 			AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, slots[send], send,
 					slots[send] == 0 ? EXTEfx.AL_FILTER_NULL : state.sendFilter);
 		}
+		// Another space's reverb reaches the listener the way the sound does, so it is muffled the same.
+		if (spaceSlot != 0) {
+			if (state.spaceFilter == 0) {
+				state.spaceFilter = EXTEfx.alGenFilters();
+				EXTEfx.alFilteri(state.spaceFilter, EXTEfx.AL_FILTER_TYPE, EXTEfx.AL_FILTER_LOWPASS);
+			}
+			float direct = Math.clamp(gains[0], 0f, 1f);
+			EXTEfx.alFilterf(state.spaceFilter, EXTEfx.AL_LOWPASS_GAIN, direct);
+			EXTEfx.alFilterf(state.spaceFilter, EXTEfx.AL_LOWPASS_GAINHF,
+					direct > 0 ? Math.clamp(gains[2] / direct, 0f, 1f) : 0f);
+			AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, spaceSlot, SpaceReverb.SEND, state.spaceFilter);
+		} else if (state.spaceSent) {
+			AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, EXTEfx.AL_EFFECTSLOT_NULL, SpaceReverb.SEND,
+					EXTEfx.AL_FILTER_NULL);
+		}
+		state.spaceSent = spaceSlot != 0;
 	}
 
 	/**
@@ -383,6 +432,10 @@ public final class SoundShaper {
 		if (state.sendFilter != 0) {
 			EXTEfx.alDeleteFilters(state.sendFilter);
 			state.sendFilter = 0;
+		}
+		if (state.spaceFilter != 0) {
+			EXTEfx.alDeleteFilters(state.spaceFilter);
+			state.spaceFilter = 0;
 		}
 	}
 

@@ -31,7 +31,8 @@ use crate::guard::{FfiError, array_arg, guard, out_arg, slice_arg, slice_mut_arg
 /// 6: Yak VC's voice: `earshot_voice_sink`, `earshot_voice_callback`,
 ///    `earshot_voice_stream` and `earshot_voice_streams`.
 /// 7: `earshot_set_quality` and `earshot_stats`.
-pub const EARSHOT_ABI_VERSION: u32 = 7;
+/// 8: `earshot_room_at`.
+pub const EARSHOT_ABI_VERSION: u32 = 8;
 
 pub const EARSHOT_OK: i32 = 0;
 /// A null pointer, unknown material or out-of-range value.
@@ -417,22 +418,61 @@ pub unsafe extern "C" fn earshot_room(engine: *mut EarshotEngine, out: *mut f64)
             // SAFETY: the caller guarantees `out` is writable for
             // `EARSHOT_ROOM_DOUBLES` doubles.
             let out = slice_mut_arg(out, EARSHOT_ROOM_DOUBLES, "out")?;
-            let room = e.engine.room().unwrap_or(Room::OPEN_AIR);
-            let [low, mid, high] = room.decay.map(f64::from);
-            out[..7].copy_from_slice(&[
-                low,
-                mid,
-                high,
-                room.mean_free_path,
-                f64::from(room.enclosure),
-                room.first_reflection,
-                f64::from(room.scattering),
-            ]);
-            for (out, value) in out[7..].iter_mut().zip(eax_reverb(&room).to_array()) {
-                *out = f64::from(value);
-            }
+            write_room(&e.engine.room().unwrap_or(Room::OPEN_AIR), out);
             Ok(())
         })
+    }
+}
+
+/// Measures the room around `at` now, on the calling thread, with `rays` ×
+/// `bounces`, and writes it with the EAX reverb for it into `out`
+/// ([`EARSHOT_ROOM_DOUBLES`] doubles, as `earshot_room`). For the reverb of
+/// the space a sound is in when the listener is elsewhere. A point inside a
+/// solid block is measured from the open block beside it.
+///
+/// # Safety
+/// `engine` must be live; `at` must point to 3 doubles; `out` must be
+/// writable for `EARSHOT_ROOM_DOUBLES` doubles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earshot_room_at(
+    engine: *mut EarshotEngine,
+    at: *const f64,
+    rays: u32,
+    bounces: u32,
+    seed: u64,
+    out: *mut f64,
+) -> i32 {
+    // SAFETY: the caller guarantees `engine` is live.
+    unsafe {
+        with_engine(engine, |e| {
+            // SAFETY: the caller guarantees `at` points to 3 doubles.
+            let at = point_arg(at, "at")?;
+            // SAFETY: the caller guarantees `out` is writable for
+            // `EARSHOT_ROOM_DOUBLES` doubles.
+            let out = slice_mut_arg(out, EARSHOT_ROOM_DOUBLES, "out")?;
+            if !(1..=1 << 14).contains(&rays) || bounces > 64 {
+                return Err(FfiError::invalid("rays or bounces out of range"));
+            }
+            write_room(&e.engine.room_at(at, rays, bounces, seed), out);
+            Ok(())
+        })
+    }
+}
+
+/// Writes `room` and the EAX reverb for it as `earshot_room` does.
+fn write_room(room: &Room, out: &mut [f64]) {
+    let [low, mid, high] = room.decay.map(f64::from);
+    out[..7].copy_from_slice(&[
+        low,
+        mid,
+        high,
+        room.mean_free_path,
+        f64::from(room.enclosure),
+        room.first_reflection,
+        f64::from(room.scattering),
+    ]);
+    for (out, value) in out[7..].iter_mut().zip(eax_reverb(room).to_array()) {
+        *out = f64::from(value);
     }
 }
 

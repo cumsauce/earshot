@@ -175,7 +175,8 @@ The gametest checks a looping beacon hum in three states:
 - **HRTF choice:** the dataset is picked by name from what OpenAL Soft lists (`ALC_HRTF_ID_SOFT` in the context attributes); changing it reloads the sound engine. Bundling datasets still waits on a licence check.
 - **Material overrides** and the **user guide** ([GUIDE.md](GUIDE.md)).
 - **Gametest:** the Off preset leaves a sound in a closed box unmuffled, and turning it back on muffles it again; the Acoustics button opens the settings (screenshot `acoustics-settings`).
-- **Left for later:** source-space reverb slots, own-voice reverb (needs Yak VC to pass the local mic frames), and a Mod Menu entry.
+- **Source-space reverb** (High and Ultra; FFI ABI 8 `earshot_room_at`): a sound more than 3 blocks away counts as elsewhere when its way is over 2 blocks longer than the straight line, or under 30 % of its mid band gets straight through. Up to two such spaces get their own EAX slot, measured on the sound thread from where their sounds are (512 rays × 8 bounces, about a millisecond, again every second; a point inside a block is measured from the open block beside it). Each is panned 0.7 towards where its sounds are heard from. Sounds within 8 blocks share a space. Sources send to it on their third aux send, filtered like their direct sound, since that reverb reaches the listener the same way. A space is let go 3 s after its last sound, at the end of an update, once no source sends to it. The gametest checks a sound shut in a stone box gets an enclosed room of its own, and none once the box is gone.
+- **Left for later:** own-voice reverb (needs Yak VC to pass the local mic frames), and a Mod Menu entry.
 
 ## Approaches considered
 

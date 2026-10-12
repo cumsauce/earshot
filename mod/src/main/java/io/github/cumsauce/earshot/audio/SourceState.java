@@ -17,6 +17,9 @@ public final class SourceState {
 	int filter;
 	/** The OpenAL filter for the send to the room's reverb, 0 until made. */
 	int sendFilter;
+	/** The OpenAL filter for the send to another space's reverb, 0 until made, and whether that send is set. */
+	int spaceFilter;
+	boolean spaceSent;
 	private boolean started;
 	private final float[] gains = {1, 1, 1};
 	private Vec3 offset = Vec3.ZERO;

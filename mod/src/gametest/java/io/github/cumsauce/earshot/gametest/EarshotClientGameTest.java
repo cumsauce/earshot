@@ -44,6 +44,7 @@ import net.minecraft.world.phys.Vec3;
  * <li>blocks map to sensible materials, once the world's tags are in;
  * <li>the world mirror copies a superflat world, follows block changes, and a wall built into it muffles;
  * <li>a playing sound is muffled in a closed box, comes round through a doorway, and is clear in the open (M2);
+ * at High quality, shut in the box it gets the box's own reverb, and in the open it doesn't (M5);
  * <li>Yak VC's voice, through Earshot's voice sink, is shaped the same way and played as it comes (M4);
  * <li>the reverb is nearly dry on open ground and rings in a stone hall (M3);
  * <li>with the Off preset, Earshot leaves sounds as the game plays them (M5);
@@ -114,6 +115,9 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 			// in the open it is heard as it is.
 			SoundShaper shaper = EarshotClient.shaper();
 			if (shaper == null) throw new AssertionError("no sound shaper");
+			EarshotConfig settings = EarshotClient.config();
+			// High, whatever Auto picks on this machine, for the reverb of other spaces.
+			context.runOnClient(mc -> EarshotClient.apply(settings.withPreset(EarshotConfig.Preset.HIGH)));
 			singleplayer.getServer().runCommand("fill -10 -60 -10 20 -50 10 air");
 			singleplayer.getServer().runCommand("fill 6 -61 -3 11 -55 4 stone hollow");
 			Vec3 inside = new Vec3(8.5, -59.5, 0.5);
@@ -123,19 +127,23 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 					SoundEvents.BEACON_AMBIENT.location(), SoundSource.BLOCKS, 1f, 1f,
 					SoundInstance.createUnseededRandom(), true, 0, SoundInstance.Attenuation.LINEAR, inside.x, inside.y,
 					inside.z, false)));
-			awaitSound(context, shaper, inside, s -> s.gains()[0] < 0.1f, "in a closed box");
+			awaitSound(context, shaper, inside, s -> s.gains()[0] < 0.1f && s.elsewhere(), "in a closed box");
+			if (shaper.spaceRooms().stream().noneMatch(room -> room[4] > 0.9)) {
+				throw new AssertionError("the box's room isn't enclosed: "
+						+ shaper.spaceRooms().stream().map(Arrays::toString).toList());
+			}
 			// The Off preset leaves it as the game plays it; back on, it is muffled again.
-			EarshotConfig settings = EarshotClient.config();
 			context.runOnClient(mc -> EarshotClient.apply(settings.withPreset(EarshotConfig.Preset.OFF)));
 			awaitSound(context, shaper, inside, s -> s.gains()[0] > 0.95f, "with Earshot off");
-			context.runOnClient(mc -> EarshotClient.apply(settings));
+			context.runOnClient(mc -> EarshotClient.apply(settings.withPreset(EarshotConfig.Preset.HIGH)));
 			awaitSound(context, shaper, inside, s -> s.gains()[0] < 0.1f, "in a closed box, Earshot back on");
 			singleplayer.getServer().runCommand("fill 8 -60 -3 8 -59 -3 air");
 			awaitSound(context, shaper, inside, s -> s.gains()[1] > 0.1f && s.heardFrom().z < 0.3,
 					"round through a doorway on the far side");
 			singleplayer.getServer().runCommand("fill 6 -61 -3 11 -55 4 air");
-			awaitSound(context, shaper, inside, s -> s.gains()[0] > 0.95f && s.heardFrom().distanceTo(inside) < 0.3,
-					"in the open");
+			awaitSound(context, shaper, inside, s -> s.gains()[0] > 0.95f && s.heardFrom().distanceTo(inside) < 0.3
+					&& !s.elsewhere(), "in the open");
+			context.runOnClient(mc -> EarshotClient.apply(settings));
 			context.runOnClient(mc -> mc.getSoundManager().stop());
 
 			// M4: a voice handed to Earshot's voice sink, as Yak VC would, is shaped like any other sound: muffled in

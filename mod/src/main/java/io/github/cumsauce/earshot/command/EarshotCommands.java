@@ -149,8 +149,9 @@ public final class EarshotCommands {
 							"  %s%.0f blocks away: low %s, mid %s, high %s%s", s.voice() ? "voice " : "",
 							s.position().distanceTo(eye),
 							db(s.gains()[0]), db(s.gains()[1]), db(s.gains()[2]),
-							round ? String.format(Locale.ROOT, ", round from %.0f %.0f %.0f", s.heardFrom().x,
-									s.heardFrom().y, s.heardFrom().z) : "")));
+							(round ? String.format(Locale.ROOT, ", round from %.0f %.0f %.0f", s.heardFrom().x,
+									s.heardFrom().y, s.heardFrom().z) : "")
+									+ (s.elsewhere() ? ", with its own space's reverb" : ""))));
 				});
 		return 1;
 	}
