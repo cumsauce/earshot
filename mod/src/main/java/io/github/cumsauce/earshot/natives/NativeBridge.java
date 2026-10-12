@@ -14,7 +14,12 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.UUID;
 
 /**
  * Downcall handles for the C ABI in {@code crates/earshot-ffi/include/earshot.h}, plus thin typed wrappers that turn
@@ -26,7 +31,7 @@ import java.nio.charset.StandardCharsets;
  */
 public final class NativeBridge {
 	/** Must equal {@code EARSHOT_ABI_VERSION} in {@code earshot.h}. */
-	public static final int ABI_VERSION = 5;
+	public static final int ABI_VERSION = 6;
 	/** Blocks in a section, in Minecraft's order. */
 	public static final int SECTION_BLOCKS = 4096;
 	/** Doubles per traced leg: from x, y, z, to x, y, z, energy, escaped (1 or 0). */
@@ -40,6 +45,8 @@ public final class NativeBridge {
 	public static final int ROOM_DOUBLES = 21;
 	/** Where the EAX reverb parameters start in {@link #room}'s doubles. */
 	public static final int EAX_FIRST = 7;
+	/** Doubles per stream from {@code earshot_voice_streams}. */
+	private static final int VOICE_DOUBLES = 10;
 
 	// size_t is 64 bits on every platform Minecraft runs on.
 	private static final ValueLayout.OfLong SIZE_T = JAVA_LONG;
@@ -59,6 +66,10 @@ public final class NativeBridge {
 	private final MethodHandle hear;
 	private final MethodHandle room;
 	private final MethodHandle impulseResponse;
+	private final MethodHandle voiceSink;
+	private final MethodHandle voiceCallback;
+	private final MethodHandle voiceStream;
+	private final MethodHandle voiceStreams;
 	private final MethodHandle lastError;
 
 	public NativeBridge(SymbolLookup library) {
@@ -93,6 +104,12 @@ public final class NativeBridge {
 		impulseResponse = linker.downcallHandle(find(library, "earshot_impulse_response"),
 				FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, JAVA_FLOAT, JAVA_LONG, ADDRESS, SIZE_T, ADDRESS),
 				critical);
+		voiceSink = linker.downcallHandle(find(library, "earshot_voice_sink"), FunctionDescriptor.of(ADDRESS));
+		voiceCallback = linker.downcallHandle(find(library, "earshot_voice_callback"), FunctionDescriptor.of(ADDRESS));
+		voiceStream = linker.downcallHandle(find(library, "earshot_voice_stream"),
+				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS), critical);
+		voiceStreams = linker.downcallHandle(find(library, "earshot_voice_streams"),
+				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, SIZE_T, ADDRESS), critical);
 		lastError = linker.downcallHandle(find(library, "earshot_last_error"),
 				FunctionDescriptor.of(SIZE_T, ADDRESS, SIZE_T));
 	}
@@ -233,8 +250,74 @@ public final class NativeBridge {
 			check((int) invoke(impulseResponse, engine, sampleRate, maxSeconds, seed, MemorySegment.ofArray(out),
 					(long) out.length, MemorySegment.ofArray(needed)));
 			// The room may have changed between the calls, and with it the length.
-			if (needed[0] <= out.length) return needed[0] == out.length ? out : java.util.Arrays.copyOf(out, (int) needed[0]);
+			if (needed[0] <= out.length) return needed[0] == out.length ? out : Arrays.copyOf(out, (int) needed[0]);
 		}
+	}
+
+	/**
+	 * The native {@code YakVcVoiceSink} ({@code yakvc.h}) for Yak VC's voice, to offer it in Fabric's object share. It
+	 * lives for the rest of the process.
+	 */
+	public MemorySegment voiceSink() {
+		return (MemorySegment) invoke(voiceSink);
+	}
+
+	/**
+	 * The address of the native OpenAL buffer callback that plays a voice stream, for {@code alBufferCallbackSOFT}
+	 * with mono float32 at 48 kHz and {@link #voiceStream}'s pointer.
+	 */
+	public long voiceCallback() {
+		return ((MemorySegment) invoke(voiceCallback)).address();
+	}
+
+	/** The pointer {@link #voiceCallback} plays {@code speaker}'s voice from; valid for the rest of the process. */
+	public long voiceStream(UUID speaker) {
+		long[] out = new long[1];
+		check((int) invoke(voiceStream, MemorySegment.ofArray(uuidBytes(speaker)), MemorySegment.ofArray(out)));
+		return out[0];
+	}
+
+	/**
+	 * One speaker's voice stream, as its latest frame left it.
+	 *
+	 * @param flags             Yak VC's {@code YAKVC_VOICE_*} flags
+	 * @param heardFrom         where Yak VC's speakers would place the voice, x, y, z
+	 * @param secondsSinceFrame infinite before the first frame
+	 * @param ended             whether Yak VC said the speaker's link is gone
+	 * @param queuedSeconds     voice waiting for OpenAL to play it
+	 */
+	public record VoiceStream(UUID speaker, int flags, float range, float volume, float occlusion,
+			double[] heardFrom, double secondsSinceFrame, boolean ended, double queuedSeconds) {}
+
+	/** Every voice stream heard this session. */
+	public List<VoiceStream> voiceStreams() {
+		int cap = 16;
+		while (true) {
+			byte[] uuids = new byte[16 * cap];
+			double[] info = new double[VOICE_DOUBLES * cap];
+			long[] count = new long[1];
+			check((int) invoke(voiceStreams, MemorySegment.ofArray(uuids), MemorySegment.ofArray(info), (long) cap,
+					MemorySegment.ofArray(count)));
+			if (count[0] > cap) {
+				cap = (int) count[0];
+				continue;
+			}
+			List<VoiceStream> streams = new ArrayList<>((int) count[0]);
+			ByteBuffer ids = ByteBuffer.wrap(uuids);
+			for (int i = 0; i < count[0]; i++) {
+				int at = VOICE_DOUBLES * i;
+				streams.add(new VoiceStream(new UUID(ids.getLong(16 * i), ids.getLong(16 * i + 8)), (int) info[at],
+						(float) info[at + 1], (float) info[at + 2], (float) info[at + 3],
+						Arrays.copyOfRange(info, at + 4, at + 7), info[at + 7], info[at + 8] != 0, info[at + 9]));
+			}
+			return streams;
+		}
+	}
+
+	/** A UUID's 16 bytes, most significant first, as Yak VC has them. */
+	public static byte[] uuidBytes(UUID uuid) {
+		return ByteBuffer.allocate(16).putLong(uuid.getMostSignificantBits()).putLong(uuid.getLeastSignificantBits())
+				.array();
 	}
 
 	/** Throws with this thread's {@code earshot_last_error} message unless {@code code} is 0. */

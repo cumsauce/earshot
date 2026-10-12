@@ -158,6 +158,13 @@ The gametest checks a looping beacon hum in three states:
 - Underwater, and where OpenAL Soft lacks the effect, the EAX reverb takes over. `/earshot reverb auto|convolution|eax|off` switches between them for listening side by side.
 - The gametest checks the stone hall's response loads and plays.
 
+## M4 results so far (2026-10-11): Earshot's side of the voice sink
+
+- **Native sink** (`earshot-ffi`, ABI 6): `earshot_voice_sink` (the `YakVcVoiceSink`, a static), `earshot_voice_callback` (the OpenAL buffer callback), `earshot_voice_stream` (a speaker's callback pointer) and `earshot_voice_streams` (what each speaker's latest frame said, and how much is queued). Rust tests check `yakvc.h`'s frame layout, queueing per speaker at yakvc's volume, the queue and lag caps, the callback always filling every byte (fewer would stop the source), `stream_end`, and the clock.
+- **In the game:** `VoicePlayer` offers the sink when OpenAL opens with callback buffers, gives each speaker heard lately a source (`nalBufferCallbackSOFT` with the native callback, mono float32 at 48 kHz), positions it, and lets `SoundShaper` shape it with the game's sounds. `/earshot voice [on|off]` shows the voices and switches them; `/earshot sources` marks them.
+- **Gametest:** a fake speaker calls the sink from its own thread every 20 ms, as yakvc's audio thread would, with a 220 Hz tone from inside a closed stone box. The voice is muffled in the box (low band under −10 dB), clear once the box is gone, its queue stays under 150 ms (OpenAL is playing it as it comes), and its source goes once it falls silent. On the M3 VM the game got the 295 mono sources it asked for.
+- **Still to do for the M4 exit:** a two-client session with yakvc built from #177, listening behind a wall and in a cave. That needs #177 merged or a build of the fork.
+
 ## Approaches considered
 
 | Option | What it is | Verdict |
@@ -259,21 +266,24 @@ Java owns everything that touches game state and makes the OpenAL calls on the s
 
 ### 8. Yak VC voice
 
-**Contract (owned by yakvc, so any renderer could provide it).** It is specified in full in [yakvc-voice-sink-issue.md](yakvc-voice-sink-issue.md), the issue we're asking yakvc's maintainer to implement.
+**Contract (owned by yakvc, so any renderer could provide it).** It was asked for in [desocketed/yakvc#174](https://github.com/desocketed/yakvc/issues/174) ([yakvc-voice-sink-issue.md](yakvc-voice-sink-issue.md)) and implemented in [desocketed/yakvc#177](https://github.com/desocketed/yakvc/pull/177), which is open for review.
 - Earshot builds a versioned `YakVcVoiceSink` C struct (`wants_frame`, `frame`, `stream_end`, plus a `user` pointer) that lives for the whole process. It puts its address into Fabric Loader's `ObjectShare` under `yakvc:voice_sink`.
-- yakvc checks that key every tick and calls `yakvc_set_voice_sink` (ABI 8) when it changes. Neither mod has a compile-time dependency on the other.
-- Each `frame()` call carries a `YakVcVoiceFrame`: the speaker's UUID, 960 samples of 48 kHz mono, a shared `tick`, the per-player volume, the local voice range, and `GROUP` / `UNPOSITIONED` flags.
+- yakvc checks that key every tick and calls `yakvc_set_voice_sink` (ABI 12 in #177) when it changes. Neither mod has a compile-time dependency on the other.
+- Each `frame()` call carries a `YakVcVoiceFrame`: the speaker's UUID, 960 samples of 48 kHz mono, a shared `tick`, the per-player volume, the local voice range, and `GROUP` / `UNPOSITIONED` flags. Since review it also carries `heard_from` and `occlusion`: where yakvc's own speakers would place the voice and how blocked they think it is, for renderers without acoustics of their own. Earshot ignores both except as a fallback position.
 
 **What yakvc does in external mode.**
 - yakvc keeps doing everything it does today up to the mix step: jitter buffer, Opus FEC/PLC, the talking indicator, and all the rules (mute, deafen, groups, spectators, blocked players, range discard).
 - It skips its own distance gain, panning and soft limiter, and doesn't open an output device. Each playable peer frame goes to `frame()` with only the per-peer volume applied.
-- The game's Voice slider and Master are then applied by the renderer and OpenAL, so nothing is applied twice.
+- The game's Voice/Speech volume (with Master, `getFinalSoundSourceVolume(VOICE)`, which is what yakvc's speakers use) is then applied by the renderer, so nothing is applied twice.
 
-**What Earshot does with it.**
-- One SPSC ring per speaker, and one OpenAL callback-buffer source per active speaker. OpenAL's mixer thread drains the ring through a native callback. The source sits at the speaker's head (`level.getPlayerByUUID`, updated each tick) and gets exactly the same occlusion, pathing, reverb and HRTF as any game sound.
-- Distance falloff is linear and clamped, at full volume within 4 blocks down to 0 at `range`, which is yakvc's current curve. A player is never heard beyond yakvc's range, and the privacy rule holds.
-- Group voice plays head-relative, centred and dry (an optional "radio" filter comes later).
-- Pacing: `wants_frame` follows the samples OpenAL actually consumed, which also absorbs clock drift. While OpenAL is down (device change, F3+T) it falls back to a wall clock and drops frames. The struct lives for the whole process, so it never dangles.
+**What Earshot does with it** (built in M4, `earshot-ffi/src/voice.rs` and `audio/VoicePlayer.java`).
+- One queue per speaker, and one OpenAL callback-buffer source per speaker heard in the last 2 s. OpenAL's mixer thread fills the source straight from the queue through a native callback, with no Java in between. The queue is a mutex-guarded deque that yakvc's audio thread and OpenAL's mixer each hold for a copy of at most a few hundred samples, which is simpler than a lock-free ring and as quick at this rate.
+- The source sits at the speaker's eye (the client world's players, read each tick), or at yakvc's `heard_from` while the player isn't loaded. It goes through the same hear batch as the game's sounds, so it gets exactly the same occlusion, pathing, reverb sends and HRTF.
+- Distance falloff is linear and clamped, at full volume within 4 blocks down to 0 at `range`, like yakvc's default curve. A player is never heard beyond yakvc's range, and the privacy rule holds.
+- Group voice and calls (`UNPOSITIONED`) play head-relative, centred and dry (an optional "radio" filter comes later).
+- Pacing: `wants_frame` follows a wall clock, a frame each 20 ms kept 40 ms ahead, catching up at most 5 frames after a stall. Following the samples OpenAL consumed was the plan, but OpenAL pulls in mixer-period chunks per source, so instead the queue absorbs the jitter and drift: once more than 100 ms is queued beyond what OpenAL asks for, the oldest audio is dropped down to 40 ms. While nothing plays a speaker (OpenAL down, or the source not made yet), the queue is capped at 200 ms. The struct lives for the whole process, so it never dangles.
+- Sources: the game takes every mono source the context has, up to 263, so Earshot asks for 263 + 32 (`ALC_MONO_SOURCES`) and the game leaves 32 for voices.
+- If the game's OpenAL has no callback buffers, OpenAL refuses a voice source, or sound shaping fails, Earshot takes the sink back out of the object share and yakvc returns to its own speakers. `/earshot voice off` does the same by hand.
 
 **Optional own-voice reverb (later, a follow-up to the issue).** yakvc also passes the local mic frames (`SELF`), and Earshot sends them only to the reverb, with no dry path. Talk in a cave and the cave answers. It is off by default and meant for headphones.
 
@@ -360,7 +370,7 @@ earshot/
 1. **M1 World and tracer.** World mirror, materials, DDA, ray visualization, and a tracer benchmark on the M3 recorded in the docs. **Exit:** rays visible in game, unit tests green.
 2. **M2 Direct sound.** Occlusion and transmission, air absorption, underwater, pathing with virtual sources. **Exit:** in the sound lab, an open and a closed door sound clearly different, and a sound around a corner comes from the doorway.
 3. **M3 Reverb.** Listener path trace, parametric EAX for every preset, convolution with synthesized IRs, twin-slot crossfades, distance-dependent wet/dry. **Exit:** shoebox RT60 within ±20 %; cave, house and outdoors are clearly distinct; no zipper or pumping when walking through a doorway.
-4. **M4 Yak VC.** The yakvc PR (ABI 8, `ObjectShare` contract) and Earshot's voice bridge. **Exit:** in a `just session a b` dev session, voice behind a wall is muffled like footsteps and picks up cave reverb, and each mod alone behaves as before.
+4. **M4 Yak VC.** The yakvc PR ([#177](https://github.com/desocketed/yakvc/pull/177), ABI 12, `ObjectShare` contract) and Earshot's voice bridge. **Exit:** in a `just session a b` dev session, voice behind a wall is muffled like footsteps and picks up cave reverb, and each mod alone behaves as before.
 5. **M5 Polish and first prerelease.** Settings UI, presets and Auto, adaptive budget, source-space slots, HRTF dataset choice, Doppler, own-voice reverb, material overrides, user guide, `v0.1.0-alpha.1` on GitHub Releases.
 6. **M6 Stretch.**
    - GPU tracing (wgpu on Metal or Vulkan), only if profiling shows the CPU is the limit.

@@ -7,11 +7,16 @@ import io.github.cumsauce.earshot.natives.NativeBridge;
 import io.github.cumsauce.earshot.openal.OpenAlProbe;
 import java.lang.foreign.MemorySegment;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 import java.util.stream.Stream;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.AbstractClientPlayer;
 import net.minecraft.client.sounds.ChannelAccess;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.level.material.FogType;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Vector3fc;
@@ -24,7 +29,8 @@ import org.lwjgl.openal.EXTEfx;
  * Shapes every positional sound the game plays by how it reaches the listener (M2): muffled by what is in the way,
  * moved to the opening it comes round through, damped by the air over distance, and muffled hard underwater. Each also
  * sends to a reverb made from the room measured around the listener (M3): a convolution with a synthesized impulse
- * response where OpenAL Soft has the effect, else EAX reverb set from the room's measurements.
+ * response where OpenAL Soft has the effect, else EAX reverb set from the room's measurements. Yak VC's voices, played
+ * by {@link VoicePlayer}, are shaped the same way (M4).
  *
  * <p>Once a tick, after the sound engine's own tick, {@link #tick} tells the native engine where the listener is and
  * queues {@link #update} on the sound thread, which asks the native engine how each playing sound is heard (one call
@@ -63,6 +69,7 @@ public final class SoundShaper {
 	private final NativeBridge bridge;
 	private final MemorySegment engine;
 	private final ConvolutionReverb convolution;
+	private final VoicePlayer voice;
 	private volatile List<Snapshot> snapshot = List.of();
 	/** The EAX reverb's effect and slot in the game's context; 0 until made, and again when the context goes. */
 	private final Object reverbLock = new Object();
@@ -75,19 +82,28 @@ public final class SoundShaper {
 	private volatile ReverbMode mode = ReverbMode.OFF;
 	private volatile boolean failed;
 
-	/** One shaped sound, for the debug command and tests. */
-	public record Snapshot(Vec3 position, Vec3 heardFrom, float[] gains) {
+	/** One shaped sound, for the debug command and tests; {@code voice} for a Yak VC voice. */
+	public record Snapshot(Vec3 position, Vec3 heardFrom, float[] gains, boolean voice) {
 		@Override
 		public String toString() {
 			return "Snapshot[position=" + position + ", heardFrom=" + heardFrom + ", gains="
-					+ java.util.Arrays.toString(gains) + "]";
+					+ java.util.Arrays.toString(gains) + ", voice=" + voice + "]";
 		}
 	}
+
+	/** A source to shape: the OpenAL source, its smoothed shaping, where it is, and the voice it plays if any. */
+	private record Target(int source, SourceState state, Vec3 position, VoicePlayer.@Nullable Voice voice) {}
 
 	public SoundShaper(NativeBridge bridge, MemorySegment engine) {
 		this.bridge = bridge;
 		this.engine = engine;
 		this.convolution = new ConvolutionReverb(bridge, engine);
+		this.voice = new VoicePlayer(bridge);
+	}
+
+	/** What plays Yak VC's voices. */
+	public VoicePlayer voice() {
+		return voice;
 	}
 
 	/** The sounds shaped in the last update. */
@@ -124,6 +140,7 @@ public final class SoundShaper {
 			slot = 0;
 		}
 		convolution.contextClosing();
+		voice.contextClosing();
 	}
 
 	/** Called on the client thread at the end of the sound engine's tick. */
@@ -141,7 +158,15 @@ public final class SoundShaper {
 		ReverbMode mode = chooseMode(report, underwater);
 		this.mode = mode;
 		if (!call(() -> bridge.setListener(engine, listener))) return;
-		channels.executeOnChannels(stream -> update(stream, listener, underwater, efx, mode, orientation));
+		Map<UUID, Vec3> players = new HashMap<>();
+		float voiceVolume = Math.clamp(minecraft.options.getFinalSoundSourceVolume(SoundSource.VOICE), 0f, 1f);
+		if (voice.offered()) {
+			for (AbstractClientPlayer player : minecraft.level.players()) {
+				players.put(player.getUUID(), player.getEyePosition());
+			}
+		}
+		channels.executeOnChannels(
+				stream -> update(stream, listener, underwater, efx, mode, orientation, players, voiceVolume));
 	}
 
 	/** The wanted reverb, if the game's OpenAL can do it, else the best it can; underwater, EAX's preset. */
@@ -167,23 +192,28 @@ public final class SoundShaper {
 		return new float[] {-rz, -u.z(), f.z(), ry, u.y(), -f.y()};
 	}
 
-	/** On the sound thread: shapes every positional source. */
+	/** On the sound thread: shapes every positional source, the game's and Yak VC's voices. */
 	private void update(Stream<Channel> channels, double[] listener, boolean underwater, boolean efx,
-			ReverbMode mode, float[] orientation) {
+			ReverbMode mode, float[] orientation, Map<UUID, Vec3> players, float voiceVolume) {
 		int[] sends = reverb(mode, underwater, orientation);
-		List<ShapedChannel> shaped = new ArrayList<>();
+		List<Target> targets = new ArrayList<>();
 		channels.forEach(channel -> {
 			ShapedChannel c = (ShapedChannel) channel;
-			if (c.earshot$positional() && c.earshot$position() != null) shaped.add(c);
+			Vec3 position = c.earshot$position();
+			if (c.earshot$positional() && position != null) {
+				targets.add(new Target(c.earshot$source(), c.earshot$state(), position, null));
+			}
 		});
-		int count = shaped.size();
+		for (VoicePlayer.Voice v : voice.update(players, voiceVolume)) targets.add(new Target(v.source, v.state, v.position, v));
+		int count = targets.size();
 		if (count == 0) {
 			snapshot = List.of();
+			voice.report();
 			return;
 		}
 		double[] sources = new double[3 * count];
 		for (int i = 0; i < count; i++) {
-			Vec3 position = shaped.get(i).earshot$position();
+			Vec3 position = targets.get(i).position();
 			sources[3 * i] = position.x;
 			sources[3 * i + 1] = position.y;
 			sources[3 * i + 2] = position.z;
@@ -193,10 +223,10 @@ public final class SoundShaper {
 
 		List<Snapshot> shots = new ArrayList<>(count);
 		for (int i = 0; i < count; i++) {
-			ShapedChannel channel = shaped.get(i);
-			SourceState state = channel.earshot$state();
+			Target target = targets.get(i);
+			SourceState state = target.state();
 			int at = NativeBridge.HEARD_DOUBLES * i;
-			Vec3 position = channel.earshot$position();
+			Vec3 position = target.position();
 			state.approach(new float[] {(float) heard[at], (float) heard[at + 1], (float) heard[at + 2]},
 					new Vec3(heard[at + 3], heard[at + 4], heard[at + 5]), position);
 			float[] gains = state.gains();
@@ -204,15 +234,20 @@ public final class SoundShaper {
 				for (int band = 0; band < gains.length; band++) gains[band] *= UNDERWATER[band];
 			}
 			if (efx) {
-				filter(channel, state, gains);
-				send(channel, state, gains, sends);
+				filter(target.source(), state, gains);
+				send(target.source(), state, gains, sends);
 			}
 			Vec3 heardFrom = state.heardFrom(position);
-			AL10.alSource3f(channel.earshot$source(), AL10.AL_POSITION, (float) heardFrom.x, (float) heardFrom.y,
+			AL10.alSource3f(target.source(), AL10.AL_POSITION, (float) heardFrom.x, (float) heardFrom.y,
 					(float) heardFrom.z);
-			shots.add(new Snapshot(position, heardFrom, gains));
+			if (target.voice() != null) {
+				target.voice().heardFrom = heardFrom;
+				target.voice().gains = gains;
+			}
+			shots.add(new Snapshot(position, heardFrom, gains, target.voice() != null));
 		}
 		snapshot = List.copyOf(shots);
+		voice.report();
 	}
 
 	/**
@@ -254,8 +289,7 @@ public final class SoundShaper {
 	 * Sets the source's direct filter: a low-pass whose gain is the low band and whose high-frequency gain brings the
 	 * high band down to its own value. OpenAL copies a filter when it is attached, so it is attached again each time.
 	 */
-	private static void filter(ShapedChannel channel, SourceState state, float[] gains) {
-		int source = channel.earshot$source();
+	private static void filter(int source, SourceState state, float[] gains) {
 		if (state.filter == 0) {
 			state.filter = EXTEfx.alGenFilters();
 			EXTEfx.alFilteri(state.filter, EXTEfx.AL_FILTER_TYPE, EXTEfx.AL_FILTER_LOWPASS);
@@ -272,8 +306,7 @@ public final class SoundShaper {
 	 * Sends a source to the reverb slots. What reaches the listener's space excites its reverb, so the send follows
 	 * the direct gains, but softened (square root): a muffled sound behind a wall still fills the room a little.
 	 */
-	private static void send(ShapedChannel channel, SourceState state, float[] gains, int[] slots) {
-		int source = channel.earshot$source();
+	private static void send(int source, SourceState state, float[] gains, int[] slots) {
 		if (state.sendFilter == 0) {
 			state.sendFilter = EXTEfx.alGenFilters();
 			EXTEfx.alFilteri(state.sendFilter, EXTEfx.AL_FILTER_TYPE, EXTEfx.AL_FILTER_LOWPASS);
@@ -304,7 +337,11 @@ public final class SoundShaper {
 
 	/** Frees a source's filters when the game destroys the source. Called on the sound thread. */
 	public static void release(ShapedChannel channel) {
-		SourceState state = channel.earshot$state();
+		releaseFilters(channel.earshot$state());
+	}
+
+	/** Frees the filters made for a source. Called on the sound thread. */
+	static void releaseFilters(SourceState state) {
 		if (state.filter != 0) {
 			EXTEfx.alDeleteFilters(state.filter);
 			state.filter = 0;
@@ -322,6 +359,7 @@ public final class SoundShaper {
 		} catch (EarshotException e) {
 			failed = true;
 			EarshotClient.LOGGER.error("Sound shaping stopped: a native call failed", e);
+			voice.fail();
 			return false;
 		}
 	}

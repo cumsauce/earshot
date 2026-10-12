@@ -14,14 +14,14 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * Asks for the auxiliary sends reverb needs when the game opens its context, probes what it got, and has Earshot
- * forget its reverb when the context goes.
+ * Asks for the auxiliary sends reverb needs and sources for voices when the game opens its context, probes what it
+ * got, and has Earshot forget its reverb and voices when the context goes.
  */
 @Mixin(Library.class)
 abstract class LibraryMixin {
 	@Inject(method = "createAttributes", at = @At("RETURN"), cancellable = true)
-	private void earshot$moreSends(MemoryStack stack, boolean hrtf, CallbackInfoReturnable<IntBuffer> cir) {
-		cir.setReturnValue(ContextAttributes.withAuxiliarySends(stack, cir.getReturnValue()));
+	private void earshot$attributes(MemoryStack stack, boolean hrtf, CallbackInfoReturnable<IntBuffer> cir) {
+		cir.setReturnValue(ContextAttributes.withEarshotAttributes(stack, cir.getReturnValue()));
 	}
 
 	@Inject(method = "cleanup", at = @At("HEAD"))
@@ -33,5 +33,7 @@ abstract class LibraryMixin {
 	@Inject(method = "init", at = @At("TAIL"))
 	private void earshot$probe(CallbackInfo ci) {
 		OpenAlProbe.run("Library.init");
+		SoundShaper shaper = EarshotClient.shaper();
+		if (shaper != null) shaper.voice().openAlOpened(OpenAlProbe.last());
 	}
 }
