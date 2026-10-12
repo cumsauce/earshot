@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use earshot_world::{Vec3, World};
 
-use crate::{Field, Heard, Room, hear, measure};
+use crate::{Field, Heard, Reflection, Room, hear, impulse_response, measure_with_early};
 
 /// How far the pathing field reaches each way from the listener, in blocks.
 pub const FIELD_HALF: i32 = 24;
@@ -42,6 +42,8 @@ struct Shared {
     listener: Mutex<Option<Vec3>>,
     field: RwLock<Option<Arc<Built>>>,
     room: RwLock<Option<Room>>,
+    /// The early reflections from the latest measurement.
+    early: RwLock<Vec<Reflection>>,
     stop: AtomicBool,
 }
 
@@ -109,6 +111,29 @@ impl Engine {
             .room
             .read()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// An impulse response for the room around the listener (see
+    /// [`impulse_response`]), or none before the room has been measured.
+    pub fn impulse_response(
+        &self,
+        sample_rate: u32,
+        max_seconds: f32,
+        seed: u64,
+    ) -> Option<Vec<f32>> {
+        let room = self.room()?;
+        let early = self
+            .shared
+            .early
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
+        Some(impulse_response(
+            &room,
+            &early,
+            sample_rate,
+            max_seconds,
+            seed,
+        ))
     }
 
     /// The current pathing field, if one has been built.
@@ -185,10 +210,11 @@ fn worker(shared: &Shared) {
         {
             room_at = Some(Instant::now());
             seed += 1;
-            let measured = {
+            let (measured, early) = {
                 let world = shared.world.read().unwrap_or_else(PoisonError::into_inner);
-                measure(&world, listener, ROOM_RAYS, ROOM_BOUNCES, ROOM_REACH, seed)
+                measure_with_early(&world, listener, ROOM_RAYS, ROOM_BOUNCES, ROOM_REACH, seed)
             };
+            *shared.early.write().unwrap_or_else(PoisonError::into_inner) = early;
             let mut room = shared.room.write().unwrap_or_else(PoisonError::into_inner);
             *room = Some(match *room {
                 Some(old) => blend(&old, &measured, ROOM_SMOOTHING),

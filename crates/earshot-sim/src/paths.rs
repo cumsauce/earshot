@@ -22,6 +22,8 @@ pub struct Segment {
     pub material: Material,
     /// Which leg of its path it is: 0 leaves the listener.
     pub bounce: u32,
+    /// The outward normal of the face it ended on; zero when it escaped.
+    pub normal: Vec3,
 }
 
 /// What a path trace found.
@@ -87,6 +89,7 @@ pub fn trace_paths(
                     escaped: true,
                     material: Material::Air,
                     bounce: leg,
+                    normal: Vec3::ZERO,
                 });
                 break;
             };
@@ -97,6 +100,7 @@ pub fn trace_paths(
                 escaped: false,
                 material: hit.material,
                 bounce: leg,
+                normal: hit.normal,
             });
             hit_lengths += hit.distance;
             hits += 1;

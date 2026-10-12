@@ -13,8 +13,9 @@
  * 2: the engine, its world mirror, transmission and path traces.
  * 3: `earshot_set_listener` and `earshot_hear`.
  * 4: `earshot_room`.
+ * 5: `earshot_impulse_response`.
  */
-#define EARSHOT_ABI_VERSION 4
+#define EARSHOT_ABI_VERSION 5
 
 #define EARSHOT_OK 0
 
@@ -192,6 +193,26 @@ int32_t earshot_hear(struct EarshotEngine *engine,
  * doubles.
  */
 int32_t earshot_room(struct EarshotEngine *engine, double *out);
+
+/**
+ * Synthesizes an impulse response for the room around the listener, for
+ * OpenAL Soft's convolution effect: first-order ambisonics in FuMa order and
+ * scaling (W, X, Y, Z interleaved, `AL_FORMAT_BFORMAT3D_FLOAT32`) in world
+ * axes, at most `max_seconds` long. Writes it to `out` if `cap` floats are
+ * enough, and how many floats it needs to `*needed` either way; `*needed`
+ * is 0 before the room has been measured.
+ *
+ * # Safety
+ * `engine` must be live; `out` must be writable for `cap` floats; `needed`
+ * must be writable.
+ */
+int32_t earshot_impulse_response(struct EarshotEngine *engine,
+                                 uint32_t sample_rate,
+                                 float max_seconds,
+                                 uint64_t seed,
+                                 float *out,
+                                 size_t cap,
+                                 size_t *needed);
 
 /**
  * Traces `rays` paths from `origin`, evenly spread, with up to `bounces`

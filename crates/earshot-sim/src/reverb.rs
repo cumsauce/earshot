@@ -1,6 +1,6 @@
 use earshot_world::{BANDS, Bands, Vec3, World};
 
-use crate::trace_paths;
+use crate::{Reflection, trace_paths};
 
 /// Speed of sound, in blocks (metres) per second.
 pub const SPEED_OF_SOUND: f64 = 343.0;
@@ -54,6 +54,23 @@ pub fn measure(
     reach: f64,
     seed: u64,
 ) -> Room {
+    measure_with_early(world, listener, rays, bounces, reach, seed).0
+}
+
+/// [`measure`], plus the early reflections each ray's first bounce makes:
+/// from the direction it went, after the trip to the wall and back, with the
+/// energy of its share of the wall's image source,
+/// `(1 - a) · cos² θ / (2r)² · 12 / rays` (the 12 makes a wall's rays add up
+/// to its image source; see the test).
+pub fn measure_with_early(
+    world: &World,
+    listener: Vec3,
+    rays: u32,
+    bounces: u32,
+    reach: f64,
+    seed: u64,
+) -> (Room, Vec<Reflection>) {
+    let mut early = Vec::new();
     let mut absorbed = [0.0f64; BANDS];
     let (mut events, mut hits, mut firsts) = (0u32, 0u32, 0u32);
     let (mut free_path, mut first, mut scattering) = (0.0, 0.0, 0.0f64);
@@ -66,18 +83,28 @@ pub fn measure(
         let length = (segment.to - segment.from).length();
         free_path += length;
         hits += 1;
+        let acoustics = segment.material.acoustics();
         if segment.bounce == 0 {
             first += length;
             firsts += 1;
+            let direction = (segment.to - segment.from).normalized();
+            let cos = direction.dot(segment.normal).abs() as f32;
+            let trip = 2.0 * length;
+            early.push(Reflection {
+                direction,
+                delay: (trip / SPEED_OF_SOUND) as f32,
+                energy: (1.0 - acoustics.absorption[1]) * cos * cos / (trip * trip).max(1.0) as f32
+                    * 12.0
+                    / rays.max(1) as f32,
+            });
         }
-        let acoustics = segment.material.acoustics();
         for (a, absorption) in absorbed.iter_mut().zip(acoustics.absorption) {
             *a += f64::from(absorption);
         }
         scattering += f64::from(acoustics.scattering);
     });
     if hits == 0 {
-        return Room::OPEN_AIR;
+        return (Room::OPEN_AIR, early);
     }
     let mean_free_path = free_path / f64::from(hits);
     let decay = absorbed.map(|a| {
@@ -85,7 +112,7 @@ pub fn measure(
         let t60 = SIXTY_DB * mean_free_path / (SPEED_OF_SOUND * -(1.0 - mean).ln());
         t60.clamp(MIN_DECAY, MAX_DECAY) as f32
     });
-    Room {
+    let room = Room {
         decay,
         mean_free_path,
         enclosure: firsts as f32 / rays.max(1) as f32,
@@ -95,7 +122,8 @@ pub fn measure(
             0.0
         },
         scattering: (scattering / f64::from(hits)) as f32,
-    }
+    };
+    (room, early)
 }
 
 #[cfg(test)]
@@ -174,6 +202,23 @@ mod tests {
         assert!(large.mean_free_path > small.mean_free_path * 4.0);
         // Cloth swallows highs: they die faster than lows.
         assert!(soft.decay[2] < soft.decay[0]);
+    }
+
+    #[test]
+    fn a_walls_early_reflections_add_up_to_its_image_source() {
+        // One big rock wall 5 blocks in front: its image source is 10 away.
+        let mut world = World::new();
+        for y in -40..40 {
+            for z in -40..40 {
+                world.set_block(5, y, z, Material::Rock);
+            }
+        }
+        let (_, early) = measure_with_early(&world, Vec3::new(0.5, 0.5, 0.5), 4096, 0, 64.0, 1);
+        let total: f32 = early.iter().map(|r| r.energy).sum();
+        let image = (1.0 - Material::Rock.acoustics().absorption[1]) / 81.0;
+        assert!((total / image - 1.0).abs() < 0.35, "{total} vs {image}");
+        let first = early.iter().map(|r| r.delay).fold(f32::MAX, f32::min);
+        assert!((first - 9.0 / 343.0).abs() < 0.002, "{first}");
     }
 
     #[test]
