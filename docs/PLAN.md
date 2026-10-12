@@ -211,6 +211,8 @@ The gametest checks a looping beacon hum in three states:
 
 - **Edge diffraction** (alpha.12): the way round loses ISO 9613-2's barrier attenuation (after Maekawa), `10 log10(3 + 20 δ/λ)` dB per band at 250 Hz, 1 kHz and 4 kHz, capped at 25 dB. Here δ is the detour: the field's way, scaled by how much longer its grid steps run than a straight line with nothing in the way, minus the straight line. That model is for the open. Shut in, sound gets round corners mostly by reflecting off the walls, so the loss is the earlier 3/6/12 dB per right angle; in between, the two are blended in dB by the room's enclosure. On open ground, a sound in a stone hut heard round to its far doorway comes through at about -9/-12/-14 dB, where the stone passes under -23 dB.
 
+- **Climate air absorption** (alpha.13): OpenAL's air absorption factor follows ISO 9613-1's absorption at its 5 kHz reference (0.05 dB/m per unit), from the air where the listener is, smoothed over about a second. The temperature is about 20 °C per unit of the biome's. The humidity is 95 % in rain, 15 % where it never rains (desert, savanna, badlands, the Nether), 80 % where it's hot and rains (jungle), and 55 % elsewhere. Humidity uses public biome data; the game keeps its downfall private. Unit tests check the formula against ISO's tables at 20 °C and 50 % (about 4.7 dB/km at 1 kHz and 28 dB/km at 4 kHz). The debug overlay shows the factor.
+
 ## Approaches considered
 
 | Option | What it is | Verdict |

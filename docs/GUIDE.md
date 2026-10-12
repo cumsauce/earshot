@@ -57,7 +57,7 @@ picked and what tracing costs right now; under Reverb, which reverb is playing. 
 | Occlusion | Blocks in the way muffle sounds. |
 | Round Corners | Sounds come round through openings. |
 | Reverb | Auto (convolution where the game's OpenAL has it, else EAX), Convolution, EAX, or Off. |
-| Air Absorption | Far sounds lose their highs. |
+| Air Absorption | Far sounds lose their highs, as much as the air where you are takes: more in a dry desert, less in a jungle or in rain (ISO 9613-1, from the biome's temperature and rain). |
 | Underwater | Everything is muffled while your head is underwater. |
 | Realistic Falloff | Off by default. Sounds fade as in real air, halving with each doubling of distance past two blocks, instead of the game's straight line to silence. |
 | Doppler | Sounds moving towards or away from you shift in pitch. |

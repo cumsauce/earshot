@@ -85,7 +85,9 @@ public final class SoundShaper {
 	private volatile @Nullable ReverbMode wantedMode;
 	private volatile ReverbMode mode = ReverbMode.OFF;
 	private volatile boolean failed;
+	/** OpenAL's air absorption factor now: from the climate where the listener is, followed smoothly. */
 	private volatile float airAbsorption = AIR_ABSORPTION;
+	private volatile boolean airAbsorptionOn = true;
 	private volatile boolean underwaterMuffling = true;
 	private volatile boolean doppler = true;
 	/** Whether sounds in another space get that space's reverb (High and Ultra). */
@@ -168,7 +170,8 @@ public final class SoundShaper {
 	/** Takes up the settings (the engine's quality is set separately). */
 	public void configure(io.github.cumsauce.earshot.config.EarshotConfig config) {
 		boolean active = config.active();
-		airAbsorption = active && config.airAbsorption() ? AIR_ABSORPTION : 0;
+		airAbsorptionOn = active && config.airAbsorption();
+		if (!airAbsorptionOn) airAbsorption = 0;
 		underwaterMuffling = active && config.underwater();
 		doppler = active && config.doppler();
 		var preset = config.preset().resolve();
@@ -210,6 +213,7 @@ public final class SoundShaper {
 		Vec3 eye = camera.position();
 		double[] listener = {eye.x, eye.y, eye.z};
 		boolean underwater = underwaterMuffling && camera.getFluidInCamera() == FogType.WATER;
+		followClimate(minecraft, eye);
 		Vec3 listenerVelocity = doppler ? listenerMotion.update(eye, System.nanoTime()) : Vec3.ZERO;
 		float[] orientation = worldAxesFor(camera);
 		Vector3fc left = camera.leftVector();
@@ -231,6 +235,24 @@ public final class SoundShaper {
 		channels.executeOnChannels(
 				stream -> update(stream, listener, underwater, efx, mode, orientation, players, voiceVolume,
 						listenerVelocity, axes));
+	}
+
+	/** OpenAL's air absorption factor in use now. */
+	public float airAbsorption() {
+		return airAbsorption;
+	}
+
+	/**
+	 * Moves the air absorption towards what the climate where the listener is gives (ISO 9613-1, {@link Air}), over
+	 * about a second, so walking out of a desert doesn't click.
+	 */
+	private void followClimate(Minecraft minecraft, Vec3 eye) {
+		if (!airAbsorptionOn || minecraft.level == null) return;
+		var pos = net.minecraft.core.BlockPos.containing(eye);
+		var biome = minecraft.level.getBiome(pos).value();
+		boolean rains = biome.hasPrecipitation();
+		float target = Air.factorForBiome(biome.getBaseTemperature(), rains, rains && minecraft.level.isRaining());
+		airAbsorption += (target - airAbsorption) * 0.05f;
 	}
 
 	/** The wanted reverb, if the game's OpenAL can do it, else the best it can; underwater, EAX's preset. */

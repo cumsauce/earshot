@@ -79,6 +79,7 @@ public final class DebugOverlay implements HudElement {
 			lines.add(String.format(Locale.ROOT, "Room: decay %.2f / %.2f / %.2f s, free path %.1f, %.0f%% enclosed",
 					room[0], room[1], room[2], room[3], 100 * room[4]));
 		}
+		lines.add(String.format(Locale.ROOT, "Air absorption: %.2f x OpenAL's", shaper.airAbsorption()));
 		lines.add(String.format(Locale.ROOT, "Reverb: %s, %d responses loaded, %d other spaces",
 				shaper.mode().name().toLowerCase(Locale.ROOT), shaper.convolution().loads(), shaper.spaceRooms().size()));
 		List<VoicePlayer.Status> voices = shaper.voice().status();
