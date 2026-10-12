@@ -297,6 +297,24 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 				mc.options.directionalAudio().set(false);
 				EarshotClient.apply(EarshotClient.config().withHrtf(""));
 			});
+
+			// The HRTF listening test: playing one switches to it and circles the head with a snare; leaving without
+			// keeping one puts everything back.
+			context.setScreen(() -> new io.github.cumsauce.earshot.ui.HrtfTestScreen(null));
+			context.runOnClient(mc -> ((io.github.cumsauce.earshot.ui.HrtfTestScreen) mc.gui.screen())
+					.play("SADIE II KEMAR"));
+			try {
+				context.waitFor(mc -> mc.gui.screen() instanceof io.github.cumsauce.earshot.ui.HrtfTestScreen test
+						&& test.played() == 1, 10 * 20);
+			} catch (RuntimeException | AssertionError e) {
+				throw new AssertionError("the test never played the KEMAR: " + OpenAlProbe.last().describe(), e);
+			}
+			context.takeScreenshot("hrtf-test");
+			context.setScreen(() -> null);
+			context.waitTicks(2);
+			boolean restored = context.computeOnClient(mc -> EarshotClient.config().hrtf().isEmpty()
+					&& !mc.options.directionalAudio().get());
+			if (!restored) throw new AssertionError("leaving the test without keeping one didn't put things back");
 		}
 	}
 

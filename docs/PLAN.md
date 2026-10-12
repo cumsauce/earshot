@@ -207,6 +207,8 @@ The gametest checks a looping beacon hum in three states:
 
 - **Voice directivity** (alpha.10): a speaker who is a player in the world gets an OpenAL cone along their head's facing (pitch and head yaw), so a voice is full within 90° of that, and past 270° at 0.63 (about -4 dB) with its highs at 0.25 more (about -12 dB), as speech radiates around 2–4 kHz. A speaker not in the world (out of entity range) stays omnidirectional.
 
+- **HRTF listening test** (alpha.11), from the Acoustics screen. For each HRTF: switch to it, restarting the sound engine, then once the probe reports it in use, play a snare relative to the head (ahead, right, behind, left, above, below, 0.6 s apart) and let the player keep the one that places it best. Directional Audio is on for the test, and Directional Audio and the HRTF go back as they were if none is kept. The gametest plays the KEMAR through it and checks leaving puts things back.
+
 ## Approaches considered
 
 | Option | What it is | Verdict |
