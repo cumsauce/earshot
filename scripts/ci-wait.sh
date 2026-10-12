@@ -28,7 +28,13 @@ if [ -z "$id" ]; then
 	echo "RESULT none no-run-found-for-$sha"
 	exit 2
 fi
-gh run watch "$id" -R "$repo" --interval 30 >/dev/null 2>&1 || true
+# Poll rather than `gh run watch`, which can hang without a terminal.
+for _ in $(seq 1 120); do
+	status=$(gh run view "$id" -R "$repo" --json status -q .status 2>/dev/null) || status=error
+	[ "$status" = completed ] && break
+	[ "$status" = error ] && { echo "RESULT $id gh-error"; exit 3; }
+	sleep 30
+done
 read -r conclusion url < <(gh run view "$id" -R "$repo" --json conclusion,url -q '"\(.conclusion) \(.url)"')
 echo "RESULT $id $conclusion $url"
 [ "$conclusion" = success ]
