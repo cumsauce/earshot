@@ -9,7 +9,9 @@ only how you hear it:
   direction, a little duller for each bend.
 - **Reverb and echo**, measured from the space around you by tracing rays: a stone hall rings for seconds, a small
   wooden room barely at all, an open field not at all. Where the game's OpenAL can do it, the reverb is a convolution
-  with an impulse response made from the room, with early echoes from where the walls actually are.
+  with an impulse response made from the room, with early echoes from where the walls actually are. On High and Ultra,
+  a sound in another space (a cave you stand outside, the next room) rings with that space's reverb, coming from its
+  direction.
 - **Air absorption, underwater muffling and Doppler.**
 - **Proximity voice chat**, if you use [Yak VC](https://github.com/desocketed/yakvc): voices get all of the above too.
 
@@ -127,5 +129,5 @@ unless you set them to something else.
 
 ## Not yet
 
-Earshot is an alpha. Planned next: reverb for sounds in a different space from you (a cave heard from outside), your
-own voice in Yak VC echoing off the room, and a choice of bundled HRTF datasets.
+Earshot is an alpha. Planned next: your own voice in Yak VC echoing off the room, a choice of bundled HRTF datasets,
+and a Mod Menu entry.

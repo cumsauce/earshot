@@ -31,7 +31,7 @@ import java.util.UUID;
  */
 public final class NativeBridge {
 	/** Must equal {@code EARSHOT_ABI_VERSION} in {@code earshot.h}. */
-	public static final int ABI_VERSION = 7;
+	public static final int ABI_VERSION = 8;
 	/** Blocks in a section, in Minecraft's order. */
 	public static final int SECTION_BLOCKS = 4096;
 	/** Doubles per traced leg: from x, y, z, to x, y, z, energy, escaped (1 or 0). */
@@ -76,6 +76,7 @@ public final class NativeBridge {
 	private final MethodHandle setListener;
 	private final MethodHandle hear;
 	private final MethodHandle room;
+	private final MethodHandle roomAt;
 	private final MethodHandle impulseResponse;
 	private final MethodHandle setQuality;
 	private final MethodHandle stats;
@@ -114,6 +115,8 @@ public final class NativeBridge {
 				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, SIZE_T, ADDRESS), critical);
 		room = linker.downcallHandle(find(library, "earshot_room"), FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS),
 				critical);
+		roomAt = linker.downcallHandle(find(library, "earshot_room_at"),
+				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, JAVA_LONG, ADDRESS), critical);
 		impulseResponse = linker.downcallHandle(find(library, "earshot_impulse_response"),
 				FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, JAVA_FLOAT, JAVA_LONG, ADDRESS, SIZE_T, ADDRESS),
 				critical);
@@ -251,6 +254,16 @@ public final class NativeBridge {
 	public void room(MemorySegment engine, double[] out) {
 		if (out.length < ROOM_DOUBLES) throw new IllegalArgumentException("room needs " + ROOM_DOUBLES + " doubles");
 		check((int) invoke(room, engine, MemorySegment.ofArray(out)));
+	}
+
+	/**
+	 * Measures the room around {@code at} now, on this thread, with {@code rays} × {@code bounces}, into {@code out}
+	 * ({@value #ROOM_DOUBLES} doubles, as {@link #room}). A point inside a solid block is measured from beside it.
+	 */
+	public void roomAt(MemorySegment engine, double[] at, int rays, int bounces, long seed, double[] out) {
+		requireLength(at, 3, "at");
+		if (out.length < ROOM_DOUBLES) throw new IllegalArgumentException("room needs " + ROOM_DOUBLES + " doubles");
+		check((int) invoke(roomAt, engine, MemorySegment.ofArray(at), rays, bounces, seed, MemorySegment.ofArray(out)));
 	}
 
 	/**

@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 use earshot_world::{Vec3, World};
 
 use crate::{
-    Field, Heard, Quality, Reflection, Room, Stats, hear, impulse_response, measure_with_early,
+    Field, Heard, Quality, Reflection, Room, Stats, hear, impulse_response, measure,
+    measure_with_early,
 };
 
 /// The field is rebuilt once the listener moves this far from where it was
@@ -169,6 +170,14 @@ impl Engine {
         ))
     }
 
+    /// Measures the room around `at` now, on the calling thread, with a
+    /// trace of `rays` × `bounces`: for the reverb of a space a sound is in
+    /// when the listener is elsewhere. A point inside a solid block is
+    /// measured from the open block next to it nearest the point, if any.
+    pub fn room_at(&self, at: Vec3, rays: u32, bounces: u32, seed: u64) -> Room {
+        self.world(|world| measure(world, open_near(world, at), rays, bounces, ROOM_REACH, seed))
+    }
+
     /// The current pathing field, if one has been built.
     pub fn field(&self) -> Option<Field> {
         self.built().map(|built| built.field.clone())
@@ -233,6 +242,32 @@ fn worker(shared: &Shared) {
         }
         std::thread::sleep(WORKER_TICK);
     }
+}
+
+/// `at`, or if it is inside a solid block, the centre of the open block next
+/// to it (across a face) nearest `at`, so a sound played by a block measures
+/// the room it sounds into.
+fn open_near(world: &World, at: Vec3) -> Vec3 {
+    let block = [at.x, at.y, at.z].map(|v| v.floor() as i32);
+    if !world.block(block[0], block[1], block[2]).is_solid() {
+        return at;
+    }
+    let centre =
+        |[x, y, z]: [i32; 3]| Vec3::new(f64::from(x) + 0.5, f64::from(y) + 0.5, f64::from(z) + 0.5);
+    [
+        [1, 0, 0],
+        [-1, 0, 0],
+        [0, 1, 0],
+        [0, -1, 0],
+        [0, 0, 1],
+        [0, 0, -1],
+    ]
+    .map(|[dx, dy, dz]| [block[0] + dx, block[1] + dy, block[2] + dz])
+    .into_iter()
+    .filter(|&[x, y, z]| !world.block(x, y, z).is_solid())
+    .map(centre)
+    .min_by(|a, b| (*a - at).length().total_cmp(&(*b - at).length()))
+    .unwrap_or(at)
 }
 
 /// Whether the field is missing, the wrong size, left behind by the
@@ -509,6 +544,33 @@ mod tests {
             }
             .is_valid()
         );
+    }
+
+    #[test]
+    fn a_room_is_measured_where_a_sound_is_even_from_inside_a_block() {
+        let engine = Engine::start();
+        // A closed stone cell, 6 blocks inside, with a block set in its floor.
+        engine.world_mut(|world| {
+            for a in -1..=6 {
+                for b in -1..=6 {
+                    for wall in [-1, 6] {
+                        world.set_block(wall, a, b, Material::Rock);
+                        world.set_block(a, wall, b, Material::Rock);
+                        world.set_block(a, b, wall, Material::Rock);
+                    }
+                }
+            }
+            world.set_block(2, 0, 2, Material::Wood);
+        });
+        let inside = engine.room_at(Vec3::new(3.0, 3.0, 3.0), 512, 8, 1);
+        assert!(inside.enclosure > 0.99, "{inside:?}");
+        let block = engine.room_at(Vec3::new(2.5, 0.5, 2.5), 512, 8, 1);
+        assert!(
+            block.enclosure > 0.99 && block.decay[1] > 0.3,
+            "from the block's top: {block:?}"
+        );
+        let outside = engine.room_at(Vec3::new(30.0, 3.0, 3.0), 512, 8, 1);
+        assert!(outside.enclosure < 0.5, "{outside:?}");
     }
 
     #[test]
