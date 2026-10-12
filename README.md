@@ -28,7 +28,7 @@ Building in a VM, from a folder shared with the host over VirtioFS, needs two se
 - `CARGO_TARGET_DIR` on a local disk, because rustc can't memory-map its fresh objects there.
 - `-Pearshot.runDir=<local dir>` for the game runs, because Minecraft can't lock its saves there.
 
-In game, `/earshot rays [count] [bounces]` draws traced sound paths, `/earshot occlusion` measures what blocks the way ahead, `/earshot sources` shows how each playing sound is heard, `/earshot room` describes the room the reverb hears, `/earshot reverb auto|convolution|eax|off` switches the reverb, and `/earshot stats` shows how much of the world is mirrored.
+In game, `/earshot rays [count] [bounces]` draws traced sound paths, `/earshot occlusion` measures what blocks the way ahead, `/earshot sources` shows how each playing sound is heard, `/earshot room` describes the room the reverb hears, `/earshot reverb auto|convolution|eax|off` switches the reverb, `/earshot voice [on|off]` shows Yak VC's voices playing through Earshot and switches them back to Yak VC's own speakers, and `/earshot stats` shows how much of the world is mirrored.
 
 Release jars hold the native library for every platform. CI builds each one on its own runner and packages them with `cargo xtask dist --from <dir>`. Pushing a `v<version>` tag publishes a prerelease.
 

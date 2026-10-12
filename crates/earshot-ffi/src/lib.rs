@@ -13,6 +13,9 @@
 #![allow(unsafe_code)]
 
 mod guard;
+mod voice;
+
+use std::ffi::c_void;
 
 use earshot_sim::{Engine, Heard, Room, eax_reverb, trace_paths};
 use earshot_world::{BANDS, Material, SECTION_BLOCKS, SectionPos, Vec3, World};
@@ -25,7 +28,9 @@ use crate::guard::{FfiError, array_arg, guard, out_arg, slice_arg, slice_mut_arg
 /// 3: `earshot_set_listener` and `earshot_hear`.
 /// 4: `earshot_room`.
 /// 5: `earshot_impulse_response`.
-pub const EARSHOT_ABI_VERSION: u32 = 5;
+/// 6: Yak VC's voice: `earshot_voice_sink`, `earshot_voice_callback`,
+///    `earshot_voice_stream` and `earshot_voice_streams`.
+pub const EARSHOT_ABI_VERSION: u32 = 6;
 
 pub const EARSHOT_OK: i32 = 0;
 /// A null pointer, unknown material or out-of-range value.
@@ -50,6 +55,12 @@ pub const EARSHOT_HEARD_DOUBLES: usize = 7;
 /// ratio, reflections gain, reflections delay, late reverb gain, late reverb
 /// delay, echo time, echo depth).
 pub const EARSHOT_ROOM_DOUBLES: usize = 21;
+
+/// Doubles per stream from `earshot_voice_streams`: the latest frame's flags
+/// (`YAKVC_VOICE_*`), range, volume, occlusion and where it is heard from as
+/// `x, y, z`; seconds since that frame (infinite before one); 1 if the
+/// stream has ended (else 0); and seconds of voice queued.
+pub const EARSHOT_VOICE_DOUBLES: usize = 10;
 
 /// Opaque engine handle.
 #[derive(Debug)]
@@ -520,6 +531,102 @@ pub unsafe extern "C" fn earshot_trace_paths(
     }
 }
 
+/// The address of Earshot's `YakVcVoiceSink` (`yakvc.h`, version 1), for
+/// Java to offer Yak VC in Fabric's object share under `yakvc:voice_sink`.
+/// It lives for the rest of the process and needs no engine: Yak VC may call
+/// it from its audio thread at any time.
+#[unsafe(no_mangle)]
+pub extern "C" fn earshot_voice_sink() -> *const c_void {
+    std::ptr::from_ref(&voice::SINK.0).cast()
+}
+
+/// The address of the OpenAL buffer callback (`ALBUFFERCALLBACKTYPESOFT`)
+/// that plays a voice stream, for `alBufferCallbackSOFT` with mono float32
+/// at 48 kHz and the stream's pointer from `earshot_voice_stream`.
+#[unsafe(no_mangle)]
+pub extern "C" fn earshot_voice_callback() -> *const c_void {
+    let callback: unsafe extern "C" fn(*mut c_void, *mut c_void, i32) -> i32 = voice::callback;
+    callback as *const c_void
+}
+
+/// Writes to `*out` the pointer that `earshot_voice_callback` plays the
+/// voice of speaker `uuid` (16 bytes) from. It stays valid for the rest of
+/// the process.
+///
+/// # Safety
+/// `uuid` must point to 16 bytes; `out` must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earshot_voice_stream(uuid: *const u8, out: *mut *mut c_void) -> i32 {
+    guard(|| {
+        // SAFETY: the caller guarantees `uuid` points to 16 bytes.
+        let uuid: [u8; 16] = unsafe { array_arg(uuid, "uuid") }?;
+        // SAFETY: the caller guarantees `out` is writable.
+        let out = unsafe { out_arg(out, "out") }?;
+        *out = voice::stream_pointer(uuid);
+        Ok(())
+    })
+}
+
+/// Lists the voice streams heard this session: writes the first `cap`
+/// speakers' UUIDs to `uuids` (16 bytes each) and [`EARSHOT_VOICE_DOUBLES`]
+/// doubles each to `info`, and how many there are to `*count`.
+///
+/// # Safety
+/// `uuids` must be writable for `16 * cap` bytes, `info` for
+/// `EARSHOT_VOICE_DOUBLES * cap` doubles; `count` must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earshot_voice_streams(
+    uuids: *mut u8,
+    info: *mut f64,
+    cap: usize,
+    count: *mut usize,
+) -> i32 {
+    guard(|| {
+        let too_large = || FfiError::invalid("cap is too large");
+        let uuid_bytes = cap.checked_mul(16).ok_or_else(too_large)?;
+        let info_len = cap
+            .checked_mul(EARSHOT_VOICE_DOUBLES)
+            .ok_or_else(too_large)?;
+        // SAFETY: the caller guarantees `uuids` is writable for `16 * cap`
+        // bytes.
+        let uuids = unsafe { slice_mut_arg(uuids, uuid_bytes, "uuids") }?;
+        // SAFETY: the caller guarantees `info` is writable for `info_len`
+        // doubles.
+        let info = unsafe { slice_mut_arg(info, info_len, "info") }?;
+        // SAFETY: the caller guarantees `count` is writable.
+        let count = unsafe { out_arg(count, "count") }?;
+        let streams = voice::streams();
+        let now = std::time::Instant::now();
+        for ((uuid, out), (id, stream, queued)) in uuids
+            .as_chunks_mut::<16>()
+            .0
+            .iter_mut()
+            .zip(info.as_chunks_mut::<EARSHOT_VOICE_DOUBLES>().0)
+            .zip(&streams)
+        {
+            *uuid = *id;
+            let [x, y, z] = stream.heard_from;
+            let age = stream
+                .last_frame
+                .map_or(f64::INFINITY, |at| now.duration_since(at).as_secs_f64());
+            *out = [
+                f64::from(stream.flags),
+                f64::from(stream.range),
+                f64::from(stream.volume),
+                f64::from(stream.occlusion),
+                x,
+                y,
+                z,
+                age,
+                if stream.ended { 1.0 } else { 0.0 },
+                *queued as f64 / 48_000.0,
+            ];
+        }
+        *count = streams.len();
+        Ok(())
+    })
+}
+
 /// Copies this thread's last error message into `buf` (truncated to `cap`,
 /// at a character boundary) and returns its full length, or 0 if there is
 /// none.
@@ -567,8 +674,9 @@ mod tests {
         let mut exported = std::collections::BTreeSet::new();
         for entry in std::fs::read_dir(crate_dir.join("src")).unwrap() {
             let source = std::fs::read_to_string(entry.unwrap().path()).unwrap();
-            for after in source.split("extern \"C\" fn ").skip(1) {
-                exported.insert(identifier(after));
+            for after in source.split("#[unsafe(no_mangle)]\npub ").skip(1) {
+                let (_, function) = after.split_once("extern \"C\" fn ").unwrap();
+                exported.insert(identifier(function));
             }
         }
         let header = std::fs::read_to_string(crate_dir.join("include/earshot.h")).unwrap();
@@ -778,6 +886,58 @@ mod tests {
         assert_eq!(code, EARSHOT_OK);
         let json = std::str::from_utf8(&buf[..needed]).unwrap();
         assert!(json.starts_with("[\"air\",\"rock\",\"wood\""), "{json}");
+    }
+
+    #[test]
+    fn voice_reaches_the_streams_through_the_sink() {
+        let uuid = [42u8; 16];
+        let pcm = [0.5f32; 960];
+        let sink = earshot_voice_sink().cast::<voice::YakVcVoiceSink>();
+        // SAFETY: the sink is a static `YakVcVoiceSink`; the frame and its
+        // samples are valid for the call, as yakvc promises.
+        unsafe {
+            assert_eq!((*sink).version, 1);
+            let frame = voice::YakVcVoiceFrame {
+                uuid,
+                pcm: pcm.as_ptr(),
+                samples: pcm.len(),
+                tick: 1,
+                volume: 1.0,
+                range: 32.0,
+                flags: 0,
+                heard_from: [4.0, 5.0, 6.0],
+                occlusion: 0.0,
+            };
+            ((*sink).frame.unwrap())((*sink).user, &frame);
+        }
+        let mut uuids = [0u8; 16 * 64];
+        let mut info = [0.0; EARSHOT_VOICE_DOUBLES * 64];
+        let (mut count, mut stream) = (0, std::ptr::null_mut());
+        // SAFETY: every buffer is valid for its length.
+        unsafe {
+            assert_eq!(
+                earshot_voice_streams(uuids.as_mut_ptr(), info.as_mut_ptr(), 64, &mut count),
+                EARSHOT_OK
+            );
+            assert_eq!(earshot_voice_stream(uuid.as_ptr(), &mut stream), EARSHOT_OK);
+        }
+        let at = (0..count)
+            .find(|&i| uuids[16 * i..16 * i + 16] == uuid)
+            .unwrap();
+        let info = &info[EARSHOT_VOICE_DOUBLES * at..][..EARSHOT_VOICE_DOUBLES];
+        assert_eq!(info[1..7], [32.0, 1.0, 0.0, 4.0, 5.0, 6.0]);
+        assert!(info[7] < 1.0 && info[8] == 0.0, "{info:?}");
+        assert_eq!(info[9], 0.02);
+        // OpenAL's callback plays it.
+        let callback: unsafe extern "C" fn(*mut c_void, *mut c_void, i32) -> i32 =
+            // SAFETY: `earshot_voice_callback` is that function.
+            unsafe { std::mem::transmute(earshot_voice_callback()) };
+        let mut out = [0.0f32; 960];
+        // SAFETY: `stream` came from `earshot_voice_stream`; `out` is
+        // writable for its length in bytes.
+        let bytes = unsafe { callback(stream, out.as_mut_ptr().cast(), 960 * 4) };
+        assert_eq!(bytes, 960 * 4);
+        assert_eq!(out, pcm);
     }
 
     #[test]

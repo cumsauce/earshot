@@ -2,6 +2,7 @@ package io.github.cumsauce.earshot.command;
 
 import com.mojang.brigadier.arguments.IntegerArgumentType;
 import io.github.cumsauce.earshot.audio.SoundShaper;
+import io.github.cumsauce.earshot.audio.VoicePlayer;
 import io.github.cumsauce.earshot.natives.NativeBridge;
 import io.github.cumsauce.earshot.world.WorldMirror;
 import java.lang.foreign.MemorySegment;
@@ -54,6 +55,11 @@ public final class EarshotCommands {
 						.then(ClientCommands.literal("sources").executes(c -> sources(shaper, c.getSource())))
 						.then(ClientCommands.literal("room").executes(c -> room(shaper, c.getSource())))
 						.then(reverbModes(shaper))
+						.then(ClientCommands.literal("voice").executes(c -> voice(shaper.voice(), c.getSource()))
+								.then(ClientCommands.literal("on")
+										.executes(c -> setVoice(shaper.voice(), c.getSource(), true)))
+								.then(ClientCommands.literal("off")
+										.executes(c -> setVoice(shaper.voice(), c.getSource(), false))))
 						.then(ClientCommands.literal("stats").executes(c -> stats(bridge, engine, mirror, c.getSource())))));
 	}
 
@@ -130,12 +136,36 @@ public final class EarshotCommands {
 				.forEach(s -> {
 					boolean round = s.heardFrom().distanceTo(s.position()) > 0.5;
 					source.sendFeedback(Component.literal(String.format(Locale.ROOT,
-							"  %.0f blocks away: low %s, mid %s, high %s%s", s.position().distanceTo(eye),
+							"  %s%.0f blocks away: low %s, mid %s, high %s%s", s.voice() ? "voice " : "",
+							s.position().distanceTo(eye),
 							db(s.gains()[0]), db(s.gains()[1]), db(s.gains()[2]),
 							round ? String.format(Locale.ROOT, ", round from %.0f %.0f %.0f", s.heardFrom().x,
 									s.heardFrom().y, s.heardFrom().z) : "")));
 				});
 		return 1;
+	}
+
+	private static int voice(VoicePlayer voice, FabricClientCommandSource source) {
+		source.sendFeedback(Component.literal(voice.offered()
+				? "Yak VC's voice plays through Earshot (if Yak VC is installed)"
+				: "Yak VC's voice plays through its own speakers"));
+		Vec3 eye = source.getPlayer().getEyePosition();
+		for (VoicePlayer.Status v : voice.status()) {
+			var info = source.getClient().getConnection() == null ? null
+					: source.getClient().getConnection().getPlayerInfo(v.speaker());
+			String who = info != null ? info.getProfile().name() : v.speaker().toString();
+			String where = v.position() == null ? "centred"
+					: String.format(Locale.ROOT, "%.0f blocks away, low %s, high %s", v.position().distanceTo(eye),
+							db(v.gains()[0]), db(v.gains()[2]));
+			source.sendFeedback(Component.literal(String.format(Locale.ROOT, "  %s: %s, %s, %.0f ms queued", who,
+					v.playing() ? "playing" : "stopped", where, 1000 * v.queuedSeconds())));
+		}
+		return 1;
+	}
+
+	private static int setVoice(VoicePlayer voice, FabricClientCommandSource source, boolean on) {
+		voice.setEnabled(on);
+		return voice(voice, source);
 	}
 
 	private static com.mojang.brigadier.builder.LiteralArgumentBuilder<FabricClientCommandSource> reverbModes(

@@ -2,6 +2,7 @@ package io.github.cumsauce.earshot.gametest;
 
 import io.github.cumsauce.earshot.EarshotClient;
 import io.github.cumsauce.earshot.audio.SoundShaper;
+import io.github.cumsauce.earshot.audio.VoicePlayer;
 import io.github.cumsauce.earshot.natives.NativeBridge;
 import io.github.cumsauce.earshot.openal.OpenAlProbe;
 import io.github.cumsauce.earshot.world.AcousticMaterial;
@@ -15,6 +16,7 @@ import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.function.Predicate;
 import net.fabricmc.fabric.api.client.gametest.v1.FabricClientGameTest;
 import net.fabricmc.fabric.api.client.gametest.v1.context.ClientGameTestContext;
@@ -38,6 +40,7 @@ import net.minecraft.world.phys.Vec3;
  * <li>blocks map to sensible materials, once the world's tags are in;
  * <li>the world mirror copies a superflat world, follows block changes, and a wall built into it muffles;
  * <li>a playing sound is muffled in a closed box, comes round through a doorway, and is clear in the open (M2);
+ * <li>Yak VC's voice, through Earshot's voice sink, is shaped the same way and played as it comes (M4);
  * <li>the reverb is nearly dry on open ground and rings in a stone hall (M3);
  * <li>{@code /earshot rays} draws traced paths (screenshot {@code rays-in-a-glass-room}).
  * </ul>
@@ -121,6 +124,33 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 			awaitSound(context, shaper, inside, s -> s.gains()[0] > 0.95f && s.heardFrom().distanceTo(inside) < 0.3,
 					"in the open");
 			context.runOnClient(mc -> mc.getSoundManager().stop());
+
+			// M4: a voice handed to Earshot's voice sink, as Yak VC would, is shaped like any other sound: muffled in
+			// the closed box, clear in the open. OpenAL plays it as it comes, so its queue stays short; once the
+			// speaker stops, its source goes.
+			if (!report.callbackBuffer()) throw new AssertionError("the game's OpenAL has no callback buffers");
+			UUID speaker = UUID.fromString("00000000-0000-4000-8000-0000000000e5");
+			singleplayer.getServer().runCommand("fill 6 -61 -3 11 -55 4 stone hollow");
+			context.waitFor(mc -> bridge.transmission(engine, LISTENER, insideXyz)[0] < 0.05f, 5 * 20);
+			try (FakeSpeaker ignored = FakeSpeaker.start(speaker, inside)) {
+				awaitSound(context, shaper, inside, s -> s.voice() && s.gains()[0] < 0.1f, "voice in a closed box");
+				singleplayer.getServer().runCommand("fill 6 -61 -3 11 -55 4 air");
+				awaitSound(context, shaper, inside, s -> s.voice() && s.gains()[0] > 0.95f, "voice in the open");
+				context.waitTicks(10);
+				VoicePlayer.Status voice = shaper.voice().status().stream()
+						.filter(v -> v.speaker().equals(speaker))
+						.findFirst()
+						.orElseThrow(() -> new AssertionError("no voice: " + shaper.voice().status()));
+				if (!voice.playing() || voice.queuedSeconds() > 0.15) {
+					throw new AssertionError("the voice isn't played as it comes: " + voice);
+				}
+			}
+			try {
+				context.waitFor(mc -> shaper.voice().status().stream().noneMatch(v -> v.speaker().equals(speaker)),
+						5 * 20);
+			} catch (RuntimeException | AssertionError e) {
+				throw new AssertionError("a silent voice kept its source: " + shaper.voice().status(), e);
+			}
 
 			// M3: the reverb follows the room. Out on the superflat it is nearly dry; shut in a stone hall it rings.
 			double[] outside = awaitRoom(context, shaper, r -> r[4] < 0.7 && r[1] < 0.6, "on open ground");

@@ -14,8 +14,10 @@
  * 3: `earshot_set_listener` and `earshot_hear`.
  * 4: `earshot_room`.
  * 5: `earshot_impulse_response`.
+ * 6: Yak VC's voice: `earshot_voice_sink`, `earshot_voice_callback`,
+ *    `earshot_voice_stream` and `earshot_voice_streams`.
  */
-#define EARSHOT_ABI_VERSION 5
+#define EARSHOT_ABI_VERSION 6
 
 #define EARSHOT_OK 0
 
@@ -55,6 +57,14 @@
  * delay, echo time, echo depth).
  */
 #define EARSHOT_ROOM_DOUBLES 21
+
+/**
+ * Doubles per stream from `earshot_voice_streams`: the latest frame's flags
+ * (`YAKVC_VOICE_*`), range, volume, occlusion and where it is heard from as
+ * `x, y, z`; seconds since that frame (infinite before one); 1 if the
+ * stream has ended (else 0); and seconds of voice queued.
+ */
+#define EARSHOT_VOICE_DOUBLES 10
 
 /**
  * Opaque engine handle.
@@ -237,6 +247,42 @@ int32_t earshot_trace_paths(struct EarshotEngine *engine,
                             size_t cap,
                             size_t *written,
                             double *stats);
+
+/**
+ * The address of Earshot's `YakVcVoiceSink` (`yakvc.h`, version 1), for
+ * Java to offer Yak VC in Fabric's object share under `yakvc:voice_sink`.
+ * It lives for the rest of the process and needs no engine: Yak VC may call
+ * it from its audio thread at any time.
+ */
+const void *earshot_voice_sink(void);
+
+/**
+ * The address of the OpenAL buffer callback (`ALBUFFERCALLBACKTYPESOFT`)
+ * that plays a voice stream, for `alBufferCallbackSOFT` with mono float32
+ * at 48 kHz and the stream's pointer from `earshot_voice_stream`.
+ */
+const void *earshot_voice_callback(void);
+
+/**
+ * Writes to `*out` the pointer that `earshot_voice_callback` plays the
+ * voice of speaker `uuid` (16 bytes) from. It stays valid for the rest of
+ * the process.
+ *
+ * # Safety
+ * `uuid` must point to 16 bytes; `out` must be writable.
+ */
+int32_t earshot_voice_stream(const uint8_t *uuid, void **out);
+
+/**
+ * Lists the voice streams heard this session: writes the first `cap`
+ * speakers' UUIDs to `uuids` (16 bytes each) and [`EARSHOT_VOICE_DOUBLES`]
+ * doubles each to `info`, and how many there are to `*count`.
+ *
+ * # Safety
+ * `uuids` must be writable for `16 * cap` bytes, `info` for
+ * `EARSHOT_VOICE_DOUBLES * cap` doubles; `count` must be writable.
+ */
+int32_t earshot_voice_streams(uint8_t *uuids, double *info, size_t cap, size_t *count);
 
 /**
  * Copies this thread's last error message into `buf` (truncated to `cap`,
