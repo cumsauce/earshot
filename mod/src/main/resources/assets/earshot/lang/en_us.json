@@ -2,6 +2,7 @@
 	"earshot.sound_options.acoustics": "Acoustics...",
 	"key.category.earshot.keys": "Earshot",
 	"key.earshot.bypass": "Bypass (A/B)",
+	"key.earshot.debug_overlay": "Debug Overlay",
 	"earshot.bypass.on": "Earshot bypassed: sounds as the game plays them",
 	"earshot.bypass.off": "Earshot on",
 	"earshot.settings.title": "Acoustics",

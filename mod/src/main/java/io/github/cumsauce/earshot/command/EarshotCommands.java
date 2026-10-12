@@ -67,6 +67,10 @@ public final class EarshotCommands {
 										.executes(c -> setVoice(shaper.voice(), c.getSource(), true)))
 								.then(ClientCommands.literal("off")
 										.executes(c -> setVoice(shaper.voice(), c.getSource(), false))))
+						.then(ClientCommands.literal("overlay").executes(c -> {
+							io.github.cumsauce.earshot.ui.DebugOverlay.toggle();
+							return 1;
+						}))
 						.then(ClientCommands.literal("material").executes(c -> material(mirror, c.getSource())))
 						.then(ClientCommands.literal("materials").then(ClientCommands.literal("reload")
 								.executes(c -> reloadMaterials(mirror, c.getSource()))))

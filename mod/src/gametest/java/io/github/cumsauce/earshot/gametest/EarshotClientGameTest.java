@@ -231,15 +231,23 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 			}
 			singleplayer.getServer().runCommand("fill -10 -61 -10 10 -50 10 air");
 			singleplayer.getServer().runCommand("fill -10 -61 -10 10 -61 10 grass_block");
+			// Removing the hall reaches the world copy: its east wall is gone.
+			context.waitFor(mc -> bridge.transmission(engine, new double[] {9.5, -55.5, 0.5},
+					new double[] {11.5, -55.5, 0.5})[1] > 0.99, 5 * 20);
+			awaitRoom(context, shaper, r -> r[4] < 0.7, "after the hall is gone");
 
 			// The rays drawn by /earshot rays, in a glass room: daylight gets in, and glass reflects.
 			singleplayer.getServer().runCommand("time set noon");
 			singleplayer.getServer().runCommand("fill -6 -61 -4 6 -53 12 glass hollow");
 			double[] beyondGlass = {0.5, -59.5, 14.5};
 			context.waitFor(mc -> bridge.transmission(engine, LISTENER, beyondGlass)[0] < 0.5f, 5 * 20);
+			// Glass rings, but its panes soak up the lows: the lows die first.
+			awaitRoom(context, shaper, r -> r[4] > 0.98 && r[0] < r[1] && r[1] < r[2], "in glass");
 			context.runOnClient(mc -> mc.player.connection.sendCommand("earshot rays 256 6"));
+			context.runOnClient(mc -> mc.player.connection.sendCommand("earshot overlay"));
 			context.waitTicks(2);
 			context.takeScreenshot("rays-in-a-glass-room");
+			context.runOnClient(mc -> mc.player.connection.sendCommand("earshot overlay"));
 
 			// The settings, where players look first: Options → Music & Sounds → Acoustics.
 			context.setScreen(() -> new SoundOptionsScreen(null, net.minecraft.client.Minecraft.getInstance().options));

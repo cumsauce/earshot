@@ -136,6 +136,9 @@ public final class EarshotClient implements ClientModInitializer {
 		config = EarshotConfig.load(configDir().resolve("earshot.json"));
 		SoundOptionsButton.register();
 		BypassKey.register();
+		net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry.addLast(
+				net.minecraft.resources.Identifier.fromNamespaceAndPath("earshot", "debug"),
+				new io.github.cumsauce.earshot.ui.DebugOverlay());
 		NativeBridge bridge;
 		try {
 			bridge = new NativeBridge(NativeLoader.load(configDir()));
