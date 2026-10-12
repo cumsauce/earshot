@@ -35,8 +35,20 @@ public final class ConvolutionReverb {
 	/** The orientation is set again once the listener turns this far (cosine of about 3°). */
 	private static final float TURNED = 0.9986f;
 
-	private final NativeBridge bridge;
-	private final MemorySegment engine;
+	/** Makes a response from what it depends on (a room, a source's place) and a seed; empty when it can't yet. */
+	@FunctionalInterface
+	public interface Maker {
+		float[] make(double[] madeFrom, long seed);
+	}
+
+	/** Whether a response made from {@code madeFrom} is out of date for {@code now}. */
+	@FunctionalInterface
+	public interface Changed {
+		boolean changed(double[] madeFrom, double[] now);
+	}
+
+	private final Maker maker;
+	private final Changed changed;
 	private final ExecutorService loader = Executors.newSingleThreadExecutor(task -> {
 		Thread thread = new Thread(task, "earshot-ir");
 		thread.setDaemon(true);
@@ -63,9 +75,15 @@ public final class ConvolutionReverb {
 	private long seed;
 	private int loads;
 
+	/** The listener's reverb: responses for the room around the listener, made again as it changes. */
 	public ConvolutionReverb(NativeBridge bridge, MemorySegment engine) {
-		this.bridge = bridge;
-		this.engine = engine;
+		this((room, seed) -> bridge.impulseResponse(engine, SAMPLE_RATE, MAX_SECONDS, seed),
+				ConvolutionReverb::roomChanged);
+	}
+
+	public ConvolutionReverb(Maker maker, Changed changed) {
+		this.maker = maker;
+		this.changed = changed;
 	}
 
 	/** The two slots to send to, or zeros before they exist. On the sound thread. */
@@ -87,7 +105,8 @@ public final class ConvolutionReverb {
 	 * Called every tick on the sound thread: makes the slots if this context has none, moves any crossfade on,
 	 * turns the responses with the listener, and starts loading a new response when the room has changed.
 	 *
-	 * @param room        the room ({@link NativeBridge#room}'s doubles)
+	 * @param room        what the response depends on: for the listener's, the room ({@link NativeBridge#room}'s
+	 *                    doubles)
 	 * @param orientation the world's -z and +y axes in the listener's frame: at x, y, z, then up x, y, z
 	 */
 	public synchronized void tick(double[] room, float[] orientation) {
@@ -103,15 +122,39 @@ public final class ConvolutionReverb {
 			}
 		}
 		long now = System.nanoTime();
-		if (!loading && incoming < 0 && now - checkedAt >= CHECK_EVERY_NANOS && changed(room)) {
+		if (!loading && incoming < 0 && now - checkedAt >= CHECK_EVERY_NANOS
+				&& (madeFrom.length == 0 ? room.length > 0 && maker != null : changed.changed(madeFrom, room))) {
 			checkedAt = now;
 			loading = true;
 			madeFrom = room.clone();
+			double[] from = madeFrom;
 			int into = active == 0 ? 1 : 0;
 			int forGeneration = generation;
 			long forSeed = ++seed;
-			loader.execute(() -> load(into, forGeneration, forSeed));
+			loader.execute(() -> load(into, forGeneration, forSeed, from));
 		}
+	}
+
+	/**
+	 * Lets go of the slots, effects and responses (on the sound thread), for when nothing will send to them: an idle
+	 * convolution still costs its share of the mixer. The next tick makes them again.
+	 */
+	public synchronized void release() {
+		if (slots[0] == 0) return;
+		for (int i = 0; i < 2; i++) {
+			EXTEfx.alAuxiliaryEffectSloti(slots[i], EXTEfx.AL_EFFECTSLOT_EFFECT, EXTEfx.AL_EFFECT_NULL);
+			EXTEfx.alAuxiliaryEffectSloti(slots[i], AL10.AL_BUFFER, 0);
+			EXTEfx.alDeleteAuxiliaryEffectSlots(slots[i]);
+			EXTEfx.alDeleteEffects(effects[i]);
+			if (buffers[i] != 0) AL10.alDeleteBuffers(buffers[i]);
+		}
+		int error = AL10.alGetError();
+		if (error != AL10.AL_NO_ERROR) {
+			// A source still sending to a slot keeps it alive: it leaks until the context goes.
+			EarshotClient.LOGGER.warn("Releasing a convolution reverb failed (OpenAL error 0x{})",
+					Integer.toHexString(error));
+		}
+		contextClosing();
 	}
 
 	/** The game is closing its context, which frees every object in it: forget them all. */
@@ -148,14 +191,16 @@ public final class ConvolutionReverb {
 	 * to fade in. The OpenAL calls run outside the lock: the sound thread doesn't touch this slot until it is handed
 	 * over.
 	 */
-	private void load(int into, int forGeneration, long forSeed) {
+	private void load(int into, int forGeneration, long forSeed, double[] from) {
 		try {
-			float[] ir = bridge.impulseResponse(engine, SAMPLE_RATE, MAX_SECONDS, forSeed);
+			float[] ir = maker.make(from, forSeed);
 			int slot;
 			int effect;
 			synchronized (this) {
 				if (forGeneration != generation || ir.length == 0) {
 					loading = false;
+					// Nothing to make it from yet: try again next time.
+					if (ir.length == 0) madeFrom = new double[0];
 					return;
 				}
 				slot = slots[into];
@@ -221,8 +266,7 @@ public final class ConvolutionReverb {
 	 * Whether {@code room} differs enough from the one the playing response was made from to make another: the mid
 	 * decay by 10 %, the enclosure by 0.1, or the mean free path by 15 %.
 	 */
-	private boolean changed(double[] room) {
-		if (madeFrom.length == 0) return room.length > 0 && room[4] > 0;
+	static boolean roomChanged(double[] madeFrom, double[] room) {
 		return Math.abs(Math.log(room[1] / madeFrom[1])) > Math.log(1.1)
 				|| Math.abs(room[4] - madeFrom[4]) > 0.1
 				|| Math.abs(Math.log((room[3] + 1) / (madeFrom[3] + 1))) > Math.log(1.15);

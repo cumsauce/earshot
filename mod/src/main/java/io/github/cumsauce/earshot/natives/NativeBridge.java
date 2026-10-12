@@ -31,7 +31,7 @@ import java.util.UUID;
  */
 public final class NativeBridge {
 	/** Must equal {@code EARSHOT_ABI_VERSION} in {@code earshot.h}. */
-	public static final int ABI_VERSION = 11;
+	public static final int ABI_VERSION = 12;
 	/** Blocks in a section, in Minecraft's order. */
 	public static final int SECTION_BLOCKS = 4096;
 	/** Doubles per traced leg: from x, y, z, to x, y, z, energy, escaped (1 or 0). */
@@ -85,6 +85,7 @@ public final class NativeBridge {
 	private final MethodHandle roomAt;
 	private final MethodHandle early;
 	private final MethodHandle impulseResponse;
+	private final MethodHandle impulseResponseFor;
 	private final MethodHandle setQuality;
 	private final MethodHandle stats;
 	private final MethodHandle voiceSink;
@@ -123,6 +124,10 @@ public final class NativeBridge {
 		hear = linker.downcallHandle(find(library, "earshot_hear"),
 				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, SIZE_T, ADDRESS), critical);
 		room = linker.downcallHandle(find(library, "earshot_room"), FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS),
+				critical);
+		impulseResponseFor = linker.downcallHandle(find(library, "earshot_impulse_response_for"),
+				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, JAVA_INT, JAVA_FLOAT, JAVA_LONG,
+						ADDRESS, SIZE_T, ADDRESS),
 				critical);
 		early = linker.downcallHandle(find(library, "earshot_early"),
 				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, SIZE_T, ADDRESS), critical);
@@ -399,6 +404,25 @@ public final class NativeBridge {
 	public static byte[] uuidBytes(UUID uuid) {
 		return ByteBuffer.allocate(16).putLong(uuid.getMostSignificantBits()).putLong(uuid.getLeastSignificantBits())
 				.array();
+	}
+
+	/**
+	 * {@link #impulseResponse} for a sound at {@code source} as the listener hears it: the room measured round it with
+	 * {@code rays} × {@code bounces} (on this thread) and its reflections off its own walls. Empty before the listener
+	 * is known.
+	 */
+	public float[] impulseResponseFor(MemorySegment engine, double[] source, int rays, int bounces, int sampleRate,
+			float maxSeconds, long seed) {
+		requireLength(source, 3, "source");
+		long[] needed = new long[1];
+		check((int) invoke(impulseResponseFor, engine, MemorySegment.ofArray(source), rays, bounces, sampleRate,
+				maxSeconds, seed, MemorySegment.ofArray(new float[0]), 0L, MemorySegment.ofArray(needed)));
+		while (true) {
+			float[] out = new float[(int) needed[0]];
+			check((int) invoke(impulseResponseFor, engine, MemorySegment.ofArray(source), rays, bounces, sampleRate,
+					maxSeconds, seed, MemorySegment.ofArray(out), (long) out.length, MemorySegment.ofArray(needed)));
+			if (needed[0] <= out.length) return needed[0] == out.length ? out : Arrays.copyOf(out, (int) needed[0]);
+		}
 	}
 
 	/** Throws with this thread's {@code earshot_last_error} message unless {@code code} is 0. */

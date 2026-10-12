@@ -159,9 +159,11 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 			// the box stood).
 			singleplayer.getServer().runCommand("fill 6 -61 -3 11 -61 4 grass_block");
 			context.runOnClient(mc -> EarshotClient.apply(settings.withPreset(EarshotConfig.Preset.ULTRA)));
-			awaitSound(context, shaper, inside, SoundShaper.Snapshot::early, "on Ultra, off the ground");
+			// With convolution, the loudest gets a whole reverb of its own instead, its early reflections in it.
+			awaitSound(context, shaper, inside, report.convolutionEffect() ? SoundShaper.Snapshot::ownReverb
+					: SoundShaper.Snapshot::early, "on Ultra, off the ground");
 			context.runOnClient(mc -> EarshotClient.apply(settings));
-			awaitSound(context, shaper, inside, s -> !s.early(), "back off Ultra");
+			awaitSound(context, shaper, inside, s -> !s.early() && !s.ownReverb(), "back off Ultra");
 			context.runOnClient(mc -> mc.getSoundManager().stop());
 
 			// M4: a voice handed to Earshot's voice sink, as Yak VC would, is shaped like any other sound: muffled in

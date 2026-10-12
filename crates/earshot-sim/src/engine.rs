@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 use earshot_world::{Vec3, World};
 
 use crate::{
-    Field, Heard, Quality, Reflection, Room, Stats, echoes, hear, impulse_response, measure,
-    measure_threads, measure_with_early,
+    Field, Heard, Quality, Reflection, Room, Stats, early_taps, echoes, hear, impulse_response,
+    measure, measure_threads, measure_with_early,
 };
 
 /// The field is rebuilt once the listener moves this far from where it was
@@ -177,6 +177,38 @@ impl Engine {
     pub fn room_at(&self, at: Vec3, rays: u32, bounces: u32, seed: u64) -> Room {
         let reach = self.quality().room_reach;
         self.world(|world| measure(world, open_near(world, at), rays, bounces, reach, seed))
+    }
+
+    /// An impulse response for a sound at `source` as the listener hears it
+    /// (see [`impulse_response`]): the room measured round the sound with
+    /// `rays` × `bounces`, and its first reflections off the walls round it
+    /// as they reach the listener, timed after its direct sound. For the
+    /// loudest sounds' own reverb, in place of the listener's. None before
+    /// the listener is known.
+    #[allow(clippy::too_many_arguments)]
+    pub fn impulse_response_for(
+        &self,
+        source: Vec3,
+        rays: u32,
+        bounces: u32,
+        sample_rate: u32,
+        max_seconds: f32,
+        seed: u64,
+    ) -> Option<Vec<f32>> {
+        let listener = (*self
+            .shared
+            .listener
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner))?;
+        let room = self.room_at(source, rays, bounces, seed);
+        let taps = self.world(|world| early_taps(world, listener, source));
+        Some(impulse_response(
+            &room,
+            &taps,
+            sample_rate,
+            max_seconds,
+            seed,
+        ))
     }
 
     /// The current pathing field, if one has been built.
@@ -587,6 +619,35 @@ mod tests {
         );
         let outside = engine.room_at(Vec3::new(30.0, 3.0, 3.0), 512, 8, 1);
         assert!(outside.enclosure < 0.5, "{outside:?}");
+    }
+
+    #[test]
+    fn a_sound_gets_a_response_of_its_own_room() {
+        let engine = Engine::start();
+        // A closed stone cell round the sound, the listener outside it.
+        engine.world_mut(|world| {
+            for a in -1..=6 {
+                for b in -1..=6 {
+                    for wall in [-1, 6] {
+                        world.set_block(wall, a, b, Material::Rock);
+                        world.set_block(a, wall, b, Material::Rock);
+                        world.set_block(a, b, wall, Material::Rock);
+                    }
+                }
+            }
+        });
+        assert!(
+            engine
+                .impulse_response_for(Vec3::new(3.0, 3.0, 3.0), 512, 8, 48_000, 1.5, 1)
+                .is_none(),
+            "no listener yet"
+        );
+        engine.set_listener(Vec3::new(20.0, 3.0, 3.0));
+        let ir = engine
+            .impulse_response_for(Vec3::new(3.0, 3.0, 3.0), 512, 8, 48_000, 1.5, 1)
+            .unwrap();
+        // The cell rings: its response runs for its decay, not open air's tenth of a second.
+        assert!(ir.len() / 4 > 48_000 / 5, "{} samples", ir.len() / 4);
     }
 
     #[test]

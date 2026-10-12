@@ -22,8 +22,9 @@
  *    `earshot_voice_own`.
  * 10: `earshot_early`.
  * 11: `earshot_set_quality` takes the room rays' reach.
+ * 12: `earshot_impulse_response_for`.
  */
-#define EARSHOT_ABI_VERSION 11
+#define EARSHOT_ABI_VERSION 12
 
 #define EARSHOT_OK 0
 
@@ -289,6 +290,28 @@ int32_t earshot_impulse_response(struct EarshotEngine *engine,
                                  float *out,
                                  size_t cap,
                                  size_t *needed);
+
+/**
+ * [`earshot_impulse_response`] for a sound at `source` (3 doubles) as the
+ * listener hears it: the room measured round the sound with `rays` ×
+ * `bounces` (on the calling thread), and its first reflections off the
+ * walls round it, timed after its direct sound. `*needed` is 0 before the
+ * listener is known.
+ *
+ * # Safety
+ * `engine` must be live; `source` must point to 3 doubles; `out` must be
+ * writable for `cap` floats; `needed` must be writable.
+ */
+int32_t earshot_impulse_response_for(struct EarshotEngine *engine,
+                                     const double *source,
+                                     uint32_t rays,
+                                     uint32_t bounces,
+                                     uint32_t sample_rate,
+                                     float max_seconds,
+                                     uint64_t seed,
+                                     float *out,
+                                     size_t cap,
+                                     size_t *needed);
 
 /**
  * Traces `rays` paths from `origin`, evenly spread, with up to `bounces`

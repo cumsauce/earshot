@@ -36,7 +36,8 @@ use crate::guard::{FfiError, array_arg, guard, out_arg, slice_arg, slice_mut_arg
 ///    `earshot_voice_own`.
 /// 10: `earshot_early`.
 /// 11: `earshot_set_quality` takes the room rays' reach.
-pub const EARSHOT_ABI_VERSION: u32 = 11;
+/// 12: `earshot_impulse_response_for`.
+pub const EARSHOT_ABI_VERSION: u32 = 12;
 
 pub const EARSHOT_OK: i32 = 0;
 /// A null pointer, unknown material or out-of-range value.
@@ -576,6 +577,60 @@ pub unsafe extern "C" fn earshot_impulse_response(
             let ir = e
                 .engine
                 .impulse_response(sample_rate, max_seconds, seed)
+                .unwrap_or_default();
+            if let Some(dest) = out.get_mut(..ir.len()) {
+                dest.copy_from_slice(&ir);
+            }
+            *needed = ir.len();
+            Ok(())
+        })
+    }
+}
+
+/// [`earshot_impulse_response`] for a sound at `source` (3 doubles) as the
+/// listener hears it: the room measured round the sound with `rays` ×
+/// `bounces` (on the calling thread), and its first reflections off the
+/// walls round it, timed after its direct sound. `*needed` is 0 before the
+/// listener is known.
+///
+/// # Safety
+/// `engine` must be live; `source` must point to 3 doubles; `out` must be
+/// writable for `cap` floats; `needed` must be writable.
+#[allow(clippy::too_many_arguments)]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earshot_impulse_response_for(
+    engine: *mut EarshotEngine,
+    source: *const f64,
+    rays: u32,
+    bounces: u32,
+    sample_rate: u32,
+    max_seconds: f32,
+    seed: u64,
+    out: *mut f32,
+    cap: usize,
+    needed: *mut usize,
+) -> i32 {
+    // SAFETY: the caller guarantees `engine` is live.
+    unsafe {
+        with_engine(engine, |e| {
+            // SAFETY: the caller guarantees `source` points to 3 doubles.
+            let source = point_arg(source, "source")?;
+            // SAFETY: the caller guarantees `needed` is writable.
+            let needed = out_arg(needed, "needed")?;
+            // SAFETY: the caller guarantees `out` is writable for `cap` floats.
+            let out = slice_mut_arg(out, cap, "out")?;
+            if !(8_000..=192_000).contains(&sample_rate)
+                || !(0.1..=10.0).contains(&max_seconds)
+                || !(1..=1 << 14).contains(&rays)
+                || bounces > 64
+            {
+                return Err(FfiError::invalid(
+                    "rate, length, rays or bounces out of range",
+                ));
+            }
+            let ir = e
+                .engine
+                .impulse_response_for(source, rays, bounces, sample_rate, max_seconds, seed)
                 .unwrap_or_default();
             if let Some(dest) = out.get_mut(..ir.len()) {
                 dest.copy_from_slice(&ir);

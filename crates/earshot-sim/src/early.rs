@@ -46,11 +46,29 @@ impl Early {
 /// `(1 - absorption) * (1 - scattering)`, times the inverse-square loss of
 /// the longer way against the direct one.
 pub fn early_reflections(world: &World, listener: Vec3, source: Vec3) -> Early {
+    let taps = early_taps(world, listener, source);
+    if taps.is_empty() {
+        return Early::NONE;
+    }
+    let energy: f32 = taps.iter().map(|t| t.energy).sum();
+    let sum = taps
+        .iter()
+        .fold(Vec3::ZERO, |sum, t| sum + t.direction * f64::from(t.energy));
+    Early {
+        energy,
+        delay: taps.iter().map(|t| t.delay).fold(f32::INFINITY, f32::min),
+        direction: sum * (1.0 / f64::from(energy)),
+        count: taps.len() as u32,
+    }
+}
+
+/// [`early_reflections`] one by one: each first reflection of a sound at
+/// `source` heard at `listener`, from the point where it bounces, as late
+/// as its way is longer than the direct one, with its energy relative to
+/// the direct sound in the open.
+pub fn early_taps(world: &World, listener: Vec3, source: Vec3) -> Vec<Reflection> {
     let direct = (source - listener).length().max(0.5);
-    let mut energy = 0.0f32;
-    let mut first = f32::INFINITY;
-    let mut sum = Vec3::ZERO;
-    let mut count = 0;
+    let mut taps = Vec::new();
     for axis in 0..3 {
         for sign in [-1i32, 1] {
             let Some(plane) = wall_along(world, source, axis, sign) else {
@@ -80,22 +98,14 @@ pub fn early_reflections(world: &World, listener: Vec3, source: Vec3) -> Early {
             let way = (image - listener).length();
             let acoustics = wall.acoustics();
             let mirrored = (1.0 - acoustics.absorption[1]) * (1.0 - acoustics.scattering);
-            let e = mirrored * (direct / way).powi(2) as f32;
-            energy += e;
-            first = first.min(((way - direct) / SPEED_OF_SOUND) as f32);
-            sum = sum + (point - listener).normalized() * f64::from(e);
-            count += 1;
+            taps.push(Reflection {
+                direction: (point - listener).normalized(),
+                delay: ((way - direct) / SPEED_OF_SOUND) as f32,
+                energy: mirrored * (direct / way).powi(2) as f32,
+            });
         }
     }
-    if count == 0 {
-        return Early::NONE;
-    }
-    Early {
-        energy,
-        delay: first,
-        direction: sum * (1.0 / f64::from(energy)),
-        count,
-    }
+    taps
 }
 
 /// How far echoes are looked for, in blocks: as far as the world is copied.
