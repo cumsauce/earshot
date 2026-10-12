@@ -31,13 +31,16 @@ import java.util.UUID;
  */
 public final class NativeBridge {
 	/** Must equal {@code EARSHOT_ABI_VERSION} in {@code earshot.h}. */
-	public static final int ABI_VERSION = 12;
+	public static final int ABI_VERSION = 13;
 	/** Blocks in a section, in Minecraft's order. */
 	public static final int SECTION_BLOCKS = 4096;
 	/** Doubles per traced leg: from x, y, z, to x, y, z, energy, escaped (1 or 0). */
 	public static final int SEGMENT_DOUBLES = 8;
-	/** Doubles per source from {@link #hear}: low, mid and high gains, where it seems to come from, how far it travels. */
-	public static final int HEARD_DOUBLES = 7;
+	/**
+	 * Doubles per source from {@link #hear}: low, mid and high gains, where it seems to come from, how far it travels,
+	 * and the narrowest opening on its way in square blocks (64 when open).
+	 */
+	public static final int HEARD_DOUBLES = 8;
 	/**
 	 * Doubles from {@link #room}: decay low, mid and high (seconds), mean free path, enclosure, first reflection
 	 * distance, scattering, then the 14 EAX reverb parameters from {@link #EAX_FIRST} on.

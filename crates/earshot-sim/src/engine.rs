@@ -655,6 +655,7 @@ mod tests {
         let engine = Engine::start();
         let listener = Vec3::new(0.5, 0.5, 0.5);
         let mut out = [Heard {
+            aperture: 0.0,
             gains: [0.0; 3],
             heard_from: Vec3::ZERO,
             path_length: 0.0,

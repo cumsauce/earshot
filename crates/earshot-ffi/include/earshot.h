@@ -23,8 +23,9 @@
  * 10: `earshot_early`.
  * 11: `earshot_set_quality` takes the room rays' reach.
  * 12: `earshot_impulse_response_for`.
+ * 13: `earshot_hear` adds the opening's size.
  */
-#define EARSHOT_ABI_VERSION 12
+#define EARSHOT_ABI_VERSION 13
 
 #define EARSHOT_OK 0
 
@@ -51,9 +52,11 @@
 
 /**
  * Doubles per source from `earshot_hear`: the low, mid and high gains, where
- * it seems to come from as `x, y, z`, and how far it travels.
+ * it seems to come from as `x, y, z`, how far it travels, and how big the
+ * opening it comes round through is, in square blocks (64 when straight or
+ * wide open).
  */
-#define EARSHOT_HEARD_DOUBLES 7
+#define EARSHOT_HEARD_DOUBLES 8
 
 /**
  * Doubles from `earshot_room`: the room (decay low, mid and high in

@@ -30,6 +30,9 @@ pub struct Heard {
     pub heard_from: Vec3,
     /// How far it travels, in blocks.
     pub path_length: f64,
+    /// How big the opening it comes round through is, in square blocks
+    /// ([`crate::MAX_APERTURE`] when it comes straight).
+    pub aperture: f32,
 }
 
 /// The share of energy per band that gets straight from `source` to
@@ -90,6 +93,7 @@ pub fn hear(
             gains: [1.0; BANDS],
             heard_from: source,
             path_length,
+            aperture: crate::MAX_APERTURE,
         };
     }
     let direct = occlusion(world, listener, source, rays);
@@ -97,6 +101,7 @@ pub fn hear(
         gains: direct,
         heard_from: source,
         path_length,
+        aperture: crate::MAX_APERTURE,
     };
     if direct[1] >= CLEAR {
         return straight;
@@ -120,6 +125,7 @@ pub fn hear(
         gains,
         heard_from: route.heard_from,
         path_length: route.length,
+        aperture: route.aperture,
     }
 }
 

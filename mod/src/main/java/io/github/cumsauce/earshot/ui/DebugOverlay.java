@@ -97,6 +97,7 @@ public final class DebugOverlay implements HudElement {
 					s.voice() ? "voice " : "", s.position().distanceTo(eye), db(s.gains()[0]), db(s.gains()[1]),
 					db(s.gains()[2])));
 			if (s.heardFrom().distanceTo(s.position()) > 0.5) line.append(", round a corner");
+			if (s.aperture() < 64) line.append(String.format(Locale.ROOT, " through %.0f m²", s.aperture()));
 			if (s.elsewhere()) line.append(", own space");
 			if (s.early()) line.append(", early echoes");
 			if (s.ownReverb()) line.append(", own reverb");
