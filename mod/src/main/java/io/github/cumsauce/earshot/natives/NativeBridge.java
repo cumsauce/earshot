@@ -26,11 +26,13 @@ import java.nio.charset.StandardCharsets;
  */
 public final class NativeBridge {
 	/** Must equal {@code EARSHOT_ABI_VERSION} in {@code earshot.h}. */
-	public static final int ABI_VERSION = 2;
+	public static final int ABI_VERSION = 3;
 	/** Blocks in a section, in Minecraft's order. */
 	public static final int SECTION_BLOCKS = 4096;
 	/** Doubles per traced leg: from x, y, z, to x, y, z, energy, escaped (1 or 0). */
 	public static final int SEGMENT_DOUBLES = 8;
+	/** Doubles per source from {@link #hear}: low, mid and high gains, where it seems to come from, how far it travels. */
+	public static final int HEARD_DOUBLES = 7;
 
 	// size_t is 64 bits on every platform Minecraft runs on.
 	private static final ValueLayout.OfLong SIZE_T = JAVA_LONG;
@@ -46,6 +48,8 @@ public final class NativeBridge {
 	private final MethodHandle sectionCount;
 	private final MethodHandle transmission;
 	private final MethodHandle tracePaths;
+	private final MethodHandle setListener;
+	private final MethodHandle hear;
 	private final MethodHandle lastError;
 
 	public NativeBridge(SymbolLookup library) {
@@ -71,6 +75,10 @@ public final class NativeBridge {
 				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, JAVA_DOUBLE, JAVA_LONG, ADDRESS,
 						SIZE_T, ADDRESS, ADDRESS),
 				critical);
+		setListener = linker.downcallHandle(find(library, "earshot_set_listener"),
+				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS), critical);
+		hear = linker.downcallHandle(find(library, "earshot_hear"),
+				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, SIZE_T, ADDRESS), critical);
 		lastError = linker.downcallHandle(find(library, "earshot_last_error"),
 				FunctionDescriptor.of(SIZE_T, ADDRESS, SIZE_T));
 	}
@@ -167,6 +175,28 @@ public final class NativeBridge {
 				MemorySegment.ofArray(segments), (long) maxSegments, MemorySegment.ofArray(written),
 				MemorySegment.ofArray(stats)));
 		return new Trace(segments, (int) written[0], (long) stats[0], (long) stats[1], (long) stats[2], stats[3]);
+	}
+
+	/** Where the listener is now; the pathing field around it follows on the engine's own thread. */
+	public void setListener(MemorySegment engine, double[] listener) {
+		requireLength(listener, 3, "listener");
+		check((int) invoke(setListener, engine, MemorySegment.ofArray(listener)));
+	}
+
+	/**
+	 * How each of {@code count} sources reaches {@code listener}.
+	 *
+	 * @param sources x, y, z per source
+	 * @param out     {@value #HEARD_DOUBLES} doubles per source
+	 */
+	public void hear(MemorySegment engine, double[] listener, double[] sources, int count, double[] out) {
+		requireLength(listener, 3, "listener");
+		if (sources.length < 3 * count || out.length < HEARD_DOUBLES * count) {
+			throw new IllegalArgumentException("hear: " + count + " sources, but " + sources.length + " and "
+					+ out.length + " doubles");
+		}
+		check((int) invoke(hear, engine, MemorySegment.ofArray(listener), MemorySegment.ofArray(sources),
+				(long) count, MemorySegment.ofArray(out)));
 	}
 
 	/** Throws with this thread's {@code earshot_last_error} message unless {@code code} is 0. */

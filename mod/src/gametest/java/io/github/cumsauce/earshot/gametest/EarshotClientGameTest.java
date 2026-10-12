@@ -1,6 +1,7 @@
 package io.github.cumsauce.earshot.gametest;
 
 import io.github.cumsauce.earshot.EarshotClient;
+import io.github.cumsauce.earshot.audio.SoundShaper;
 import io.github.cumsauce.earshot.natives.NativeBridge;
 import io.github.cumsauce.earshot.openal.OpenAlProbe;
 import io.github.cumsauce.earshot.world.AcousticMaterial;
@@ -13,14 +14,21 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Map;
+import java.util.Optional;
+import java.util.function.Predicate;
 import net.fabricmc.fabric.api.client.gametest.v1.FabricClientGameTest;
 import net.fabricmc.fabric.api.client.gametest.v1.context.ClientGameTestContext;
 import net.fabricmc.fabric.api.client.gametest.v1.context.TestSingleplayerContext;
+import net.minecraft.client.resources.sounds.SimpleSoundInstance;
+import net.minecraft.client.resources.sounds.SoundInstance;
 import net.minecraft.core.BlockPos;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.item.DyeColor;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
+import net.minecraft.world.phys.Vec3;
 
 /**
  * Starts the real client and checks M0 and M1:
@@ -29,6 +37,7 @@ import net.minecraft.world.level.block.state.properties.BlockStateProperties;
  * {@code openal-probe.txt} in the run directory, which CI keeps);
  * <li>blocks map to sensible materials, once the world's tags are in;
  * <li>the world mirror copies a superflat world, follows block changes, and a wall built into it muffles;
+ * <li>a playing sound is muffled in a closed box, comes round through a doorway, and is clear in the open (M2);
  * <li>{@code /earshot rays} draws traced paths (screenshot {@code rays-in-a-glass-room}).
  * </ul>
  *
@@ -90,6 +99,28 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 				throw new AssertionError("open superflat: " + open);
 			}
 
+			// M2: a sound in a closed stone box is muffled; a doorway brings it round, heard from the doorway's side;
+			// in the open it is heard as it is.
+			SoundShaper shaper = EarshotClient.shaper();
+			if (shaper == null) throw new AssertionError("no sound shaper");
+			singleplayer.getServer().runCommand("fill -10 -60 -10 20 -50 10 air");
+			singleplayer.getServer().runCommand("fill 6 -61 -3 11 -55 4 stone hollow");
+			Vec3 inside = new Vec3(8.5, -59.5, 0.5);
+			double[] insideXyz = {inside.x, inside.y, inside.z};
+			context.waitFor(mc -> bridge.transmission(engine, LISTENER, insideXyz)[0] < 0.05f, 5 * 20);
+			context.runOnClient(mc -> mc.getSoundManager().play(new SimpleSoundInstance(
+					SoundEvents.BEACON_AMBIENT.location(), SoundSource.BLOCKS, 1f, 1f,
+					SoundInstance.createUnseededRandom(), true, 0, SoundInstance.Attenuation.LINEAR, inside.x, inside.y,
+					inside.z, false)));
+			awaitSound(context, shaper, inside, s -> s.gains()[0] < 0.1f, "in a closed box");
+			singleplayer.getServer().runCommand("fill 8 -60 -3 8 -59 -3 air");
+			awaitSound(context, shaper, inside, s -> s.gains()[1] > 0.1f && s.heardFrom().z < 0.3,
+					"round through a doorway on the far side");
+			singleplayer.getServer().runCommand("fill 6 -61 -3 11 -55 4 air");
+			awaitSound(context, shaper, inside, s -> s.gains()[0] > 0.95f && s.heardFrom().distanceTo(inside) < 0.3,
+					"in the open");
+			context.runOnClient(mc -> mc.getSoundManager().stop());
+
 			// The rays drawn by /earshot rays, in a glass room: daylight gets in, and glass reflects.
 			singleplayer.getServer().runCommand("time set noon");
 			singleplayer.getServer().runCommand("fill -6 -61 -4 6 -53 12 glass hollow");
@@ -99,6 +130,22 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 			context.waitTicks(2);
 			context.takeScreenshot("rays-in-a-glass-room");
 		}
+	}
+
+	/** Waits up to 5 s for the shaped sound at {@code at} to be {@code wanted}, and returns it. */
+	private static SoundShaper.Snapshot awaitSound(ClientGameTestContext context, SoundShaper shaper, Vec3 at,
+			Predicate<SoundShaper.Snapshot> wanted, String what) {
+		try {
+			context.waitFor(mc -> find(shaper, at).filter(wanted).isPresent(), 5 * 20);
+		} catch (RuntimeException | AssertionError e) {
+			throw new AssertionError("the sound " + what + ": "
+					+ find(shaper, at).map(SoundShaper.Snapshot::toString).orElse("not playing"), e);
+		}
+		return find(shaper, at).orElseThrow();
+	}
+
+	private static Optional<SoundShaper.Snapshot> find(SoundShaper shaper, Vec3 at) {
+		return shaper.snapshot().stream().filter(s -> s.position().distanceTo(at) < 0.5).findFirst();
 	}
 
 	private static void expectTransmission(ClientGameTestContext context, NativeBridge bridge, MemorySegment engine,
