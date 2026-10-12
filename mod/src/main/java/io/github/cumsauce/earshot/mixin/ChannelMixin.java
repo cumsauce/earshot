@@ -28,6 +28,8 @@ abstract class ChannelMixin implements ShapedChannel {
 	@Unique
 	private boolean earshot$attenuated = true;
 	@Unique
+	private float earshot$range = 16;
+	@Unique
 	private final SourceState earshot$state = new SourceState();
 
 	@Inject(method = "setSelfPosition", at = @At("HEAD"))
@@ -53,6 +55,7 @@ abstract class ChannelMixin implements ShapedChannel {
 	@Inject(method = "linearAttenuation", at = @At("HEAD"))
 	private void earshot$rememberAttenuation(float distance, CallbackInfo ci) {
 		earshot$attenuated = true;
+		earshot$range = distance;
 	}
 
 	@Inject(method = "destroy", at = @At("HEAD"))
@@ -73,6 +76,11 @@ abstract class ChannelMixin implements ShapedChannel {
 	@Override
 	public boolean earshot$positional() {
 		return !earshot$relative && earshot$attenuated;
+	}
+
+	@Override
+	public float earshot$range() {
+		return earshot$range;
 	}
 
 	@Override

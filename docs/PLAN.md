@@ -185,6 +185,18 @@ The gametest checks a looping beacon hum in three states:
 - **2nd/3rd-order ambisonic impulse responses: not possible.** OpenAL Soft's convolution effect caps the response's order at 1 (`MaxConvolveAmbiOrder = 1` in its `convolution.cpp`), and it convolves only the slot's W input.
 - **GPU tracing: not needed.** Profiling says the CPU isn't the limit: High's room trace costs about a quarter of a core, field builds 3–14 ms, and the budget scales rays down on slower machines.
 
+## After M6 (2026-10-12)
+
+- **Threaded room trace:** split over up to 4 threads (`trace_directions` per chunk of the sphere, sums merged), only from 2048 rays. In a stone hall on the M3 VM, High's measurement went from 26 ms to 6.9 ms of wall time. The budget counts every thread's time, so it still means a share of one core; Ultra's budget is 1.2 cores. trace_bench now times High and Ultra room measurements on CI's runners: Ultra's full trace costs 1–2 cores in enclosed spaces there, which the budget scales down.
+- **Realistic Falloff** (off by default): the game's sounds go on `AL_INVERSE_DISTANCE_CLAMPED` from 2 blocks, with a fade over the last quarter of their range through the direct filter, so they don't stop dead where the game stops them.
+- **Thunder** is held back by distance over the speed of sound (`SoundEngine.play` → `playDelayed`).
+- **Ceilinged dimensions** (the Nether, modded ones with `hasCeiling`): room rays reach 128 blocks instead of 64 (FFI ABI 11 adds the reach to the quality).
+- **Settings screen** in sections, with greyed-out settings that can't take effect, a live cost line, which reverb plays, the game's Directional Audio beside HRTF, Yak VC's options only with Yak VC, and a hint for the bypass key. The gametest screenshots both ends of it.
+- **Checked and left alone:**
+  - Door changes already reach occlusion at once, and pathing within about 0.25 s.
+  - Rain needs nothing: its sounds are positional, so they're already muffled indoors.
+  - The reverb send's 0.5 room rolloff wants tuning by ear.
+
 ## Approaches considered
 
 | Option | What it is | Verdict |

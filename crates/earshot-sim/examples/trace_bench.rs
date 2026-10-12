@@ -4,7 +4,7 @@
 
 use std::time::Instant;
 
-use earshot_sim::{Field, trace_paths};
+use earshot_sim::{Field, measure_threads, measure_with_early, trace_paths};
 use earshot_world::{Material, Vec3, World};
 
 const RAYS: u32 = 4096;
@@ -59,6 +59,23 @@ fn main() {
                 Field::build(&world, origin, half);
             });
             table += &format!(" {:.1} ms |", build * 1e3);
+        }
+        table += "\n";
+    }
+    table += &format!(
+        "\n### Room measurement\n\nWhat the High and Ultra presets trace around the listener, split over up \
+         to 4 threads; the share of a core at their 10 Hz is the time on every thread together. Median of \
+         {RUNS}.\n\n| World | High 4096 × 16 | core share | Ultra 16384 × 32 | core share |\n\
+         | --- | --- | --- | --- | --- |\n"
+    );
+    for (name, world, origin) in [hall(), caves(), open_ground()] {
+        table += &format!("| {name} |");
+        for (rays, bounces) in [(4096, 16), (16384, 32)] {
+            let wall = median(|| {
+                measure_with_early(&world, origin, rays, bounces, REACH, 1);
+            });
+            let share = wall * measure_threads(rays) as f64 * 10.0;
+            table += &format!(" {:.1} ms | {:.0} % |", wall * 1e3, share * 100.0);
         }
         table += "\n";
     }

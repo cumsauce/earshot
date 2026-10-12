@@ -14,6 +14,9 @@ public interface ShapedChannel {
 	/** A sound out in the world that fades with distance; music and menu sounds aren't. */
 	boolean earshot$positional();
 
+	/** How far the game lets the sound carry, in blocks: where its linear falloff reaches silence. */
+	float earshot$range();
+
 	/** Earshot's own state for the source. */
 	SourceState earshot$state();
 }

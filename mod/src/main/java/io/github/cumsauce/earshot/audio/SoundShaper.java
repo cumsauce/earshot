@@ -92,6 +92,12 @@ public final class SoundShaper {
 	private volatile boolean spaceReverb;
 	/** Whether the loudest sounds get early reflections of their own (Ultra). */
 	private volatile boolean earlyReflections;
+	/** Whether the game's sounds fall off as 1/distance rather than linearly. */
+	private volatile boolean realisticFalloff;
+	/** Realistic falloff: full volume within this many blocks, then 1/distance. */
+	private static final float REFERENCE_DISTANCE = 2;
+	/** And it fades to silence over the last quarter of the game's range, where the game would stop the sound. */
+	private static final float FADE_SHARE = 0.25f;
 	/** The listener's velocity, estimated on the client thread. */
 	private final SourceState.Motion listenerMotion = new SourceState.Motion();
 
@@ -113,7 +119,8 @@ public final class SoundShaper {
 	private record Axes(Vec3 right, Vec3 up, Vec3 forward) {}
 
 	/** A source to shape: the OpenAL source, its smoothed shaping, where it is, and the voice it plays if any. */
-	private record Target(int source, SourceState state, Vec3 position, VoicePlayer.@Nullable Voice voice) {}
+	private record Target(int source, SourceState state, Vec3 position, VoicePlayer.@Nullable Voice voice,
+			float range) {}
 
 	public SoundShaper(NativeBridge bridge, MemorySegment engine) {
 		this.bridge = bridge;
@@ -168,6 +175,7 @@ public final class SoundShaper {
 		spaceReverb = active && config.reverb() != io.github.cumsauce.earshot.config.EarshotConfig.Reverb.OFF
 				&& (preset == io.github.cumsauce.earshot.config.EarshotConfig.Preset.HIGH
 						|| preset == io.github.cumsauce.earshot.config.EarshotConfig.Preset.ULTRA);
+		realisticFalloff = active && config.realisticFalloff();
 		earlyReflections = active && config.reverb() != io.github.cumsauce.earshot.config.EarshotConfig.Reverb.OFF
 				&& preset == io.github.cumsauce.earshot.config.EarshotConfig.Preset.ULTRA;
 		wantMode(!active ? ReverbMode.OFF : switch (config.reverb()) {
@@ -264,10 +272,10 @@ public final class SoundShaper {
 			ShapedChannel c = (ShapedChannel) channel;
 			Vec3 position = c.earshot$position();
 			if (c.earshot$positional() && position != null) {
-				targets.add(new Target(c.earshot$source(), c.earshot$state(), position, null));
+				targets.add(new Target(c.earshot$source(), c.earshot$state(), position, null, c.earshot$range()));
 			}
 		});
-		for (VoicePlayer.Voice v : voice.update(players, voiceVolume, sends)) targets.add(new Target(v.source, v.state, v.position, v));
+		for (VoicePlayer.Voice v : voice.update(players, voiceVolume, sends)) targets.add(new Target(v.source, v.state, v.position, v, 0));
 		int count = targets.size();
 		if (count == 0) {
 			snapshot = List.of();
@@ -304,6 +312,10 @@ public final class SoundShaper {
 			boolean elsewhere = spacesOn && straight > 3
 					&& (heard[at + 6] > straight + SpaceReverb.ROUND || heard[at + 1] < SpaceReverb.WALLED);
 			int spaceSlot = elsewhere ? spaces.slotFor(position, heardFrom, now) : 0;
+			if (target.voice() == null) {
+				float fade = falloff(target.source(), state, target.range(), (float) straight);
+				for (int band = 0; band < gains.length; band++) gains[band] *= fade;
+			}
 			if (efx) {
 				filter(target.source(), state, gains);
 				send(target.source(), state, gains, sends, spaceSlot);
@@ -381,6 +393,29 @@ public final class SoundShaper {
 		EXTEfx.alFilterf(state.filter, EXTEfx.AL_LOWPASS_GAIN, low);
 		EXTEfx.alFilterf(state.filter, EXTEfx.AL_LOWPASS_GAINHF, highRatio);
 		AL10.alSourcei(source, EXTEfx.AL_DIRECT_FILTER, state.filter);
+	}
+
+	/**
+	 * Puts a game sound on realistic falloff (1/distance past {@value #REFERENCE_DISTANCE} blocks) or back on the
+	 * game's linear one, and returns the extra gain realistic falloff needs: a fade to silence over the last quarter
+	 * of the sound's range, so it doesn't stop dead where the game stops it.
+	 */
+	private float falloff(int source, SourceState state, float range, float distance) {
+		boolean realistic = realisticFalloff;
+		if (realistic != state.realistic) {
+			state.realistic = realistic;
+			AL10.alSourcei(source, AL10.AL_DISTANCE_MODEL,
+					realistic ? AL11.AL_INVERSE_DISTANCE_CLAMPED : AL11.AL_LINEAR_DISTANCE);
+			AL10.alSourcef(source, AL10.AL_REFERENCE_DISTANCE, realistic ? REFERENCE_DISTANCE : 0);
+			AL10.alSourcef(source, AL10.AL_ROLLOFF_FACTOR, 1);
+			AL10.alSourcef(source, AL10.AL_MAX_DISTANCE, range);
+		}
+		return realistic ? fade(range, distance) : 1;
+	}
+
+	/** 1 until the last {@value #FADE_SHARE} of {@code range}, then down to 0 at it. */
+	static float fade(float range, float distance) {
+		return Math.clamp((range - distance) / (FADE_SHARE * range), 0f, 1f);
 	}
 
 	private boolean earlyOn(boolean efx, boolean underwater) {

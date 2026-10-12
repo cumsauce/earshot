@@ -1,6 +1,6 @@
 use earshot_world::{BANDS, Bands, Vec3, World};
 
-use crate::{Reflection, trace_paths};
+use crate::{Reflection, Segment, sphere_directions, trace_directions};
 
 /// Speed of sound, in blocks (metres) per second.
 pub const SPEED_OF_SOUND: f64 = 343.0;
@@ -70,27 +70,80 @@ pub fn measure_with_early(
     reach: f64,
     seed: u64,
 ) -> (Room, Vec<Reflection>) {
-    let mut early = Vec::new();
-    let mut absorbed = [0.0f64; BANDS];
-    let (mut events, mut hits, mut firsts) = (0u32, 0u32, 0u32);
-    let (mut free_path, mut first, mut scattering) = (0.0, 0.0, 0.0f64);
-    trace_paths(world, listener, rays, bounces, reach, seed, |segment| {
-        events += 1;
+    let directions = sphere_directions(rays);
+    let threads = measure_threads(rays);
+    let chunk = directions.len().div_ceil(threads).max(1);
+    let tally = std::thread::scope(|scope| {
+        let parts: Vec<_> = directions
+            .chunks(chunk)
+            .enumerate()
+            .map(|(i, part)| {
+                scope.spawn(move || {
+                    let mut tally = Tally::default();
+                    trace_directions(
+                        world,
+                        listener,
+                        part,
+                        bounces,
+                        reach,
+                        seed + i as u64,
+                        |s| {
+                            tally.add(&s, rays);
+                        },
+                    );
+                    tally
+                })
+            })
+            .collect();
+        parts
+            .into_iter()
+            .map(|part| part.join().expect("a room trace thread panicked"))
+            .fold(Tally::default(), Tally::merge)
+    });
+    tally.room(rays)
+}
+
+/// How many threads a room measurement of `rays` uses: one for small
+/// traces, where starting threads would cost more than it saves, else up to
+/// four.
+pub fn measure_threads(rays: u32) -> usize {
+    if rays < 2048 {
+        return 1;
+    }
+    std::thread::available_parallelism().map_or(1, |n| n.get().min(4))
+}
+
+/// What a room trace adds up, per thread.
+#[derive(Debug, Default)]
+struct Tally {
+    early: Vec<Reflection>,
+    absorbed: [f64; BANDS],
+    events: u32,
+    hits: u32,
+    firsts: u32,
+    free_path: f64,
+    first: f64,
+    scattering: f64,
+}
+
+impl Tally {
+    fn add(&mut self, segment: &Segment, rays: u32) {
+        self.events += 1;
         if segment.escaped {
-            absorbed.iter_mut().for_each(|a| *a += 1.0);
+            self.absorbed.iter_mut().for_each(|a| *a += 1.0);
             return;
         }
         let length = (segment.to - segment.from).length();
-        free_path += length;
-        hits += 1;
+        self.free_path += length;
+        self.hits += 1;
         let acoustics = segment.material.acoustics();
         if segment.bounce == 0 {
-            first += length;
-            firsts += 1;
+            self.first += length;
+            self.firsts += 1;
             let direction = (segment.to - segment.from).normalized();
             let cos = direction.dot(segment.normal).abs() as f32;
             let trip = 2.0 * length;
-            early.push(Reflection {
+            self.early.push(Reflection {
                 direction,
                 delay: (trip / SPEED_OF_SOUND) as f32,
                 energy: (1.0 - acoustics.absorption[1]) * cos * cos / (trip * trip).max(1.0) as f32
@@ -98,32 +151,49 @@ pub fn measure_with_early(
                     / rays.max(1) as f32,
             });
         }
-        for (a, absorption) in absorbed.iter_mut().zip(acoustics.absorption) {
+        for (a, absorption) in self.absorbed.iter_mut().zip(acoustics.absorption) {
             *a += f64::from(absorption);
         }
-        scattering += f64::from(acoustics.scattering);
-    });
-    if hits == 0 {
-        return (Room::OPEN_AIR, early);
+        self.scattering += f64::from(acoustics.scattering);
     }
-    let mean_free_path = free_path / f64::from(hits);
-    let decay = absorbed.map(|a| {
-        let mean = (a / f64::from(events)).clamp(1e-4, 1.0 - 1e-9);
-        let t60 = SIXTY_DB * mean_free_path / (SPEED_OF_SOUND * -(1.0 - mean).ln());
-        t60.clamp(MIN_DECAY, MAX_DECAY) as f32
-    });
-    let room = Room {
-        decay,
-        mean_free_path,
-        enclosure: firsts as f32 / rays.max(1) as f32,
-        first_reflection: if firsts > 0 {
-            first / f64::from(firsts)
-        } else {
-            0.0
-        },
-        scattering: (scattering / f64::from(hits)) as f32,
-    };
-    (room, early)
+
+    fn merge(mut self, other: Tally) -> Tally {
+        self.early.extend(other.early);
+        for (a, b) in self.absorbed.iter_mut().zip(other.absorbed) {
+            *a += b;
+        }
+        self.events += other.events;
+        self.hits += other.hits;
+        self.firsts += other.firsts;
+        self.free_path += other.free_path;
+        self.first += other.first;
+        self.scattering += other.scattering;
+        self
+    }
+
+    fn room(self, rays: u32) -> (Room, Vec<Reflection>) {
+        if self.hits == 0 {
+            return (Room::OPEN_AIR, self.early);
+        }
+        let mean_free_path = self.free_path / f64::from(self.hits);
+        let decay = self.absorbed.map(|a| {
+            let mean = (a / f64::from(self.events)).clamp(1e-4, 1.0 - 1e-9);
+            let t60 = SIXTY_DB * mean_free_path / (SPEED_OF_SOUND * -(1.0 - mean).ln());
+            t60.clamp(MIN_DECAY, MAX_DECAY) as f32
+        });
+        let room = Room {
+            decay,
+            mean_free_path,
+            enclosure: self.firsts as f32 / rays.max(1) as f32,
+            first_reflection: if self.firsts > 0 {
+                self.first / f64::from(self.firsts)
+            } else {
+                0.0
+            },
+            scattering: (self.scattering / f64::from(self.hits)) as f32,
+        };
+        (room, self.early)
+    }
 }
 
 #[cfg(test)]

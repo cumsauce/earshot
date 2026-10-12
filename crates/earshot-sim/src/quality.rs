@@ -17,6 +17,9 @@ pub struct Quality {
     /// How far the pathing field reaches each way from the listener, in
     /// blocks; 0 turns sound round corners off.
     pub field_half: i32,
+    /// How far room rays reach, in blocks: past it they count as escaped.
+    /// Larger where the world has a ceiling (the Nether's caverns).
+    pub room_reach: f64,
     /// The share of one core the room measurement may take on average.
     /// Above it, the measurement uses fewer rays, down to a sixteenth.
     pub budget: f32,
@@ -30,6 +33,7 @@ impl Quality {
         room_every: Duration::from_millis(200),
         occlusion_rays: 5,
         field_half: 24,
+        room_reach: 64.0,
         budget: 1.0,
     };
 
@@ -40,6 +44,7 @@ impl Quality {
             && (Duration::from_millis(20)..=Duration::from_secs(5)).contains(&self.room_every)
             && matches!(self.occlusion_rays, 0 | 1 | 5 | 9)
             && (0..=64).contains(&self.field_half)
+            && (8.0..=256.0).contains(&self.room_reach)
             && self.budget > 0.0
             && self.budget <= 8.0
     }
