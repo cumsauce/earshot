@@ -1,5 +1,6 @@
 package io.github.cumsauce.earshot;
 
+import io.github.cumsauce.earshot.audio.SoundShaper;
 import io.github.cumsauce.earshot.command.EarshotCommands;
 import io.github.cumsauce.earshot.natives.NativeBridge;
 import io.github.cumsauce.earshot.natives.NativeLoader;
@@ -19,6 +20,7 @@ public final class EarshotClient implements ClientModInitializer {
 	private static @Nullable NativeBridge bridge;
 	private static @Nullable MemorySegment engine;
 	private static @Nullable WorldMirror mirror;
+	private static @Nullable SoundShaper shaper;
 
 	/** {@code config/earshot/}: settings and extracted natives. */
 	public static Path configDir() {
@@ -45,6 +47,11 @@ public final class EarshotClient implements ClientModInitializer {
 		return mirror;
 	}
 
+	/** What shapes the playing sounds, or null if the engine didn't start. */
+	public static @Nullable SoundShaper shaper() {
+		return shaper;
+	}
+
 	@Override
 	public void onInitializeClient() {
 		NativeBridge bridge;
@@ -67,9 +74,11 @@ public final class EarshotClient implements ClientModInitializer {
 		LOGGER.info("Started the native engine (ABI version {})", nativeAbi);
 		WorldMirror mirror = new WorldMirror(bridge, engine);
 		mirror.register();
-		EarshotCommands.register(bridge, engine, mirror);
+		SoundShaper shaper = new SoundShaper(bridge, engine);
+		EarshotCommands.register(bridge, engine, mirror, shaper);
 		EarshotClient.bridge = bridge;
 		EarshotClient.engine = engine;
 		EarshotClient.mirror = mirror;
+		EarshotClient.shaper = shaper;
 	}
 }

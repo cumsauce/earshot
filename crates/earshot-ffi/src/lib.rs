@@ -14,17 +14,16 @@
 
 mod guard;
 
-use std::sync::{PoisonError, RwLock};
-
-use earshot_sim::trace_paths;
+use earshot_sim::{Engine, Heard, trace_paths};
 use earshot_world::{BANDS, Material, SECTION_BLOCKS, SectionPos, Vec3, World};
 
-use crate::guard::{FfiError, array_arg, guard, out_arg, slice_mut_arg};
+use crate::guard::{FfiError, array_arg, guard, out_arg, slice_arg, slice_mut_arg};
 
 /// Version of this C ABI. Java refuses to use a library whose version differs
 /// from the one it was built against. Bump on any incompatible change.
 /// 2: the engine, its world mirror, transmission and path traces.
-pub const EARSHOT_ABI_VERSION: u32 = 2;
+/// 3: `earshot_set_listener` and `earshot_hear`.
+pub const EARSHOT_ABI_VERSION: u32 = 3;
 
 pub const EARSHOT_OK: i32 = 0;
 /// A null pointer, unknown material or out-of-range value.
@@ -38,19 +37,23 @@ pub const EARSHOT_ERR_PANIC: i32 = -3;
 /// `x, y, z`, the energy at its start, and 1 if it escaped (else 0).
 pub const EARSHOT_SEGMENT_DOUBLES: usize = 8;
 
+/// Doubles per source from `earshot_hear`: the low, mid and high gains, where
+/// it seems to come from as `x, y, z`, and how far it travels.
+pub const EARSHOT_HEARD_DOUBLES: usize = 7;
+
 /// Opaque engine handle.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct EarshotEngine {
-    world: RwLock<World>,
+    engine: Engine,
 }
 
 impl EarshotEngine {
     fn world_mut(&self, change: impl FnOnce(&mut World)) {
-        change(&mut self.world.write().unwrap_or_else(PoisonError::into_inner));
+        self.engine.world_mut(change);
     }
 
     fn world<T>(&self, read: impl FnOnce(&World) -> T) -> T {
-        read(&self.world.read().unwrap_or_else(PoisonError::into_inner))
+        self.engine.world(read)
     }
 }
 
@@ -76,7 +79,7 @@ pub extern "C" fn earshot_abi_version() -> u32 {
     EARSHOT_ABI_VERSION
 }
 
-/// Starts an engine with an empty world.
+/// Starts an engine with an empty world, and its pathing thread.
 ///
 /// # Safety
 /// `out` must be writable.
@@ -92,12 +95,15 @@ pub unsafe extern "C" fn earshot_create(abi_version: u32, out: *mut *mut Earshot
                 format!("native ABI is {EARSHOT_ABI_VERSION}, Java expects {abi_version}"),
             ));
         }
-        *out = Box::into_raw(Box::default());
+        *out = Box::into_raw(Box::new(EarshotEngine {
+            engine: Engine::start(),
+        }));
         Ok(())
     })
 }
 
-/// Frees the engine. Must be the last call on `engine`. Null is ignored.
+/// Stops the pathing thread and frees the engine. Must be the last call on
+/// `engine`. Null is ignored.
 ///
 /// # Safety
 /// `engine` must come from `earshot_create` and not be used afterwards.
@@ -273,6 +279,88 @@ pub unsafe extern "C" fn earshot_transmission(
             let out = slice_mut_arg(out, BANDS, "out")?;
             let through = e.world(|world| earshot_world::transmission(world, from, to));
             out.copy_from_slice(&through);
+            Ok(())
+        })
+    }
+}
+
+/// Where the listener is now. The pathing field around it follows on the
+/// engine's own thread.
+///
+/// # Safety
+/// `engine` must be live; `listener` must point to 3 doubles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earshot_set_listener(
+    engine: *mut EarshotEngine,
+    listener: *const f64,
+) -> i32 {
+    // SAFETY: the caller guarantees `engine` is live.
+    unsafe {
+        with_engine(engine, |e| {
+            // SAFETY: the caller guarantees `listener` points to 3 doubles.
+            e.engine.set_listener(point_arg(listener, "listener")?);
+            Ok(())
+        })
+    }
+}
+
+/// How each of `count` sources reaches `listener`: straight through whatever
+/// is in the way, or round it through the air. `sources` holds `x, y, z` per
+/// source; `out` gets [`EARSHOT_HEARD_DOUBLES`] doubles per source.
+///
+/// # Safety
+/// `engine` must be live; `listener` must point to 3 doubles, `sources` to
+/// `3 * count` doubles, and `out` must be writable for
+/// `EARSHOT_HEARD_DOUBLES * count` doubles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earshot_hear(
+    engine: *mut EarshotEngine,
+    listener: *const f64,
+    sources: *const f64,
+    count: usize,
+    out: *mut f64,
+) -> i32 {
+    // SAFETY: the caller guarantees `engine` is live.
+    unsafe {
+        with_engine(engine, |e| {
+            // SAFETY: the caller guarantees `listener` points to 3 doubles.
+            let listener = point_arg(listener, "listener")?;
+            let len = count
+                .checked_mul(EARSHOT_HEARD_DOUBLES)
+                .ok_or_else(|| FfiError::invalid("count is too large"))?;
+            // SAFETY: the caller guarantees `sources` points to `3 * count`
+            // doubles (`3 * count` fits, being less than `len`).
+            let xyz = slice_arg(sources, 3 * count, "sources")?;
+            // SAFETY: the caller guarantees `out` is writable for `len` doubles.
+            let out = slice_mut_arg(out, len, "out")?;
+            if !xyz.iter().all(|v| v.is_finite()) {
+                return Err(FfiError::invalid("sources are not finite"));
+            }
+            let points: Vec<Vec3> = xyz
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .map(|&[x, y, z]| Vec3::new(x, y, z))
+                .collect();
+            let mut heard = vec![
+                Heard {
+                    gains: [1.0; BANDS],
+                    heard_from: Vec3::ZERO,
+                    path_length: 0.0,
+                };
+                count
+            ];
+            e.engine.hear(listener, &points, &mut heard);
+            for (out, heard) in out
+                .as_chunks_mut::<EARSHOT_HEARD_DOUBLES>()
+                .0
+                .iter_mut()
+                .zip(&heard)
+            {
+                let [low, mid, high] = heard.gains.map(f64::from);
+                let at = heard.heard_from;
+                *out = [low, mid, high, at.x, at.y, at.z, heard.path_length];
+            }
             Ok(())
         })
     }
@@ -483,6 +571,37 @@ mod tests {
         assert_eq!(written, 10);
         assert_eq!(stats[..3], [32.0, 32.0, 32.0]);
         assert_eq!(out[7], 1.0, "escaped");
+        // SAFETY: `engine` is live, then never used again.
+        unsafe { earshot_destroy(engine) };
+    }
+
+    #[test]
+    fn hearing_a_batch_of_sources() {
+        let engine = engine();
+        let listener = [0.5, 0.5, 0.5];
+        let sources = [5.5, 0.5, 0.5, 0.5, 0.5, 8.5];
+        let mut out = [0.0; 2 * EARSHOT_HEARD_DOUBLES];
+        // SAFETY: `engine` is live and every buffer is valid for its length.
+        unsafe {
+            assert_eq!(
+                earshot_set_block(engine, 3, 0, 0, Material::Rock.id()),
+                EARSHOT_OK
+            );
+            assert_eq!(earshot_set_listener(engine, listener.as_ptr()), EARSHOT_OK);
+            let code = earshot_hear(
+                engine,
+                listener.as_ptr(),
+                sources.as_ptr(),
+                2,
+                out.as_mut_ptr(),
+            );
+            assert_eq!(code, EARSHOT_OK);
+        }
+        // Behind the rock block: muffled. In the open: as is, from where it is.
+        assert!(out[1] < 0.9, "{out:?}");
+        let open = &out[EARSHOT_HEARD_DOUBLES..];
+        assert_eq!(open[..3], [1.0, 1.0, 1.0]);
+        assert_eq!(open[3..6], [0.5, 0.5, 8.5]);
         // SAFETY: `engine` is live, then never used again.
         unsafe { earshot_destroy(engine) };
     }

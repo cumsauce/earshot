@@ -4,7 +4,7 @@
 
 use std::time::Instant;
 
-use earshot_sim::trace_paths;
+use earshot_sim::{FIELD_HALF, Field, trace_paths};
 use earshot_world::{Material, Vec3, World};
 
 const RAYS: u32 = 4096;
@@ -47,6 +47,17 @@ fn main() {
             f64::from(stats.segments) / single / 1e6,
             parallel * 1e3,
         );
+    }
+    let side = 2 * FIELD_HALF + 1;
+    table += &format!(
+        "\n### Pathing field\n\n{side}³ blocks around the listener, median of {RUNS} builds.\n\n\
+         | World | Build |\n| --- | --- |\n"
+    );
+    for (name, world, origin) in [hall(), caves(), open_ground()] {
+        let build = median(|| {
+            Field::build(&world, origin, FIELD_HALF);
+        });
+        table += &format!("| {name} | {:.1} ms |\n", build * 1e3);
     }
     print!("{table}");
     if let Ok(summary) = std::env::var("GITHUB_STEP_SUMMARY") {

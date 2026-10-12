@@ -104,6 +104,27 @@ M0 is done apart from tidying: the convolution tier is confirmed, the mixin targ
 - The High preset's reverb trace (4096 × 16 at 10 Hz) costs at most about 23 % of one core, or about 7 % spread over 4. That is well inside the plan's one-core budget.
 - Open-air legs are the slowest per leg: they step through 64 empty blocks. Skipping empty sections is the obvious next optimization, but it isn't needed yet.
 
+## M2 results so far (2026-10-11)
+
+What every positional game sound now gets:
+- **Direct path:** the mean of five rays to points 0.35 blocks around the source, so edges muffle gradually. The blocks at either end don't count.
+- **Pathing:** a 49³ shortest-air-path field around the listener (Dial's algorithm, 26 neighbours, no corner cutting), rebuilt on the engine's own thread when the listener moves half a block, or 200 ms after blocks change.
+- **Round the corner:** a blocked sound is heard round the corner when that loses less in the mid band. It is then heard from the last opening the listener can see, at the path's length, and bending costs 3 / 6 / 12 dB per right angle in the low / mid / high bands.
+- **OpenAL:** each source gets a low-pass direct filter (gain = low band, HF gain = high / low) and OpenAL's air absorption. Underwater, everything is multiplied by 0.7 / 0.2 / 0.05.
+- **Smoothing:** about 100 ms on gains and on the heard-from offset, so moving sources aren't dragged behind.
+- **The context** now asks for 4 auxiliary sends (`Library.createAttributes`), and the probe confirms it gets 4.
+
+| Pathing field build, 49³ (M3 VM) | |
+| --- | --- |
+| stone hall | 2.8 ms |
+| caves | 5.4 ms |
+| open ground | 5.4 ms |
+
+The gametest checks a looping beacon hum in three states:
+- in a closed stone box: muffled;
+- with a doorway cut in the box's far side: heard from the doorway's side;
+- in the open: clear, from where it is.
+
 ## Approaches considered
 
 | Option | What it is | Verdict |

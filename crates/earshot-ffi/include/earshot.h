@@ -11,8 +11,9 @@
  * Version of this C ABI. Java refuses to use a library whose version differs
  * from the one it was built against. Bump on any incompatible change.
  * 2: the engine, its world mirror, transmission and path traces.
+ * 3: `earshot_set_listener` and `earshot_hear`.
  */
-#define EARSHOT_ABI_VERSION 2
+#define EARSHOT_ABI_VERSION 3
 
 #define EARSHOT_OK 0
 
@@ -38,6 +39,12 @@
 #define EARSHOT_SEGMENT_DOUBLES 8
 
 /**
+ * Doubles per source from `earshot_hear`: the low, mid and high gains, where
+ * it seems to come from as `x, y, z`, and how far it travels.
+ */
+#define EARSHOT_HEARD_DOUBLES 7
+
+/**
  * Opaque engine handle.
  */
 typedef struct EarshotEngine EarshotEngine;
@@ -48,7 +55,7 @@ typedef struct EarshotEngine EarshotEngine;
 uint32_t earshot_abi_version(void);
 
 /**
- * Starts an engine with an empty world.
+ * Starts an engine with an empty world, and its pathing thread.
  *
  * # Safety
  * `out` must be writable.
@@ -56,7 +63,8 @@ uint32_t earshot_abi_version(void);
 int32_t earshot_create(uint32_t abi_version, struct EarshotEngine **out);
 
 /**
- * Frees the engine. Must be the last call on `engine`. Null is ignored.
+ * Stops the pathing thread and frees the engine. Must be the last call on
+ * `engine`. Null is ignored.
  *
  * # Safety
  * `engine` must come from `earshot_create` and not be used afterwards.
@@ -136,6 +144,31 @@ int32_t earshot_transmission(struct EarshotEngine *engine,
                              const double *from,
                              const double *to,
                              float *out);
+
+/**
+ * Where the listener is now. The pathing field around it follows on the
+ * engine's own thread.
+ *
+ * # Safety
+ * `engine` must be live; `listener` must point to 3 doubles.
+ */
+int32_t earshot_set_listener(struct EarshotEngine *engine, const double *listener);
+
+/**
+ * How each of `count` sources reaches `listener`: straight through whatever
+ * is in the way, or round it through the air. `sources` holds `x, y, z` per
+ * source; `out` gets [`EARSHOT_HEARD_DOUBLES`] doubles per source.
+ *
+ * # Safety
+ * `engine` must be live; `listener` must point to 3 doubles, `sources` to
+ * `3 * count` doubles, and `out` must be writable for
+ * `EARSHOT_HEARD_DOUBLES * count` doubles.
+ */
+int32_t earshot_hear(struct EarshotEngine *engine,
+                     const double *listener,
+                     const double *sources,
+                     size_t count,
+                     double *out);
 
 /**
  * Traces `rays` paths from `origin`, evenly spread, with up to `bounces`

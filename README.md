@@ -2,7 +2,7 @@
 
 Physically based acoustics for Minecraft 26.3: occlusion, sound bending around corners, raytraced reverb and echo, and binaural (HRTF) audio. It applies to the game's own sounds and, through [Yak VC](https://github.com/desocketed/yakvc)'s voice sink ([desocketed/yakvc#174](https://github.com/desocketed/yakvc/issues/174)), to proximity voice. It is a client-only Fabric mod.
 
-Status: **M1**, world mirror and ray tracer. Nothing is audible yet. [docs/PLAN.md](docs/PLAN.md) has the design, the milestones and the measurements so far.
+Status: **M2**: game sounds are muffled by what is in the way, come round corners from the opening they pass through, fade with air absorption, and are muffled underwater. Reverb is next (M3). [docs/PLAN.md](docs/PLAN.md) has the design, the milestones and the measurements so far.
 
 ## How it works
 
@@ -28,7 +28,7 @@ Building in a VM, from a folder shared with the host over VirtioFS, needs two se
 - `CARGO_TARGET_DIR` on a local disk, because rustc can't memory-map its fresh objects there.
 - `-Pearshot.runDir=<local dir>` for the game runs, because Minecraft can't lock its saves there.
 
-In game, `/earshot rays [count] [bounces]` draws traced sound paths, `/earshot occlusion` measures what blocks the way ahead, and `/earshot stats` shows how much of the world is mirrored.
+In game, `/earshot rays [count] [bounces]` draws traced sound paths, `/earshot occlusion` measures what blocks the way ahead, `/earshot sources` shows how each playing sound is heard, and `/earshot stats` shows how much of the world is mirrored.
 
 Release jars hold the native library for every platform. CI builds each one on its own runner and packages them with `cargo xtask dist --from <dir>`. Pushing a `v<version>` tag publishes a prerelease.
 

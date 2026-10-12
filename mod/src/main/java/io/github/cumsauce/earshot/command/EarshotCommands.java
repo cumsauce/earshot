@@ -1,6 +1,7 @@
 package io.github.cumsauce.earshot.command;
 
 import com.mojang.brigadier.arguments.IntegerArgumentType;
+import io.github.cumsauce.earshot.audio.SoundShaper;
 import io.github.cumsauce.earshot.natives.NativeBridge;
 import io.github.cumsauce.earshot.world.WorldMirror;
 import java.lang.foreign.MemorySegment;
@@ -19,6 +20,8 @@ import net.minecraft.world.phys.Vec3;
  * the sound is still strong, blue where it escaped to open air;
  * <li>{@code /earshot occlusion} says how much of the sound from 16 blocks ahead gets straight through whatever is in
  * between;
+ * <li>{@code /earshot sources} lists the playing sounds and how each is heard: its gains and, when it comes round
+ * a corner, where from;
  * <li>{@code /earshot stats} says how much of the world is mirrored.
  * </ul>
  */
@@ -33,7 +36,7 @@ public final class EarshotCommands {
 
 	private EarshotCommands() {}
 
-	public static void register(NativeBridge bridge, MemorySegment engine, WorldMirror mirror) {
+	public static void register(NativeBridge bridge, MemorySegment engine, WorldMirror mirror, SoundShaper shaper) {
 		ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> dispatcher.register(
 				ClientCommands.literal("earshot")
 						.then(ClientCommands.literal("rays")
@@ -46,6 +49,7 @@ public final class EarshotCommands {
 														IntegerArgumentType.getInteger(c, "count"),
 														IntegerArgumentType.getInteger(c, "bounces"))))))
 						.then(ClientCommands.literal("occlusion").executes(c -> occlusion(bridge, engine, c.getSource())))
+						.then(ClientCommands.literal("sources").executes(c -> sources(shaper, c.getSource())))
 						.then(ClientCommands.literal("stats").executes(c -> stats(bridge, engine, mirror, c.getSource())))));
 	}
 
@@ -110,6 +114,24 @@ public final class EarshotCommands {
 
 	private static String db(float share) {
 		return share >= 1 ? "0 dB" : String.format(Locale.ROOT, "%.1f dB", 10 * Math.log10(Math.max(share, 1e-12)));
+	}
+
+	private static int sources(SoundShaper shaper, FabricClientCommandSource source) {
+		var sounds = shaper.snapshot();
+		source.sendFeedback(Component.literal(sounds.size() + " positional sounds playing"));
+		Vec3 eye = source.getPlayer().getEyePosition();
+		sounds.stream()
+				.sorted(java.util.Comparator.comparingDouble(s -> s.position().distanceTo(eye)))
+				.limit(8)
+				.forEach(s -> {
+					boolean round = s.heardFrom().distanceTo(s.position()) > 0.5;
+					source.sendFeedback(Component.literal(String.format(Locale.ROOT,
+							"  %.0f blocks away: low %s, mid %s, high %s%s", s.position().distanceTo(eye),
+							db(s.gains()[0]), db(s.gains()[1]), db(s.gains()[2]),
+							round ? String.format(Locale.ROOT, ", round from %.0f %.0f %.0f", s.heardFrom().x,
+									s.heardFrom().y, s.heardFrom().z) : "")));
+				});
+		return 1;
 	}
 
 	private static int stats(NativeBridge bridge, MemorySegment engine, WorldMirror mirror,
