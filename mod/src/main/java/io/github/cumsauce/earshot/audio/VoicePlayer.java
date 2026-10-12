@@ -32,6 +32,8 @@ import org.lwjgl.openal.SOFTCallbackBuffer;
 public final class VoicePlayer {
 	/** The object share key Yak VC looks for a voice sink under. */
 	public static final String SINK_KEY = "yakvc:voice_sink";
+	/** Where Yak VC publishes the newest sink version it takes (an {@link Integer}); a Yak VC without it takes 1. */
+	public static final String SINK_VERSION_KEY = "yakvc:voice_sink_version";
 	/** Yak VC's {@code YAKVC_VOICE_UNPOSITIONED}: group voice and calls, which play centred. */
 	private static final int UNPOSITIONED = 1 << 1;
 	/** Yak VC's {@code YAKVC_VOICE_SELF}: the player's own voice, which only a version 2 sink gets. */
@@ -164,7 +166,7 @@ public final class VoicePlayer {
 	 */
 	private synchronized void offer() {
 		boolean want = enabled && supported && !failed;
-		int version = !want ? 0 : ownVoice && !ownVoiceRefused ? 2 : 1;
+		int version = !want ? 0 : ownVoice && yakvcTakes(2) ? 2 : 1;
 		bridge.setOwnVoice(version == 2);
 		if (version == offeredVersion) return;
 		var share = FabricLoader.getInstance().getObjectShare();
@@ -183,11 +185,24 @@ public final class VoicePlayer {
 	}
 
 	/**
+	 * Whether the installed Yak VC takes a sink of {@code version}: as it publishes, or for a Yak VC that doesn't, as
+	 * long as it hasn't been seen to refuse one.
+	 */
+	private boolean yakvcTakes(int version) {
+		if (FabricLoader.getInstance().getObjectShare().get(SINK_VERSION_KEY) instanceof Integer newest) {
+			return version <= newest;
+		}
+		return version == 1 || !ownVoiceRefused;
+	}
+
+	/**
 	 * A Yak VC from before own voice refuses the version 2 sink and keeps voice on its speakers: once it has had time
 	 * to take it and hasn't asked it for a single frame, offer version 1 instead.
 	 */
 	private void checkRefusal() {
 		if (offeredVersion != 2 || System.nanoTime() - offeredAt < REFUSAL_NANOS) return;
+		// A Yak VC that says which versions it takes was offered one it takes.
+		if (FabricLoader.getInstance().getObjectShare().get(SINK_VERSION_KEY) != null) return;
 		if (!FabricLoader.getInstance().isModLoaded("yakvc") || bridge.voicePolls() != pollsAtOffer) return;
 		ownVoiceRefused = true;
 		EarshotClient.LOGGER.warn("This Yak VC doesn't send the player's own voice, so Own Voice Echo is off");
