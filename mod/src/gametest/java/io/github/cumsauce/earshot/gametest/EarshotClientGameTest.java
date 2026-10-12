@@ -137,6 +137,11 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 			awaitSound(context, shaper, inside, s -> s.gains()[0] > 0.95f, "with Earshot off");
 			context.runOnClient(mc -> EarshotClient.apply(settings.withPreset(EarshotConfig.Preset.HIGH)));
 			awaitSound(context, shaper, inside, s -> s.gains()[0] < 0.1f, "in a closed box, Earshot back on");
+			// The bypass key does the same for A/B listening, without touching the settings.
+			context.runOnClient(mc -> EarshotClient.setBypassed(true));
+			awaitSound(context, shaper, inside, s -> s.gains()[0] > 0.95f, "bypassed");
+			context.runOnClient(mc -> EarshotClient.setBypassed(false));
+			awaitSound(context, shaper, inside, s -> s.gains()[0] < 0.1f, "in a closed box, bypass ended");
 			singleplayer.getServer().runCommand("fill 8 -60 -3 8 -59 -3 air");
 			awaitSound(context, shaper, inside, s -> s.gains()[1] > 0.1f && s.heardFrom().z < 0.3,
 					"round through a doorway on the far side");
