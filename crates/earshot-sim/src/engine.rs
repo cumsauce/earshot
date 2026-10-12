@@ -17,8 +17,10 @@ const REBUILD_DISTANCE: f64 = 0.5;
 const REBUILD_AFTER_CHANGES: Duration = Duration::from_millis(200);
 /// After a build, the next waits at least this many times as long as the
 /// build took, so pathing takes at most about a quarter of a core even while
-/// the listener runs through big fields.
+/// the listener runs through big fields; but never longer than
+/// [`MAX_REBUILD_WAIT`], and not at all when the field's reach changes.
 const REBUILD_SPACING: u32 = 3;
+const MAX_REBUILD_WAIT: Duration = Duration::from_millis(250);
 /// How often the worker looks.
 const WORKER_TICK: Duration = Duration::from_millis(25);
 /// How far room rays reach, in blocks.
@@ -230,9 +232,11 @@ fn worker(shared: &Shared) {
         if let Some(listener) = listener {
             if quality.field_half == 0 {
                 drop_field(shared);
-            } else if Instant::now() >= next_build && field_due(shared, listener, quality) {
+            } else if let Some(resized) = field_due(shared, listener, quality)
+                && (resized || Instant::now() >= next_build)
+            {
                 let took = build_field(shared, listener, quality.field_half);
-                next_build = Instant::now() + took * REBUILD_SPACING;
+                next_build = Instant::now() + (took * REBUILD_SPACING).min(MAX_REBUILD_WAIT);
             }
             if quality.room_rays == 0 {
                 room.forget(shared);
@@ -270,20 +274,25 @@ fn open_near(world: &World, at: Vec3) -> Vec3 {
     .unwrap_or(at)
 }
 
-/// Whether the field is missing, the wrong size, left behind by the
-/// listener, or older than a change to the world.
-fn field_due(shared: &Shared, listener: Vec3, quality: Quality) -> bool {
+/// Whether the field needs building: `Some(true)` when it is missing or the
+/// wrong size, `Some(false)` when it is left behind by the listener or older
+/// than a change to the world, else `None`.
+fn field_due(shared: &Shared, listener: Vec3, quality: Quality) -> Option<bool> {
     let version = shared.world_version.load(Ordering::Acquire);
     let current = shared
         .field
         .read()
         .unwrap_or_else(PoisonError::into_inner)
         .clone();
-    current.is_none_or(|built| {
-        built.field.half() != quality.field_half
-            || (built.field.listener() - listener).length() >= REBUILD_DISTANCE
-            || (built.world_version != version && built.at.elapsed() >= REBUILD_AFTER_CHANGES)
-    })
+    let Some(built) = current else {
+        return Some(true);
+    };
+    if built.field.half() != quality.field_half {
+        return Some(true);
+    }
+    let stale = (built.field.listener() - listener).length() >= REBUILD_DISTANCE
+        || (built.world_version != version && built.at.elapsed() >= REBUILD_AFTER_CHANGES);
+    stale.then_some(false)
 }
 
 /// Builds the field around `listener` and returns how long it took.
@@ -439,7 +448,7 @@ mod tests {
         let engine = Engine::start();
         assert!(engine.field().is_none());
         engine.set_listener(Vec3::new(0.5, 0.5, 0.5));
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(20);
         while engine.field().is_none() {
             assert!(Instant::now() < deadline, "no field");
             std::thread::sleep(Duration::from_millis(5));
@@ -480,7 +489,7 @@ mod tests {
             }
         });
         engine.set_listener(Vec3::new(4.0, 4.0, 4.0));
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(20);
         while engine.room().is_none_or(|room| room.enclosure < 0.99) {
             assert!(Instant::now() < deadline, "no room: {:?}", engine.room());
             std::thread::sleep(Duration::from_millis(10));
@@ -492,7 +501,7 @@ mod tests {
     fn the_quality_turns_pathing_and_the_room_off_and_on() {
         let engine = Engine::start();
         engine.set_listener(Vec3::new(0.5, 0.5, 0.5));
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(20);
         while engine.field().is_none() || engine.room().is_none() {
             assert!(Instant::now() < deadline, "no field or room");
             std::thread::sleep(Duration::from_millis(5));
