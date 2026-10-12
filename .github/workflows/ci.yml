@@ -93,9 +93,9 @@ jobs:
         run: |
           jar=$(ls dist/earshot-*.jar)
           unzip -l "$jar" | tee contents
-          entries="natives/natives.sha256 natives/linux-x86_64/libearshot_ffi.so.xz
-            natives/linux-aarch64/libearshot_ffi.so.xz natives/windows-x86_64/earshot_ffi.dll.xz
-            natives/macos-universal/libearshot_ffi.dylib.xz META-INF/jars/xz-1.10.jar earshot.mixins.json"
+          entries="earshot/natives/natives.sha256 earshot/natives/linux-x86_64/libearshot_ffi.so.xz
+            earshot/natives/linux-aarch64/libearshot_ffi.so.xz earshot/natives/windows-x86_64/earshot_ffi.dll.xz
+            earshot/natives/macos-universal/libearshot_ffi.dylib.xz META-INF/jars/xz-1.10.jar earshot.mixins.json"
           for entry in $entries; do
             grep -q " $entry\$" contents || { echo "$jar has no $entry" >&2; exit 1; }
           done
