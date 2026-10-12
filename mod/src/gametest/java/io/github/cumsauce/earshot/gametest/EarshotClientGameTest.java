@@ -130,6 +130,17 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 				throw new AssertionError("the hall's reverb isn't louder: " + Arrays.toString(hall) + " vs "
 						+ Arrays.toString(outside));
 			}
+			// Where OpenAL Soft has the convolution effect, the hall's impulse response loads and plays.
+			if (report.convolutionEffect()) {
+				int before = context.computeOnClient(mc -> shaper.convolution().loads());
+				try {
+					context.waitFor(mc -> shaper.mode() == SoundShaper.ReverbMode.CONVOLUTION
+							&& shaper.convolution().loads() > before && shaper.convolution().playing(), 10 * 20);
+				} catch (RuntimeException | AssertionError e) {
+					throw new AssertionError("no convolution reverb: mode " + shaper.mode() + ", loads "
+							+ shaper.convolution().loads(), e);
+				}
+			}
 			singleplayer.getServer().runCommand("fill -10 -61 -10 10 -50 10 air");
 			singleplayer.getServer().runCommand("fill -10 -61 -10 10 -61 10 grass_block");
 

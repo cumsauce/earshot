@@ -24,7 +24,8 @@ use crate::guard::{FfiError, array_arg, guard, out_arg, slice_arg, slice_mut_arg
 /// 2: the engine, its world mirror, transmission and path traces.
 /// 3: `earshot_set_listener` and `earshot_hear`.
 /// 4: `earshot_room`.
-pub const EARSHOT_ABI_VERSION: u32 = 4;
+/// 5: `earshot_impulse_response`.
+pub const EARSHOT_ABI_VERSION: u32 = 5;
 
 pub const EARSHOT_OK: i32 = 0;
 /// A null pointer, unknown material or out-of-range value.
@@ -410,6 +411,49 @@ pub unsafe extern "C" fn earshot_room(engine: *mut EarshotEngine, out: *mut f64)
     }
 }
 
+/// Synthesizes an impulse response for the room around the listener, for
+/// OpenAL Soft's convolution effect: first-order ambisonics in FuMa order and
+/// scaling (W, X, Y, Z interleaved, `AL_FORMAT_BFORMAT3D_FLOAT32`) in world
+/// axes, at most `max_seconds` long. Writes it to `out` if `cap` floats are
+/// enough, and how many floats it needs to `*needed` either way; `*needed`
+/// is 0 before the room has been measured.
+///
+/// # Safety
+/// `engine` must be live; `out` must be writable for `cap` floats; `needed`
+/// must be writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earshot_impulse_response(
+    engine: *mut EarshotEngine,
+    sample_rate: u32,
+    max_seconds: f32,
+    seed: u64,
+    out: *mut f32,
+    cap: usize,
+    needed: *mut usize,
+) -> i32 {
+    // SAFETY: the caller guarantees `engine` is live.
+    unsafe {
+        with_engine(engine, |e| {
+            // SAFETY: the caller guarantees `needed` is writable.
+            let needed = out_arg(needed, "needed")?;
+            // SAFETY: the caller guarantees `out` is writable for `cap` floats.
+            let out = slice_mut_arg(out, cap, "out")?;
+            if !(8_000..=192_000).contains(&sample_rate) || !(0.1..=10.0).contains(&max_seconds) {
+                return Err(FfiError::invalid("sample rate or length out of range"));
+            }
+            let ir = e
+                .engine
+                .impulse_response(sample_rate, max_seconds, seed)
+                .unwrap_or_default();
+            if let Some(dest) = out.get_mut(..ir.len()) {
+                dest.copy_from_slice(&ir);
+            }
+            *needed = ir.len();
+            Ok(())
+        })
+    }
+}
+
 /// Traces `rays` paths from `origin`, evenly spread, with up to `bounces`
 /// reflections and at most `reach` blocks per leg. Writes the first `cap`
 /// legs to `out`, [`EARSHOT_SEGMENT_DOUBLES`] doubles each, and how many it
@@ -646,6 +690,68 @@ mod tests {
         let open = &out[EARSHOT_HEARD_DOUBLES..];
         assert_eq!(open[..3], [1.0, 1.0, 1.0]);
         assert_eq!(open[3..6], [0.5, 0.5, 8.5]);
+        // SAFETY: `engine` is live, then never used again.
+        unsafe { earshot_destroy(engine) };
+    }
+
+    #[test]
+    fn an_impulse_response_comes_once_the_room_is_measured() {
+        let engine = engine();
+        let listener = [0.5, 0.5, 0.5];
+        let mut needed = usize::MAX;
+        // SAFETY: `engine` is live; a null buffer with capacity 0 is not written.
+        unsafe {
+            assert_eq!(
+                earshot_set_block(engine, 3, 0, 0, Material::Rock.id()),
+                EARSHOT_OK
+            );
+            let code = earshot_impulse_response(
+                engine,
+                48_000,
+                1.0,
+                1,
+                std::ptr::null_mut(),
+                0,
+                &mut needed,
+            );
+            assert_eq!(code, EARSHOT_OK);
+            assert_eq!(earshot_set_listener(engine, listener.as_ptr()), EARSHOT_OK);
+        }
+        // Not measured yet, or measured: either way a whole number of frames.
+        assert_eq!(needed % 4, 0);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while needed == 0 || needed == usize::MAX {
+            assert!(std::time::Instant::now() < deadline, "no impulse response");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            // SAFETY: as above.
+            let code = unsafe {
+                earshot_impulse_response(
+                    engine,
+                    48_000,
+                    1.0,
+                    1,
+                    std::ptr::null_mut(),
+                    0,
+                    &mut needed,
+                )
+            };
+            assert_eq!(code, EARSHOT_OK);
+        }
+        let mut ir = vec![0.0f32; needed];
+        // SAFETY: `engine` is live and `ir` is writable for its length.
+        let code = unsafe {
+            earshot_impulse_response(
+                engine,
+                48_000,
+                1.0,
+                1,
+                ir.as_mut_ptr(),
+                ir.len(),
+                &mut needed,
+            )
+        };
+        assert_eq!(code, EARSHOT_OK);
+        assert!(ir.iter().all(|s| s.is_finite()));
         // SAFETY: `engine` is live, then never used again.
         unsafe { earshot_destroy(engine) };
     }

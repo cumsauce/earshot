@@ -23,6 +23,7 @@ import net.minecraft.world.phys.Vec3;
  * <li>{@code /earshot sources} lists the playing sounds and how each is heard: its gains and, when it comes round
  * a corner, where from;
  * <li>{@code /earshot room} describes the room around you as the reverb hears it;
+ * <li>{@code /earshot reverb auto|convolution|eax|off} picks the reverb, for listening to them side by side;
  * <li>{@code /earshot stats} says how much of the world is mirrored.
  * </ul>
  */
@@ -52,6 +53,7 @@ public final class EarshotCommands {
 						.then(ClientCommands.literal("occlusion").executes(c -> occlusion(bridge, engine, c.getSource())))
 						.then(ClientCommands.literal("sources").executes(c -> sources(shaper, c.getSource())))
 						.then(ClientCommands.literal("room").executes(c -> room(shaper, c.getSource())))
+						.then(reverbModes(shaper))
 						.then(ClientCommands.literal("stats").executes(c -> stats(bridge, engine, mirror, c.getSource())))));
 	}
 
@@ -136,6 +138,27 @@ public final class EarshotCommands {
 		return 1;
 	}
 
+	private static com.mojang.brigadier.builder.LiteralArgumentBuilder<FabricClientCommandSource> reverbModes(
+			SoundShaper shaper) {
+		var reverb = ClientCommands.literal("reverb").executes(c -> {
+			c.getSource().sendFeedback(Component.literal("Reverb: " + shaper.mode()));
+			return 1;
+		});
+		reverb.then(ClientCommands.literal("auto").executes(c -> setReverb(shaper, c.getSource(), null)));
+		for (SoundShaper.ReverbMode mode : SoundShaper.ReverbMode.values()) {
+			reverb.then(ClientCommands.literal(mode.name().toLowerCase(Locale.ROOT))
+					.executes(c -> setReverb(shaper, c.getSource(), mode)));
+		}
+		return reverb;
+	}
+
+	private static int setReverb(SoundShaper shaper, FabricClientCommandSource source,
+			SoundShaper.@org.jspecify.annotations.Nullable ReverbMode mode) {
+		shaper.wantMode(mode);
+		source.sendFeedback(Component.literal("Reverb: " + (mode == null ? "auto (the best this OpenAL has)" : mode)));
+		return 1;
+	}
+
 	private static int room(SoundShaper shaper, FabricClientCommandSource source) {
 		double[] room = shaper.room();
 		if (room.length == 0) {
@@ -149,6 +172,8 @@ public final class EarshotCommands {
 		source.sendFeedback(Component.literal(String.format(Locale.ROOT,
 				"Reverb: gain %.2f, reflections %.2f after %.0f ms, late %.2f after %.0f ms, echo %.2f", room[eax + 2],
 				room[eax + 8], room[eax + 9] * 1000, room[eax + 10], room[eax + 11] * 1000, room[eax + 13])));
+		source.sendFeedback(Component.literal("Mode " + shaper.mode() + ", impulse responses loaded: "
+				+ shaper.convolution().loads()));
 		return 1;
 	}
 

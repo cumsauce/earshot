@@ -144,6 +144,20 @@ The gametest checks a looping beacon hum in three states:
 - A room rolloff of 0.5 makes far sounds relatively more reverberant: the direct-to-reverberant cue to distance.
 - The gametest sees the open superflat nearly dry, and a 21×12×21 stone hall with a mid decay over 2 s and more than three times the reverb level.
 
+## M3 results so far (2026-10-11): convolution reverb
+
+**Impulse responses** (`earshot-sim/src/ir.rs`) are first-order ambisonics (FuMa W, X, Y, Z) in world axes, up to 1.5 s.
+- **Early reflections:** each ray's first bounce becomes a tap from its direction, after the trip there and back. Its energy is its share of the wall's image source, `(1 − a) · cos² θ / (2r)² · 12 / rays`; a test checks that one big wall's taps add up to its image source within 35 %.
+- **Diffuse tail:** decorrelated noise per channel, split into three bands (two-pole crossovers at 500 Hz and 2 kHz), each band decaying at the room's measured rate. It starts after one mean free path, and its level follows the diffuse field, `16π / R`, with the room constant `R = S·a / (1 − a)` from a roughly cubic space of side 1.5 × the mean free path, times enclosure².
+
+**In the game.**
+- Two convolution slots, the one playing and one a new response loads into. Every positional sound sends to both.
+- A new response is made on the `earshot-ir` thread when the room changes (mid decay 10 %, enclosure 0.1, mean free path 15 %; at most every 500 ms). OpenAL Soft's 10–20 ms of preparation never blocks the game's threads.
+- The slots crossfade over 5 ticks, then the old slot lets its effect go, so one convolution runs most of the time.
+- `AL_CONVOLUTION_ORIENTATION_SOFT` turns the response with the listener, set again after about 3° of turn, so reflections stay where the walls are.
+- Underwater, and where OpenAL Soft lacks the effect, the EAX reverb takes over. `/earshot reverb auto|convolution|eax|off` switches between them for listening side by side.
+- The gametest checks the stone hall's response loads and plays.
+
 ## Approaches considered
 
 | Option | What it is | Verdict |

@@ -14,6 +14,8 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.sounds.ChannelAccess;
 import net.minecraft.world.level.material.FogType;
 import net.minecraft.world.phys.Vec3;
+import org.joml.Vector3fc;
+import org.jspecify.annotations.Nullable;
 import org.lwjgl.openal.AL10;
 import org.lwjgl.openal.AL11;
 import org.lwjgl.openal.EXTEfx;
@@ -21,13 +23,23 @@ import org.lwjgl.openal.EXTEfx;
 /**
  * Shapes every positional sound the game plays by how it reaches the listener (M2): muffled by what is in the way,
  * moved to the opening it comes round through, damped by the air over distance, and muffled hard underwater. Each also
- * sends to one reverb whose parameters come from the room measured around the listener (M3, parametric tier).
+ * sends to a reverb made from the room measured around the listener (M3): a convolution with a synthesized impulse
+ * response where OpenAL Soft has the effect, else EAX reverb set from the room's measurements.
  *
  * <p>Once a tick, after the sound engine's own tick, {@link #tick} tells the native engine where the listener is and
  * queues {@link #update} on the sound thread, which asks the native engine how each playing sound is heard (one call
- * for all of them) and sets each OpenAL source's direct filter and position.
+ * for all of them) and sets each OpenAL source's direct filter, position and reverb sends.
  */
 public final class SoundShaper {
+	/** How the reverb is made. */
+	public enum ReverbMode {
+		OFF,
+		/** EFX's EAX reverb, set from the room's measurements. */
+		EAX,
+		/** Convolution with impulse responses synthesized from the room. */
+		CONVOLUTION
+	}
+
 	/** OpenAL's air absorption: 1 is about 0.05 dB lost per metre at 5 kHz. */
 	private static final float AIR_ABSORPTION = 1.0f;
 	/** Underwater, everything sounds like this, low to high. */
@@ -50,13 +62,17 @@ public final class SoundShaper {
 
 	private final NativeBridge bridge;
 	private final MemorySegment engine;
+	private final ConvolutionReverb convolution;
 	private volatile List<Snapshot> snapshot = List.of();
-	/** The reverb's effect and slot in the game's context; 0 until made, and again when the context goes. */
+	/** The EAX reverb's effect and slot in the game's context; 0 until made, and again when the context goes. */
 	private final Object reverbLock = new Object();
 	private int effect;
 	private int slot;
 	private final double[] room = new double[NativeBridge.ROOM_DOUBLES];
 	private volatile double[] lastRoom = new double[0];
+	/** The reverb asked for, or null for the best the game's OpenAL has. */
+	private volatile @Nullable ReverbMode wantedMode;
+	private volatile ReverbMode mode = ReverbMode.OFF;
 	private volatile boolean failed;
 
 	/** One shaped sound, for the debug command and tests. */
@@ -71,6 +87,7 @@ public final class SoundShaper {
 	public SoundShaper(NativeBridge bridge, MemorySegment engine) {
 		this.bridge = bridge;
 		this.engine = engine;
+		this.convolution = new ConvolutionReverb(bridge, engine);
 	}
 
 	/** The sounds shaped in the last update. */
@@ -83,8 +100,22 @@ public final class SoundShaper {
 		return lastRoom.clone();
 	}
 
+	public ConvolutionReverb convolution() {
+		return convolution;
+	}
+
+	/** The reverb in use. */
+	public ReverbMode mode() {
+		return mode;
+	}
+
+	/** Asks for a reverb; null for the best the game's OpenAL has. */
+	public void wantMode(@Nullable ReverbMode wanted) {
+		wantedMode = wanted;
+	}
+
 	/**
-	 * The game is closing its OpenAL context, which frees every object in it: forget the reverb, so the next context
+	 * The game is closing its OpenAL context, which frees every object in it: forget the reverbs, so the next context
 	 * gets its own.
 	 */
 	public void contextClosing() {
@@ -92,6 +123,7 @@ public final class SoundShaper {
 			effect = 0;
 			slot = 0;
 		}
+		convolution.contextClosing();
 	}
 
 	/** Called on the client thread at the end of the sound engine's tick. */
@@ -103,16 +135,42 @@ public final class SoundShaper {
 		Vec3 eye = camera.position();
 		double[] listener = {eye.x, eye.y, eye.z};
 		boolean underwater = camera.getFluidInCamera() == FogType.WATER;
+		float[] orientation = worldAxesFor(camera);
 		OpenAlProbe.Report report = OpenAlProbe.last();
 		boolean efx = report != null && report.efx();
-		boolean eax = efx && report.eaxReverb();
+		ReverbMode mode = chooseMode(report, underwater);
+		this.mode = mode;
 		if (!call(() -> bridge.setListener(engine, listener))) return;
-		channels.executeOnChannels(stream -> update(stream, listener, underwater, efx, eax));
+		channels.executeOnChannels(stream -> update(stream, listener, underwater, efx, mode, orientation));
+	}
+
+	/** The wanted reverb, if the game's OpenAL can do it, else the best it can; underwater, EAX's preset. */
+	private ReverbMode chooseMode(OpenAlProbe.@Nullable Report report, boolean underwater) {
+		boolean eax = report != null && report.efx() && report.eaxReverb();
+		boolean convolution = report != null && report.efx() && report.convolutionEffect();
+		ReverbMode wanted = wantedMode;
+		if (wanted == ReverbMode.OFF) return ReverbMode.OFF;
+		if (underwater || wanted == ReverbMode.EAX) return eax ? ReverbMode.EAX : ReverbMode.OFF;
+		if (convolution) return ReverbMode.CONVOLUTION;
+		return eax ? ReverbMode.EAX : ReverbMode.OFF;
+	}
+
+	/**
+	 * The world's -z and +y axes in the listener's frame (x right, y up, -z ahead), which is the orientation that
+	 * turns a world-axes impulse response with the listener.
+	 */
+	private static float[] worldAxesFor(Camera camera) {
+		Vector3fc f = camera.forwardVector();
+		Vector3fc u = camera.upVector();
+		Vector3fc l = camera.leftVector();
+		float ry = -l.y(), rz = -l.z();
+		return new float[] {-rz, -u.z(), f.z(), ry, u.y(), -f.y()};
 	}
 
 	/** On the sound thread: shapes every positional source. */
-	private void update(Stream<Channel> channels, double[] listener, boolean underwater, boolean efx, boolean eax) {
-		int reverb = eax ? updateReverb(underwater) : 0;
+	private void update(Stream<Channel> channels, double[] listener, boolean underwater, boolean efx,
+			ReverbMode mode, float[] orientation) {
+		int[] sends = reverb(mode, underwater, orientation);
 		List<ShapedChannel> shaped = new ArrayList<>();
 		channels.forEach(channel -> {
 			ShapedChannel c = (ShapedChannel) channel;
@@ -145,14 +203,51 @@ public final class SoundShaper {
 			if (underwater) {
 				for (int band = 0; band < gains.length; band++) gains[band] *= UNDERWATER[band];
 			}
-			if (efx) filter(channel, state, gains);
-			if (reverb != 0) send(channel, state, gains, reverb);
+			if (efx) {
+				filter(channel, state, gains);
+				send(channel, state, gains, sends);
+			}
 			Vec3 heardFrom = state.heardFrom(position);
 			AL10.alSource3f(channel.earshot$source(), AL10.AL_POSITION, (float) heardFrom.x, (float) heardFrom.y,
 					(float) heardFrom.z);
 			shots.add(new Snapshot(position, heardFrom, gains));
 		}
 		snapshot = List.copyOf(shots);
+	}
+
+	/**
+	 * Brings the reverb up to date and returns the slots sources send to, by send index (0 for none). On the sound
+	 * thread.
+	 */
+	private int[] reverb(ReverbMode mode, boolean underwater, float[] orientation) {
+		if (mode == ReverbMode.OFF || !call(() -> bridge.room(engine, room))) return new int[2];
+		lastRoom = room.clone();
+		if (mode == ReverbMode.CONVOLUTION) {
+			convolution.tick(room, orientation);
+			return convolution.slots();
+		}
+		return new int[] {updateEax(underwater), 0};
+	}
+
+	/**
+	 * Sets the EAX reverb from the room (or EFX's underwater preset), making the effect and slot first if this
+	 * context has none yet. Returns the slot.
+	 */
+	private int updateEax(boolean underwater) {
+		synchronized (reverbLock) {
+			if (slot == 0) {
+				effect = EXTEfx.alGenEffects();
+				EXTEfx.alEffecti(effect, EXTEfx.AL_EFFECT_TYPE, EXTEfx.AL_EFFECT_EAXREVERB);
+				slot = EXTEfx.alGenAuxiliaryEffectSlots();
+			}
+			for (int i = 0; i < EAX_PARAMETERS.length; i++) {
+				float value = underwater ? UNDERWATER_REVERB[i] : (float) room[NativeBridge.EAX_FIRST + i];
+				EXTEfx.alEffectf(effect, EAX_PARAMETERS[i], value);
+			}
+			// A slot copies its effect when given it, so it is given it again after every change.
+			EXTEfx.alAuxiliaryEffectSloti(slot, EXTEfx.AL_EFFECTSLOT_EFFECT, effect);
+			return slot;
+		}
 	}
 
 	/**
@@ -174,33 +269,10 @@ public final class SoundShaper {
 	}
 
 	/**
-	 * Sets the reverb from the room measured around the listener (or EFX's underwater preset), making the effect and
-	 * slot first if this context has none yet. Returns the slot. On the sound thread.
+	 * Sends a source to the reverb slots. What reaches the listener's space excites its reverb, so the send follows
+	 * the direct gains, but softened (square root): a muffled sound behind a wall still fills the room a little.
 	 */
-	private int updateReverb(boolean underwater) {
-		if (!call(() -> bridge.room(engine, room))) return 0;
-		lastRoom = room.clone();
-		synchronized (reverbLock) {
-			if (slot == 0) {
-				effect = EXTEfx.alGenEffects();
-				EXTEfx.alEffecti(effect, EXTEfx.AL_EFFECT_TYPE, EXTEfx.AL_EFFECT_EAXREVERB);
-				slot = EXTEfx.alGenAuxiliaryEffectSlots();
-			}
-			for (int i = 0; i < EAX_PARAMETERS.length; i++) {
-				float value = underwater ? UNDERWATER_REVERB[i] : (float) room[NativeBridge.EAX_FIRST + i];
-				EXTEfx.alEffectf(effect, EAX_PARAMETERS[i], value);
-			}
-			// A slot copies its effect when given it, so it is given it again after every change.
-			EXTEfx.alAuxiliaryEffectSloti(slot, EXTEfx.AL_EFFECTSLOT_EFFECT, effect);
-			return slot;
-		}
-	}
-
-	/**
-	 * Sends a source to the reverb. What reaches the listener's space excites its reverb, so the send follows the
-	 * direct gains, but softened (square root): a muffled sound behind a wall still fills the room a little.
-	 */
-	private static void send(ShapedChannel channel, SourceState state, float[] gains, int slot) {
+	private static void send(ShapedChannel channel, SourceState state, float[] gains, int[] slots) {
 		int source = channel.earshot$source();
 		if (state.sendFilter == 0) {
 			state.sendFilter = EXTEfx.alGenFilters();
@@ -211,7 +283,10 @@ public final class SoundShaper {
 		float high = (float) Math.sqrt(Math.clamp(gains[2], 0f, 1f));
 		EXTEfx.alFilterf(state.sendFilter, EXTEfx.AL_LOWPASS_GAIN, low);
 		EXTEfx.alFilterf(state.sendFilter, EXTEfx.AL_LOWPASS_GAINHF, low > 0 ? Math.clamp(high / low, 0f, 1f) : 0f);
-		AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, slot, 0, state.sendFilter);
+		for (int send = 0; send < slots.length; send++) {
+			AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, slots[send], send,
+					slots[send] == 0 ? EXTEfx.AL_FILTER_NULL : state.sendFilter);
+		}
 	}
 
 	/**
@@ -227,7 +302,7 @@ public final class SoundShaper {
 				(float) heardFrom.z);
 	}
 
-	/** Frees a source's filter when the game destroys the source. Called on the sound thread. */
+	/** Frees a source's filters when the game destroys the source. Called on the sound thread. */
 	public static void release(ShapedChannel channel) {
 		SourceState state = channel.earshot$state();
 		if (state.filter != 0) {

@@ -26,7 +26,7 @@ import java.nio.charset.StandardCharsets;
  */
 public final class NativeBridge {
 	/** Must equal {@code EARSHOT_ABI_VERSION} in {@code earshot.h}. */
-	public static final int ABI_VERSION = 4;
+	public static final int ABI_VERSION = 5;
 	/** Blocks in a section, in Minecraft's order. */
 	public static final int SECTION_BLOCKS = 4096;
 	/** Doubles per traced leg: from x, y, z, to x, y, z, energy, escaped (1 or 0). */
@@ -58,6 +58,7 @@ public final class NativeBridge {
 	private final MethodHandle setListener;
 	private final MethodHandle hear;
 	private final MethodHandle room;
+	private final MethodHandle impulseResponse;
 	private final MethodHandle lastError;
 
 	public NativeBridge(SymbolLookup library) {
@@ -88,6 +89,9 @@ public final class NativeBridge {
 		hear = linker.downcallHandle(find(library, "earshot_hear"),
 				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, SIZE_T, ADDRESS), critical);
 		room = linker.downcallHandle(find(library, "earshot_room"), FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS),
+				critical);
+		impulseResponse = linker.downcallHandle(find(library, "earshot_impulse_response"),
+				FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, JAVA_FLOAT, JAVA_LONG, ADDRESS, SIZE_T, ADDRESS),
 				critical);
 		lastError = linker.downcallHandle(find(library, "earshot_last_error"),
 				FunctionDescriptor.of(SIZE_T, ADDRESS, SIZE_T));
@@ -213,6 +217,24 @@ public final class NativeBridge {
 	public void room(MemorySegment engine, double[] out) {
 		if (out.length < ROOM_DOUBLES) throw new IllegalArgumentException("room needs " + ROOM_DOUBLES + " doubles");
 		check((int) invoke(room, engine, MemorySegment.ofArray(out)));
+	}
+
+	/**
+	 * An impulse response for the room around the listener: first-order ambisonics, W, X, Y, Z interleaved, FuMa, in
+	 * world axes, for {@code AL_FORMAT_BFORMAT3D_FLOAT32}. Empty before the room has been measured.
+	 */
+	public float[] impulseResponse(MemorySegment engine, int sampleRate, float maxSeconds, long seed) {
+		long[] needed = new long[1];
+		float[] none = new float[0];
+		check((int) invoke(impulseResponse, engine, sampleRate, maxSeconds, seed, MemorySegment.ofArray(none), 0L,
+				MemorySegment.ofArray(needed)));
+		while (true) {
+			float[] out = new float[(int) needed[0]];
+			check((int) invoke(impulseResponse, engine, sampleRate, maxSeconds, seed, MemorySegment.ofArray(out),
+					(long) out.length, MemorySegment.ofArray(needed)));
+			// The room may have changed between the calls, and with it the length.
+			if (needed[0] <= out.length) return needed[0] == out.length ? out : java.util.Arrays.copyOf(out, (int) needed[0]);
+		}
 	}
 
 	/** Throws with this thread's {@code earshot_last_error} message unless {@code code} is 0. */
