@@ -111,6 +111,13 @@ public final class AcousticsScreen extends OptionsSubScreen {
 	}
 
 	@Override
+	protected void init() {
+		// Back from the HRTF test, which may have picked one.
+		hrtf.set(EarshotClient.config().hrtf());
+		super.init();
+	}
+
+	@Override
 	protected void addOptions() {
 		list.addBig(preset);
 		qualityStatus = note(qualityStatus());
@@ -128,6 +135,9 @@ public final class AcousticsScreen extends OptionsSubScreen {
 
 		list.addHeader(Component.translatable("earshot.settings.section.headphones"));
 		list.addSmall(options.directionalAudio(), hrtf);
+		list.addBig(net.minecraft.client.gui.components.Button.builder(
+				Component.translatable("earshot.settings.hrtf_test"),
+				b -> minecraft.gui.setScreen(new HrtfTestScreen(this))).build());
 
 		list.addHeader(Component.translatable("earshot.settings.section.voice"));
 		if (yakvc) {
