@@ -28,6 +28,11 @@ const MAX_QUEUED: usize = RATE as usize / 5;
 /// or a late start never leaves the voice lagging.
 const MAX_LAG: usize = RATE as usize / 10;
 const LAG_TARGET: usize = RATE as usize / 25;
+/// A voice starts, and starts again after running dry, only once this much
+/// is queued (40 ms): yakvc hands frames over in real time and no sooner, and
+/// OpenAL asks for a mixing period at a time, so playing from the first
+/// frame would stutter.
+const PRIME: usize = LAG_TARGET;
 /// yakvc is asked for frames this far ahead of real time, to ride over
 /// OpenAL's mixing periods.
 const LEAD: Duration = Duration::from_millis(40);
@@ -106,6 +111,9 @@ pub fn set_own_voice(keep: bool) {
 #[derive(Debug, Default)]
 pub struct Stream {
     queue: Mutex<VecDeque<f32>>,
+    /// Whether the voice is playing out of the queue, rather than holding
+    /// back until [`PRIME`] is buffered.
+    primed: AtomicBool,
     info: Mutex<Info>,
 }
 
@@ -179,6 +187,13 @@ pub fn streams() -> Vec<([u8; 16], Info, usize)> {
 /// silence after them if the queue runs dry.
 pub fn pull(stream: &Stream, out: &mut [f32]) {
     let mut queue = lock(&stream.queue);
+    if !stream.primed.load(Ordering::Relaxed) {
+        if queue.len() < PRIME {
+            out.fill(0.0);
+            return;
+        }
+        stream.primed.store(true, Ordering::Relaxed);
+    }
     if queue.len() > out.len() + MAX_LAG {
         let excess = queue.len() - out.len() - LAG_TARGET;
         queue.drain(..excess);
@@ -188,6 +203,10 @@ pub fn pull(stream: &Stream, out: &mut [f32]) {
         *out = sample;
     }
     out[n..].fill(0.0);
+    if n < out.len() {
+        // Ran dry: buffer again before playing on.
+        stream.primed.store(false, Ordering::Relaxed);
+    }
 }
 
 /// Whether yakvc should play the next 20 ms now.
@@ -339,6 +358,25 @@ mod tests {
     }
 
     #[test]
+    fn a_voice_that_runs_dry_buffers_again_before_playing_on() {
+        let uuid = [13; 16];
+        deliver(uuid, &[1.0; FRAME], 0);
+        deliver(uuid, &[1.0; FRAME], 0);
+        let stream = stream(uuid);
+        let mut out = vec![0.0; 3 * FRAME];
+        pull(&stream, &mut out);
+        assert_eq!(out[2 * FRAME - 1], 0.5, "played what there was");
+        assert_eq!(out[2 * FRAME], 0.0, "then silence");
+        // One frame isn't enough to start again.
+        deliver(uuid, &[1.0; FRAME], 0);
+        pull(&stream, &mut out[..10]);
+        assert_eq!(out[..10], [0.0; 10]);
+        deliver(uuid, &[1.0; FRAME], 0);
+        pull(&stream, &mut out[..10]);
+        assert_eq!(out[..10], [0.5; 10]);
+    }
+
+    #[test]
     fn a_queue_never_grows_past_its_cap() {
         let uuid = [8; 16];
         for _ in 0..100 {
@@ -363,18 +401,22 @@ mod tests {
     #[test]
     fn the_openal_callback_fills_every_byte() {
         let uuid = [9; 16];
-        deliver(uuid, &[0.75; 4], 0);
         let mut out = [1.0f32; 8];
         let bytes = (out.len() * 4) as i32;
-        // SAFETY: the pointer comes from `stream_pointer` and `out` is
-        // writable for `bytes` bytes.
-        let written = unsafe { callback(stream_pointer(uuid), out.as_mut_ptr().cast(), bytes) };
-        assert_eq!(written, bytes);
-        assert_eq!(
-            out,
-            [0.375, 0.375, 0.375, 0.375, 0.0, 0.0, 0.0, 0.0],
-            "at half volume"
-        );
+        let play = |out: &mut [f32; 8]| {
+            // SAFETY: the pointer comes from `stream_pointer` and `out` is
+            // writable for `bytes` bytes.
+            unsafe { callback(stream_pointer(uuid), out.as_mut_ptr().cast(), bytes) }
+        };
+        // Less than 40 ms queued: silence, holding back, but every byte.
+        deliver(uuid, &[0.75; 4], 0);
+        assert_eq!(play(&mut out), bytes);
+        assert_eq!(out, [0.0; 8], "held back");
+        // Enough: it plays, at half volume.
+        deliver(uuid, &[0.75; FRAME], 0);
+        deliver(uuid, &[0.75; FRAME], 0);
+        assert_eq!(play(&mut out), bytes);
+        assert_eq!(out, [0.375; 8], "at half volume");
     }
 
     #[test]

@@ -1121,6 +1121,8 @@ mod tests {
                 heard_from: [4.0, 5.0, 6.0],
                 occlusion: 0.0,
             };
+            // Two frames: a voice starts once 40 ms is queued.
+            ((*sink).frame.unwrap())((*sink).user, &frame);
             ((*sink).frame.unwrap())((*sink).user, &frame);
         }
         let mut uuids = [0u8; 16 * 64];
@@ -1140,7 +1142,7 @@ mod tests {
         let info = &info[EARSHOT_VOICE_DOUBLES * at..][..EARSHOT_VOICE_DOUBLES];
         assert_eq!(info[1..7], [32.0, 1.0, 0.0, 4.0, 5.0, 6.0]);
         assert!(info[7] < 1.0 && info[8] == 0.0, "{info:?}");
-        assert_eq!(info[9], 0.02);
+        assert_eq!(info[9], 0.04);
         // OpenAL's callback plays it.
         let callback: unsafe extern "C" fn(*mut c_void, *mut c_void, i32) -> i32 =
             // SAFETY: `earshot_voice_callback` is that function.
