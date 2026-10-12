@@ -3,6 +3,7 @@
 //! through the air), and the path tracer that reverb will build on
 //! (docs/PLAN.md).
 
+mod early;
 mod eax;
 mod engine;
 mod hear;
@@ -13,6 +14,7 @@ mod quality;
 mod reverb;
 mod rng;
 
+pub use crate::early::{Early, early_reflections};
 pub use crate::eax::{EaxReverb, eax_reverb};
 pub use crate::engine::{Engine, ROOM_REACH};
 pub use crate::hear::{Heard, hear, occlusion};

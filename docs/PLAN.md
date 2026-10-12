@@ -179,6 +179,12 @@ The gametest checks a looping beacon hum in three states:
 - **Bypass key** for A/B listening (unbound by default): the Off preset until pressed again, without saving.
 - **Own-voice reverb** (FFI ABI 9): Yak VC sends the player's own voice to a version 2 sink as `YAKVC_VOICE_SELF` frames (proposed in a follow-up to #177). The Own Voice Echo setting (off by default) offers the version 2 sink. That voice plays head-relative with its direct path filtered to silence and half its level sent to the listener's reverb, so the room answers and nothing is heard dry. A Yak VC from before own voice refuses version 2 and stays on its speakers; when Yak VC is loaded and hasn't asked the offered version 2 sink for a frame within 3 s, Earshot offers version 1 instead, so turning the setting on never costs voice chat. The gametest sends own-voice frames to the version 2 sink and checks they play reverb-only.
 
+## M6 results (2026-10-12)
+
+- **Per-source early reflections** (Ultra; FFI ABI 10 `earshot_early`, `earshot-sim/src/early.rs`): walls are block faces, so the first-order image sources off the nearest wall in each of the six axis directions (within 16 blocks) are exact. One counts when its point lands on a solid face, the listener is on the source's side, and both legs let over half the mid band through. Its energy is the wall's mirrored share, `(1 − absorption)(1 − scattering)`, times the inverse-square loss against the direct way. The four loudest sounds (mid band through, over distance) each get an EAX slot with reflections only (no late reverb, no diffusion): gain from the summed energy, delay from the first, pan from the energy-weighted direction. Sources send to it unfiltered on their fourth aux send. Tests: a floor gives one reflection from below at the image source's delay; cloth reflects under half what rock does; open air and a wall between give none. The gametest checks a sound on open ground gets them on Ultra and loses them off it.
+- **2nd/3rd-order ambisonic impulse responses: not possible.** OpenAL Soft's convolution effect caps the response's order at 1 (`MaxConvolveAmbiOrder = 1` in its `convolution.cpp`), and it convolves only the slot's W input.
+- **GPU tracing: not needed.** Profiling says the CPU isn't the limit: High's room trace costs about a quarter of a core, field builds 3–14 ms, and the budget scales rays down on slower machines.
+
 ## Approaches considered
 
 | Option | What it is | Verdict |

@@ -72,6 +72,7 @@ public final class SoundShaper {
 	private final MemorySegment engine;
 	private final ConvolutionReverb convolution;
 	private final SpaceReverb spaces;
+	private final EarlyReflections early;
 	private final VoicePlayer voice;
 	private volatile List<Snapshot> snapshot = List.of();
 	/** The EAX reverb's effect and slot in the game's context; 0 until made, and again when the context goes. */
@@ -89,6 +90,8 @@ public final class SoundShaper {
 	private volatile boolean doppler = true;
 	/** Whether sounds in another space get that space's reverb (High and Ultra). */
 	private volatile boolean spaceReverb;
+	/** Whether the loudest sounds get early reflections of their own (Ultra). */
+	private volatile boolean earlyReflections;
 	/** The listener's velocity, estimated on the client thread. */
 	private final SourceState.Motion listenerMotion = new SourceState.Motion();
 
@@ -96,11 +99,13 @@ public final class SoundShaper {
 	 * One shaped sound, for the debug command and tests: {@code voice} for a Yak VC voice, {@code elsewhere} when it
 	 * gets the reverb of another space than the listener's.
 	 */
-	public record Snapshot(Vec3 position, Vec3 heardFrom, float[] gains, boolean voice, boolean elsewhere) {
+	public record Snapshot(Vec3 position, Vec3 heardFrom, float[] gains, boolean voice, boolean elsewhere,
+			boolean early) {
 		@Override
 		public String toString() {
 			return "Snapshot[position=" + position + ", heardFrom=" + heardFrom + ", gains="
-					+ java.util.Arrays.toString(gains) + ", voice=" + voice + ", elsewhere=" + elsewhere + "]";
+					+ java.util.Arrays.toString(gains) + ", voice=" + voice + ", elsewhere=" + elsewhere + ", early="
+					+ early + "]";
 		}
 	}
 
@@ -115,6 +120,7 @@ public final class SoundShaper {
 		this.engine = engine;
 		this.convolution = new ConvolutionReverb(bridge, engine);
 		this.spaces = new SpaceReverb(bridge, engine);
+		this.early = new EarlyReflections(bridge, engine);
 		this.voice = new VoicePlayer(bridge);
 	}
 
@@ -162,6 +168,8 @@ public final class SoundShaper {
 		spaceReverb = active && config.reverb() != io.github.cumsauce.earshot.config.EarshotConfig.Reverb.OFF
 				&& (preset == io.github.cumsauce.earshot.config.EarshotConfig.Preset.HIGH
 						|| preset == io.github.cumsauce.earshot.config.EarshotConfig.Preset.ULTRA);
+		earlyReflections = active && config.reverb() != io.github.cumsauce.earshot.config.EarshotConfig.Reverb.OFF
+				&& preset == io.github.cumsauce.earshot.config.EarshotConfig.Preset.ULTRA;
 		wantMode(!active ? ReverbMode.OFF : switch (config.reverb()) {
 			case AUTO -> null;
 			case CONVOLUTION -> ReverbMode.CONVOLUTION;
@@ -181,6 +189,7 @@ public final class SoundShaper {
 		}
 		convolution.contextClosing();
 		spaces.contextClosing();
+		early.contextClosing();
 		voice.contextClosing();
 	}
 
@@ -264,6 +273,7 @@ public final class SoundShaper {
 			snapshot = List.of();
 			voice.report();
 			spaces.end(System.nanoTime(), !spacesOn, ear, axes.right(), axes.up(), axes.forward());
+			if (!earlyOn(efx, underwater)) early.free();
 			return;
 		}
 		double[] sources = new double[3 * count];
@@ -276,6 +286,7 @@ public final class SoundShaper {
 		double[] heard = new double[NativeBridge.HEARD_DOUBLES * count];
 		if (!call(() -> bridge.hear(engine, listener, sources, count, heard))) return;
 
+		int[] earlySlots = earlySlots(targets, heard, listener, ear, axes, efx, underwater);
 		List<Snapshot> shots = new ArrayList<>(count);
 		for (int i = 0; i < count; i++) {
 			Target target = targets.get(i);
@@ -296,6 +307,7 @@ public final class SoundShaper {
 			if (efx) {
 				filter(target.source(), state, gains);
 				send(target.source(), state, gains, sends, spaceSlot);
+				sendEarly(target.source(), state, earlySlots[i]);
 			}
 			AL10.alSource3f(target.source(), AL10.AL_POSITION, (float) heardFrom.x, (float) heardFrom.y,
 					(float) heardFrom.z);
@@ -310,11 +322,13 @@ public final class SoundShaper {
 				target.voice().heardFrom = heardFrom;
 				target.voice().gains = gains;
 			}
-			shots.add(new Snapshot(position, heardFrom, gains, target.voice() != null, spaceSlot != 0));
+			shots.add(new Snapshot(position, heardFrom, gains, target.voice() != null, spaceSlot != 0,
+					earlySlots[i] != 0));
 		}
 		snapshot = List.copyOf(shots);
 		voice.report();
 		spaces.end(now, !spacesOn, ear, axes.right(), axes.up(), axes.forward());
+		if (!earlyOn(efx, underwater)) early.free();
 	}
 
 	/**
@@ -367,6 +381,41 @@ public final class SoundShaper {
 		EXTEfx.alFilterf(state.filter, EXTEfx.AL_LOWPASS_GAIN, low);
 		EXTEfx.alFilterf(state.filter, EXTEfx.AL_LOWPASS_GAINHF, highRatio);
 		AL10.alSourcei(source, EXTEfx.AL_DIRECT_FILTER, state.filter);
+	}
+
+	private boolean earlyOn(boolean efx, boolean underwater) {
+		return earlyReflections && efx && !underwater;
+	}
+
+	/**
+	 * The early-reflections slot for each target (0 for none): the {@value EarlyReflections#SOURCES} loudest, by how
+	 * much of their mid band gets through over how far they are.
+	 */
+	private int[] earlySlots(List<Target> targets, double[] heard, double[] listener, Vec3 ear, Axes axes,
+			boolean efx, boolean underwater) {
+		int[] slots = new int[targets.size()];
+		if (!earlyOn(efx, underwater)) return slots;
+		Integer[] order = new Integer[targets.size()];
+		for (int i = 0; i < order.length; i++) order[i] = i;
+		java.util.Arrays.sort(order, java.util.Comparator.comparingDouble(i -> -heard[NativeBridge.HEARD_DOUBLES * i + 1]
+				/ Math.max(1, targets.get(i).position().distanceTo(ear))));
+		int chosen = Math.min(order.length, EarlyReflections.SOURCES);
+		Vec3[] positions = new Vec3[chosen];
+		for (int k = 0; k < chosen; k++) positions[k] = targets.get(order[k]).position();
+		int[] assigned = early.update(listener, positions, axes.right(), axes.up(), axes.forward());
+		for (int k = 0; k < chosen; k++) slots[order[k]] = assigned[k];
+		return slots;
+	}
+
+	/** Sends a source to its own early reflections, unfiltered: they come by their own ways, not the direct one. */
+	private static void sendEarly(int source, SourceState state, int slot) {
+		if (slot != 0) {
+			AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, slot, EarlyReflections.SEND, EXTEfx.AL_FILTER_NULL);
+		} else if (state.earlySent) {
+			AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, EXTEfx.AL_EFFECTSLOT_NULL, EarlyReflections.SEND,
+					EXTEfx.AL_FILTER_NULL);
+		}
+		state.earlySent = slot != 0;
 	}
 
 	/**

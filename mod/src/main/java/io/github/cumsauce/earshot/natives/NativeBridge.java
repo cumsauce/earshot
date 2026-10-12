@@ -31,7 +31,7 @@ import java.util.UUID;
  */
 public final class NativeBridge {
 	/** Must equal {@code EARSHOT_ABI_VERSION} in {@code earshot.h}. */
-	public static final int ABI_VERSION = 9;
+	public static final int ABI_VERSION = 10;
 	/** Blocks in a section, in Minecraft's order. */
 	public static final int SECTION_BLOCKS = 4096;
 	/** Doubles per traced leg: from x, y, z, to x, y, z, energy, escaped (1 or 0). */
@@ -56,6 +56,12 @@ public final class NativeBridge {
 	 * field's build time in milliseconds, and its reach (0 for none).
 	 */
 	public static final int STATS_DOUBLES = 4;
+	/**
+	 * Doubles per source from {@link #early}: the first reflections' energy (relative to the direct sound in the
+	 * open), how much later the first arrives in seconds, where they come from on average (world axes from the
+	 * listener, no longer than 1), and how many there are.
+	 */
+	public static final int EARLY_DOUBLES = 6;
 	/** Doubles per stream from {@code earshot_voice_streams}. */
 	private static final int VOICE_DOUBLES = 10;
 
@@ -77,6 +83,7 @@ public final class NativeBridge {
 	private final MethodHandle hear;
 	private final MethodHandle room;
 	private final MethodHandle roomAt;
+	private final MethodHandle early;
 	private final MethodHandle impulseResponse;
 	private final MethodHandle setQuality;
 	private final MethodHandle stats;
@@ -117,6 +124,8 @@ public final class NativeBridge {
 				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, SIZE_T, ADDRESS), critical);
 		room = linker.downcallHandle(find(library, "earshot_room"), FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS),
 				critical);
+		early = linker.downcallHandle(find(library, "earshot_early"),
+				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, SIZE_T, ADDRESS), critical);
 		roomAt = linker.downcallHandle(find(library, "earshot_room_at"),
 				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, JAVA_INT, JAVA_INT, JAVA_LONG, ADDRESS), critical);
 		impulseResponse = linker.downcallHandle(find(library, "earshot_impulse_response"),
@@ -259,6 +268,17 @@ public final class NativeBridge {
 	public void room(MemorySegment engine, double[] out) {
 		if (out.length < ROOM_DOUBLES) throw new IllegalArgumentException("room needs " + ROOM_DOUBLES + " doubles");
 		check((int) invoke(room, engine, MemorySegment.ofArray(out)));
+	}
+
+	/** The first reflections of each of {@code count} sources ({@value #EARLY_DOUBLES} doubles each into {@code out}). */
+	public void early(MemorySegment engine, double[] listener, double[] sources, int count, double[] out) {
+		requireLength(listener, 3, "listener");
+		if (sources.length < 3 * count || out.length < EARLY_DOUBLES * count) {
+			throw new IllegalArgumentException("early: " + count + " sources, but " + sources.length + " and "
+					+ out.length + " doubles");
+		}
+		check((int) invoke(early, engine, MemorySegment.ofArray(listener), MemorySegment.ofArray(sources),
+				(long) count, MemorySegment.ofArray(out)));
 	}
 
 	/**
