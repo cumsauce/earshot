@@ -99,6 +99,7 @@ public final class DebugOverlay implements HudElement {
 			if (s.heardFrom().distanceTo(s.position()) > 0.5) line.append(", round a corner");
 			if (s.elsewhere()) line.append(", own space");
 			if (s.early()) line.append(", early echoes");
+			if (s.ownReverb()) line.append(", own reverb");
 			lines.add(line.toString());
 		}
 		return lines;

@@ -73,6 +73,19 @@ public final class SoundShaper {
 	private final ConvolutionReverb convolution;
 	private final SpaceReverb spaces;
 	private final EarlyReflections early;
+	/**
+	 * On Ultra with convolution, the loudest sounds' own reverbs: each made from the room round the sound and its
+	 * reflections off its own walls, in place of the listener's.
+	 */
+	private final ConvolutionReverb[] ownReverbs = new ConvolutionReverb[OWN_REVERBS];
+	private static final int OWN_REVERBS = 2;
+	/**
+	 * Own reverbs no sound is given this update, let go only at its end, once every source's sends have moved off
+	 * them: OpenAL won't delete a slot a source still sends to.
+	 */
+	private final boolean[] unusedOwn = new boolean[OWN_REVERBS];
+	/** A sound's own reverb is made again once it has moved this far. */
+	private static final double OWN_REVERB_MOVE = 2;
 	private final VoicePlayer voice;
 	private volatile List<Snapshot> snapshot = List.of();
 	/** The EAX reverb's effect and slot in the game's context; 0 until made, and again when the context goes. */
@@ -108,12 +121,12 @@ public final class SoundShaper {
 	 * gets the reverb of another space than the listener's.
 	 */
 	public record Snapshot(Vec3 position, Vec3 heardFrom, float[] gains, boolean voice, boolean elsewhere,
-			boolean early) {
+			boolean early, boolean ownReverb) {
 		@Override
 		public String toString() {
 			return "Snapshot[position=" + position + ", heardFrom=" + heardFrom + ", gains="
 					+ java.util.Arrays.toString(gains) + ", voice=" + voice + ", elsewhere=" + elsewhere + ", early="
-					+ early + "]";
+					+ early + ", ownReverb=" + ownReverb + "]";
 		}
 	}
 
@@ -130,6 +143,12 @@ public final class SoundShaper {
 		this.convolution = new ConvolutionReverb(bridge, engine);
 		this.spaces = new SpaceReverb(bridge, engine);
 		this.early = new EarlyReflections(bridge, engine);
+		for (int i = 0; i < OWN_REVERBS; i++) {
+			ownReverbs[i] = new ConvolutionReverb(
+					(at, seed) -> bridge.impulseResponseFor(engine, at, 1024, 8, 48_000, 1.5f, seed),
+					(madeFrom, at) -> Math.hypot(Math.hypot(at[0] - madeFrom[0], at[1] - madeFrom[1]),
+							at[2] - madeFrom[2]) > OWN_REVERB_MOVE);
+		}
 		this.voice = new VoicePlayer(bridge);
 	}
 
@@ -201,6 +220,7 @@ public final class SoundShaper {
 		convolution.contextClosing();
 		spaces.contextClosing();
 		early.contextClosing();
+		for (ConvolutionReverb own : ownReverbs) own.contextClosing();
 		voice.contextClosing();
 	}
 
@@ -305,6 +325,7 @@ public final class SoundShaper {
 			voice.report();
 			spaces.end(System.nanoTime(), !spacesOn, ear, axes.right(), axes.up(), axes.forward());
 			if (!earlyOn(efx, underwater)) early.free();
+			for (ConvolutionReverb own : ownReverbs) own.release();
 			return;
 		}
 		double[] sources = new double[3 * count];
@@ -317,7 +338,9 @@ public final class SoundShaper {
 		double[] heard = new double[NativeBridge.HEARD_DOUBLES * count];
 		if (!call(() -> bridge.hear(engine, listener, sources, count, heard))) return;
 
-		int[] earlySlots = earlySlots(targets, heard, listener, ear, axes, efx, underwater);
+		int[][] ownSends = new int[count][];
+		int[] earlySlots = earlySlots(targets, heard, listener, ear, axes, efx, underwater,
+				mode == ReverbMode.CONVOLUTION, orientation, ownSends);
 		List<Snapshot> shots = new ArrayList<>(count);
 		for (int i = 0; i < count; i++) {
 			Target target = targets.get(i);
@@ -341,7 +364,7 @@ public final class SoundShaper {
 			}
 			if (efx) {
 				filter(target.source(), state, gains);
-				send(target.source(), state, gains, sends, spaceSlot);
+				send(target.source(), state, gains, ownSends[i] != null ? ownSends[i] : sends, spaceSlot);
 				sendEarly(target.source(), state, earlySlots[i]);
 			}
 			AL10.alSource3f(target.source(), AL10.AL_POSITION, (float) heardFrom.x, (float) heardFrom.y,
@@ -358,12 +381,15 @@ public final class SoundShaper {
 				target.voice().gains = gains;
 			}
 			shots.add(new Snapshot(position, heardFrom, gains, target.voice() != null, spaceSlot != 0,
-					earlySlots[i] != 0));
+					earlySlots[i] != 0, ownSends[i] != null));
 		}
 		snapshot = List.copyOf(shots);
 		voice.report();
 		spaces.end(now, !spacesOn, ear, axes.right(), axes.up(), axes.forward());
 		if (!earlyOn(efx, underwater)) early.free();
+		for (int k = 0; k < OWN_REVERBS; k++) {
+			if (unusedOwn[k]) ownReverbs[k].release();
+		}
 	}
 
 	/**
@@ -450,18 +476,31 @@ public final class SoundShaper {
 	 * much of their mid band gets through over how far they are.
 	 */
 	private int[] earlySlots(List<Target> targets, double[] heard, double[] listener, Vec3 ear, Axes axes,
-			boolean efx, boolean underwater) {
+			boolean efx, boolean underwater, boolean convolution, float[] orientation, int[][] ownSends) {
 		int[] slots = new int[targets.size()];
-		if (!earlyOn(efx, underwater)) return slots;
+		if (!earlyOn(efx, underwater)) {
+			java.util.Arrays.fill(unusedOwn, true);
+			return slots;
+		}
 		Integer[] order = new Integer[targets.size()];
 		for (int i = 0; i < order.length; i++) order[i] = i;
 		java.util.Arrays.sort(order, java.util.Comparator.comparingDouble(i -> -heard[NativeBridge.HEARD_DOUBLES * i + 1]
 				/ Math.max(1, targets.get(i).position().distanceTo(ear))));
-		int chosen = Math.min(order.length, EarlyReflections.SOURCES);
+		// The loudest get reverbs of their own (with their early reflections in them); the next their early
+		// reflections over the listener's reverb.
+		int owned = convolution ? Math.min(order.length, OWN_REVERBS) : 0;
+		for (int k = 0; k < OWN_REVERBS; k++) {
+			unusedOwn[k] = k >= owned;
+			if (k >= owned) continue;
+			Vec3 at = targets.get(order[k]).position();
+			ownReverbs[k].tick(new double[] {at.x, at.y, at.z}, orientation);
+			if (ownReverbs[k].playing()) ownSends[order[k]] = ownReverbs[k].slots();
+		}
+		int chosen = Math.min(order.length - owned, EarlyReflections.SOURCES);
 		Vec3[] positions = new Vec3[chosen];
-		for (int k = 0; k < chosen; k++) positions[k] = targets.get(order[k]).position();
+		for (int k = 0; k < chosen; k++) positions[k] = targets.get(order[owned + k]).position();
 		int[] assigned = early.update(listener, positions, axes.right(), axes.up(), axes.forward());
-		for (int k = 0; k < chosen; k++) slots[order[k]] = assigned[k];
+		for (int k = 0; k < chosen; k++) slots[order[owned + k]] = assigned[k];
 		return slots;
 	}
 

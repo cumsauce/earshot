@@ -213,6 +213,8 @@ The gametest checks a looping beacon hum in three states:
 
 - **Climate air absorption** (alpha.13): OpenAL's air absorption factor follows ISO 9613-1's absorption at its 5 kHz reference (0.05 dB/m per unit), from the air where the listener is, smoothed over about a second. The temperature is about 20 °C per unit of the biome's. The humidity is 95 % in rain, 15 % where it never rains (desert, savanna, badlands, the Nether), 80 % where it's hot and rains (jungle), and 55 % elsewhere. Humidity uses public biome data; the game keeps its downfall private. Unit tests check the formula against ISO's tables at 20 °C and 50 % (about 4.7 dB/km at 1 kHz and 28 dB/km at 4 kHz). The debug overlay shows the factor.
 
+- **Per-source reverb** (alpha.14, Ultra with convolution; FFI ABI 12 `earshot_impulse_response_for`): the two loudest sounds each get a convolution reverb of their own, in place of the listener's. It's made from the room measured round the sound (1024 rays × 8 bounces) and its first reflections off its own walls, timed after its direct sound and coming from where they bounce. The next four keep their EAX early reflections. A sound's response is made again once it has moved 2 blocks, on the loader thread, crossfaded like the listener's (`ConvolutionReverb` now takes any maker). Own reverbs nobody uses are released at the end of the update, after every source's sends have moved off them; OpenAL won't delete a slot still in use, and a failed release is logged. The listener's convolution now also loads in the open, since responses carry echoes.
+
 ## Approaches considered
 
 | Option | What it is | Verdict |
