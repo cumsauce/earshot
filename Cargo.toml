@@ -32,6 +32,15 @@ undocumented_unsafe_blocks = "warn"
 [profile.release]
 lto = "thin"
 
+# The tracer and the pathing field are hot loops that take a second or more
+# per build unoptimized, which makes the engine's tests slow and flaky on CI
+# runners; optimize them in dev and test builds too.
+[profile.dev.package.earshot-world]
+opt-level = 2
+
+[profile.dev.package.earshot-sim]
+opt-level = 2
+
 # The natives shipped in the mod jar (`cargo xtask natives`/`dist`), as in
 # yakvc: one jar carries every platform's library, so optimize for size; the
 # acoustics crates will opt back into full speed as they arrive.

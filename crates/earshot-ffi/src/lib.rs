@@ -950,7 +950,7 @@ mod tests {
         }
         // Not measured yet, or measured: either way a whole number of frames.
         assert_eq!(needed % 4, 0);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         while needed == 0 || needed == usize::MAX {
             assert!(std::time::Instant::now() < deadline, "no impulse response");
             std::thread::sleep(std::time::Duration::from_millis(20));
