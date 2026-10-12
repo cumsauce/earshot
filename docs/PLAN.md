@@ -205,6 +205,8 @@ The gametest checks a looping beacon hum in three states:
 
 - **Echoes** (alpha.9): long-range image sources off big walls along each axis, out to 128 blocks. A wall counts only if it is solid 2 blocks round where the axis meets it, so a tree trunk or a pillar gives none. Between two facing walls, the images go up to 4th order. Only echoes later than 50 ms are added; sooner ones are reverb, and first ones within the trace's reach are left to the trace. Each echo's energy is the walls' mirrored shares over the path's inverse square. They join the early reflections in the impulse response, which now runs long enough to hold the last echo: before, open ground's 0.1 s decay cut every echo off.
 
+- **Voice directivity** (alpha.10): a speaker who is a player in the world gets an OpenAL cone along their head's facing (pitch and head yaw), so a voice is full within 90° of that, and past 270° at 0.63 (about -4 dB) with its highs at 0.25 more (about -12 dB), as speech radiates around 2–4 kHz. A speaker not in the world (out of entity range) stays omnidirectional.
+
 ## Approaches considered
 
 | Option | What it is | Verdict |

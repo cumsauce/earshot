@@ -220,11 +220,12 @@ public final class SoundShaper {
 		ReverbMode mode = chooseMode(report, underwater);
 		this.mode = mode;
 		if (!call(() -> bridge.setListener(engine, listener))) return;
-		Map<UUID, Vec3> players = new HashMap<>();
+		Map<UUID, VoicePlayer.Head> players = new HashMap<>();
 		float voiceVolume = Math.clamp(minecraft.options.getFinalSoundSourceVolume(SoundSource.VOICE), 0f, 1f);
 		if (voice.offered()) {
 			for (AbstractClientPlayer player : minecraft.level.players()) {
-				players.put(player.getUUID(), player.getEyePosition());
+				players.put(player.getUUID(), new VoicePlayer.Head(player.getEyePosition(),
+						net.minecraft.world.entity.Entity.calculateViewVector(player.getXRot(), player.getYHeadRot())));
 			}
 		}
 		channels.executeOnChannels(
@@ -257,7 +258,7 @@ public final class SoundShaper {
 
 	/** On the sound thread: shapes every positional source, the game's and Yak VC's voices. */
 	private void update(Stream<Channel> channels, double[] listener, boolean underwater, boolean efx,
-			ReverbMode mode, float[] orientation, Map<UUID, Vec3> players, float voiceVolume, Vec3 listenerVelocity,
+			ReverbMode mode, float[] orientation, Map<UUID, VoicePlayer.Head> players, float voiceVolume, Vec3 listenerVelocity,
 			Axes axes) {
 		int[] sends = reverb(mode, underwater, orientation);
 		boolean spacesOn = spaceReverb && efx && mode != ReverbMode.OFF && !underwater;
