@@ -18,8 +18,10 @@
  *    `earshot_voice_stream` and `earshot_voice_streams`.
  * 7: `earshot_set_quality` and `earshot_stats`.
  * 8: `earshot_room_at`.
+ * 9: `earshot_voice_sink` takes the sink version; `earshot_voice_polls` and
+ *    `earshot_voice_own`.
  */
-#define EARSHOT_ABI_VERSION 8
+#define EARSHOT_ABI_VERSION 9
 
 #define EARSHOT_OK 0
 
@@ -286,12 +288,27 @@ int32_t earshot_trace_paths(struct EarshotEngine *engine,
                             double *stats);
 
 /**
- * The address of Earshot's `YakVcVoiceSink` (`yakvc.h`, version 1), for
- * Java to offer Yak VC in Fabric's object share under `yakvc:voice_sink`.
- * It lives for the rest of the process and needs no engine: Yak VC may call
- * it from its audio thread at any time.
+ * The address of Earshot's `YakVcVoiceSink` (`yakvc.h`) as `version` 1
+ * (other players' voices) or 2 (also the player's own, as
+ * `YAKVC_VOICE_SELF` frames), for Java to offer Yak VC in Fabric's object
+ * share under `yakvc:voice_sink`; null for another version. Both live for
+ * the rest of the process and need no engine: Yak VC may call them from its
+ * audio thread at any time.
  */
-const void *earshot_voice_sink(void);
+const void *earshot_voice_sink(uint32_t version);
+
+/**
+ * How often Yak VC has asked a sink for a frame. It asks every few
+ * milliseconds once it has taken one, so a count that stays put after
+ * offering a sink means Yak VC refused it.
+ */
+uint64_t earshot_voice_polls(void);
+
+/**
+ * Keeps the player's own voice (`YAKVC_VOICE_SELF` frames) as a stream
+ * from now on, or drops it as it comes.
+ */
+void earshot_voice_own(bool keep);
 
 /**
  * The address of the OpenAL buffer callback (`ALBUFFERCALLBACKTYPESOFT`)

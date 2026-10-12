@@ -34,6 +34,12 @@ public final class VoicePlayer {
 	public static final String SINK_KEY = "yakvc:voice_sink";
 	/** Yak VC's {@code YAKVC_VOICE_UNPOSITIONED}: group voice and calls, which play centred. */
 	private static final int UNPOSITIONED = 1 << 1;
+	/** Yak VC's {@code YAKVC_VOICE_SELF}: the player's own voice, which only a version 2 sink gets. */
+	private static final int SELF = 1 << 2;
+	/** How much of the player's own voice goes to the room's reverb; none of it is played dry. */
+	private static final float OWN_VOICE_SEND = 0.5f;
+	/** After offering the version 2 sink, Yak VC must have asked it for a frame within this long, or it refused it. */
+	private static final long REFUSAL_NANOS = 3_000_000_000L;
 	/** A speaker silent this long has its source let go; their next frame makes another. */
 	private static final double IDLE_SECONDS = 2;
 	/** Voice is at full volume this close, as Yak VC's speakers play it by default. */
@@ -43,6 +49,13 @@ public final class VoicePlayer {
 	private final NativeBridge bridge;
 	private final long callback;
 	private volatile boolean enabled = true;
+	private volatile boolean ownVoice;
+	/** The installed Yak VC refused the version 2 sink: it predates own voice. */
+	private volatile boolean ownVoiceRefused;
+	/** The sink version offered (0 for none), when, and Yak VC's poll count then. */
+	private int offeredVersion;
+	private long offeredAt;
+	private long pollsAtOffer;
 	/** Whether the game's OpenAL plays callback buffers; known once it opens. */
 	private volatile boolean supported;
 	private volatile boolean offered;
@@ -63,6 +76,8 @@ public final class VoicePlayer {
 		boolean centred;
 		/** The gain set on the source, or -1 before one is. */
 		float volume = -1;
+		/** The player's own voice, which only feeds the room's reverb. */
+		boolean own;
 		/** As shaped in the last update. */
 		@Nullable Vec3 heardFrom;
 		float[] gains = {1, 1, 1};
@@ -82,12 +97,12 @@ public final class VoicePlayer {
 	 * @param heardFrom where the voice seems to come from, or null when centred
 	 */
 	public record Status(UUID speaker, boolean playing, @Nullable Vec3 position, @Nullable Vec3 heardFrom,
-			float[] gains, double queuedSeconds) {
+			float[] gains, double queuedSeconds, boolean own) {
 		@Override
 		public String toString() {
 			return "Status[speaker=" + speaker + ", playing=" + playing + ", position=" + position + ", heardFrom="
 					+ heardFrom + ", gains=" + java.util.Arrays.toString(gains) + ", queuedSeconds=" + queuedSeconds
-					+ "]";
+					+ ", own=" + own + "]";
 		}
 	}
 
@@ -106,10 +121,19 @@ public final class VoicePlayer {
 		return offered;
 	}
 
-	/** Takes Yak VC's voice through Earshot, or gives it back to Yak VC's own speakers. */
-	public void setEnabled(boolean enabled) {
+	/**
+	 * Takes Yak VC's voice through Earshot, or gives it back to Yak VC's own speakers; and with {@code ownVoice}, asks
+	 * for the player's own voice too, for the room to answer.
+	 */
+	public void configure(boolean enabled, boolean ownVoice) {
 		this.enabled = enabled;
+		this.ownVoice = ownVoice;
 		offer();
+	}
+
+	/** Whether the installed Yak VC refused to send the player's own voice. */
+	public boolean ownVoiceRefused() {
+		return ownVoiceRefused;
 	}
 
 	/** The game opened OpenAL: Yak VC's voice comes through Earshot if this OpenAL can play it. */
@@ -140,16 +164,34 @@ public final class VoicePlayer {
 	 */
 	private synchronized void offer() {
 		boolean want = enabled && supported && !failed;
-		if (want == offered) return;
+		int version = !want ? 0 : ownVoice && !ownVoiceRefused ? 2 : 1;
+		bridge.setOwnVoice(version == 2);
+		if (version == offeredVersion) return;
 		var share = FabricLoader.getInstance().getObjectShare();
 		if (want) {
-			share.put(SINK_KEY, bridge.voiceSink());
+			share.put(SINK_KEY, bridge.voiceSink(version));
 		} else {
 			share.remove(SINK_KEY);
 		}
 		offered = want;
-		EarshotClient.LOGGER.info(want ? "Offered Yak VC a voice sink: voice plays through Earshot"
-				: "Withdrew the voice sink: Yak VC's voice plays through its own speakers");
+		offeredVersion = version;
+		offeredAt = System.nanoTime();
+		pollsAtOffer = bridge.voicePolls();
+		EarshotClient.LOGGER.info(!want ? "Withdrew the voice sink: Yak VC's voice plays through its own speakers"
+				: version == 2 ? "Offered Yak VC a voice sink with own voice: voice plays through Earshot"
+				: "Offered Yak VC a voice sink: voice plays through Earshot");
+	}
+
+	/**
+	 * A Yak VC from before own voice refuses the version 2 sink and keeps voice on its speakers: once it has had time
+	 * to take it and hasn't asked it for a single frame, offer version 1 instead.
+	 */
+	private void checkRefusal() {
+		if (offeredVersion != 2 || System.nanoTime() - offeredAt < REFUSAL_NANOS) return;
+		if (!FabricLoader.getInstance().isModLoaded("yakvc") || bridge.voicePolls() != pollsAtOffer) return;
+		ownVoiceRefused = true;
+		EarshotClient.LOGGER.warn("This Yak VC doesn't send the player's own voice, so Own Voice Echo is off");
+		offer();
 	}
 
 	/**
@@ -159,11 +201,12 @@ public final class VoicePlayer {
 	 * @param players the eye of every player in the world, by UUID
 	 * @param volume  the game's Voice/Speech volume, with Master: Yak VC's frames come without it
 	 */
-	synchronized List<Voice> update(Map<UUID, Vec3> players, float volume) {
+	synchronized List<Voice> update(Map<UUID, Vec3> players, float volume, int[] sends) {
 		if (!offered) {
 			if (!voices.isEmpty()) stopAll();
 			return List.of();
 		}
+		checkRefusal();
 		List<Voice> positioned = new ArrayList<>();
 		Set<UUID> heard = new HashSet<>();
 		for (NativeBridge.VoiceStream stream : bridge.voiceStreams()) {
@@ -185,6 +228,7 @@ public final class VoicePlayer {
 			}
 			if ((stream.flags() & UNPOSITIONED) != 0) {
 				centre(voice);
+				if ((stream.flags() & SELF) != 0) reverbOnly(voice, sends);
 				continue;
 			}
 			double[] at = stream.heardFrom();
@@ -206,7 +250,7 @@ public final class VoicePlayer {
 		for (Voice voice : voices.values()) {
 			boolean playing = AL10.alGetSourcei(voice.source, AL10.AL_SOURCE_STATE) == AL10.AL_PLAYING;
 			out.add(new Status(voice.speaker, playing, voice.position, voice.centred ? null : voice.heardFrom,
-					voice.gains.clone(), voice.queuedSeconds));
+					voice.gains.clone(), voice.queuedSeconds, voice.own));
 		}
 		status = List.copyOf(out);
 	}
@@ -248,6 +292,29 @@ public final class VoicePlayer {
 		}
 		AL10.alSourcef(voice.source, AL10.AL_MAX_DISTANCE, Math.max(range, FULL_VOLUME_DISTANCE + 1));
 		voice.position = eye;
+	}
+
+	/**
+	 * Sends the player's own voice to the room's reverb ({@code sends}, by send index) and plays none of it dry: the
+	 * player hears their voice already, and the room answering it.
+	 */
+	private static void reverbOnly(Voice voice, int[] sends) {
+		SourceState state = voice.state;
+		if (!voice.own) {
+			voice.own = true;
+			state.filter = EXTEfx.alGenFilters();
+			EXTEfx.alFilteri(state.filter, EXTEfx.AL_FILTER_TYPE, EXTEfx.AL_FILTER_LOWPASS);
+			EXTEfx.alFilterf(state.filter, EXTEfx.AL_LOWPASS_GAIN, 0f);
+			state.sendFilter = EXTEfx.alGenFilters();
+			EXTEfx.alFilteri(state.sendFilter, EXTEfx.AL_FILTER_TYPE, EXTEfx.AL_FILTER_LOWPASS);
+			EXTEfx.alFilterf(state.sendFilter, EXTEfx.AL_LOWPASS_GAIN, OWN_VOICE_SEND);
+		}
+		AL10.alSourcei(voice.source, EXTEfx.AL_DIRECT_FILTER, state.filter);
+		for (int send = 0; send < sends.length; send++) {
+			AL11.alSource3i(voice.source, EXTEfx.AL_AUXILIARY_SEND_FILTER, sends[send], send,
+					sends[send] == 0 ? EXTEfx.AL_FILTER_NULL : state.sendFilter);
+		}
+		voice.gains = new float[] {0, 0, 0};
 	}
 
 	/** Plays a voice centred and dry, as Yak VC plays group voice and calls. */

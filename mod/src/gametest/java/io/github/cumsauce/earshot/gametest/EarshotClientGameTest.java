@@ -173,6 +173,23 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 				throw new AssertionError("a silent voice kept its source: " + shaper.voice().status(), e);
 			}
 
+			// With Own Voice Echo on, Earshot offers the version 2 sink, and the player's own voice plays into the
+			// room's reverb only.
+			EarshotConfig withoutOwnVoice = EarshotClient.config();
+			context.runOnClient(mc -> EarshotClient.apply(withoutOwnVoice.withOwnVoice(true)));
+			UUID player = context.computeOnClient(mc -> mc.player.getUUID());
+			try (FakeSpeaker own = FakeSpeaker.ownVoice(player)) {
+				if (own.sinkVersion() != 2) throw new AssertionError("sink version " + own.sinkVersion());
+				try {
+					context.waitFor(mc -> shaper.voice().status().stream()
+							.anyMatch(v -> v.speaker().equals(player) && v.own() && v.playing()), 5 * 20);
+				} catch (RuntimeException | AssertionError e) {
+					throw new AssertionError("no own voice: " + shaper.voice().status(), e);
+				}
+			}
+			context.runOnClient(mc -> EarshotClient.apply(withoutOwnVoice));
+			if (FakeSpeaker.offeredVersion() != 1) throw new AssertionError("still offering own voice");
+
 			// M3: the reverb follows the room. Out on the superflat it is nearly dry; shut in a stone hall it rings.
 			double[] outside = awaitRoom(context, shaper, r -> r[4] < 0.7 && r[1] < 0.6, "on open ground");
 			singleplayer.getServer().runCommand("fill -10 -61 -10 10 -50 10 stone hollow");

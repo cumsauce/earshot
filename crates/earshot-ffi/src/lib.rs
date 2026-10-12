@@ -32,7 +32,9 @@ use crate::guard::{FfiError, array_arg, guard, out_arg, slice_arg, slice_mut_arg
 ///    `earshot_voice_stream` and `earshot_voice_streams`.
 /// 7: `earshot_set_quality` and `earshot_stats`.
 /// 8: `earshot_room_at`.
-pub const EARSHOT_ABI_VERSION: u32 = 8;
+/// 9: `earshot_voice_sink` takes the sink version; `earshot_voice_polls` and
+///    `earshot_voice_own`.
+pub const EARSHOT_ABI_VERSION: u32 = 9;
 
 pub const EARSHOT_OK: i32 = 0;
 /// A null pointer, unknown material or out-of-range value.
@@ -585,13 +587,34 @@ pub unsafe extern "C" fn earshot_trace_paths(
     }
 }
 
-/// The address of Earshot's `YakVcVoiceSink` (`yakvc.h`, version 1), for
-/// Java to offer Yak VC in Fabric's object share under `yakvc:voice_sink`.
-/// It lives for the rest of the process and needs no engine: Yak VC may call
-/// it from its audio thread at any time.
+/// The address of Earshot's `YakVcVoiceSink` (`yakvc.h`) as `version` 1
+/// (other players' voices) or 2 (also the player's own, as
+/// `YAKVC_VOICE_SELF` frames), for Java to offer Yak VC in Fabric's object
+/// share under `yakvc:voice_sink`; null for another version. Both live for
+/// the rest of the process and need no engine: Yak VC may call them from its
+/// audio thread at any time.
 #[unsafe(no_mangle)]
-pub extern "C" fn earshot_voice_sink() -> *const c_void {
-    std::ptr::from_ref(&voice::SINK.0).cast()
+pub extern "C" fn earshot_voice_sink(version: u32) -> *const c_void {
+    match version {
+        1 => std::ptr::from_ref(&voice::SINK.0).cast(),
+        2 => std::ptr::from_ref(&voice::SINK_WITH_OWN_VOICE.0).cast(),
+        _ => std::ptr::null(),
+    }
+}
+
+/// How often Yak VC has asked a sink for a frame. It asks every few
+/// milliseconds once it has taken one, so a count that stays put after
+/// offering a sink means Yak VC refused it.
+#[unsafe(no_mangle)]
+pub extern "C" fn earshot_voice_polls() -> u64 {
+    voice::polls()
+}
+
+/// Keeps the player's own voice (`YAKVC_VOICE_SELF` frames) as a stream
+/// from now on, or drops it as it comes.
+#[unsafe(no_mangle)]
+pub extern "C" fn earshot_voice_own(keep: bool) {
+    voice::set_own_voice(keep);
 }
 
 /// The address of the OpenAL buffer callback (`ALBUFFERCALLBACKTYPESOFT`)
@@ -1015,7 +1038,8 @@ mod tests {
     fn voice_reaches_the_streams_through_the_sink() {
         let uuid = [42u8; 16];
         let pcm = [0.5f32; 960];
-        let sink = earshot_voice_sink().cast::<voice::YakVcVoiceSink>();
+        assert!(earshot_voice_sink(3).is_null());
+        let sink = earshot_voice_sink(1).cast::<voice::YakVcVoiceSink>();
         // SAFETY: the sink is a static `YakVcVoiceSink`; the frame and its
         // samples are valid for the call, as yakvc promises.
         unsafe {

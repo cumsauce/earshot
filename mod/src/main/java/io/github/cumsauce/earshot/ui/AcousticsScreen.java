@@ -35,6 +35,7 @@ public final class AcousticsScreen extends OptionsSubScreen {
 	private final OptionInstance<Boolean> underwater;
 	private final OptionInstance<Boolean> doppler;
 	private final OptionInstance<Boolean> voice;
+	private final OptionInstance<Boolean> ownVoice;
 	private final OptionInstance<String> hrtf;
 
 	/** The settings over {@code parent}, or an alert if the engine isn't running. */
@@ -60,6 +61,7 @@ public final class AcousticsScreen extends OptionsSubScreen {
 		underwater = toggle("earshot.settings.underwater", config.underwater());
 		doppler = toggle("earshot.settings.doppler", config.doppler());
 		voice = toggle("earshot.settings.voice", config.voice());
+		ownVoice = toggle("earshot.settings.own_voice", config.ownVoice());
 		List<String> hrtfs = new ArrayList<>();
 		hrtfs.add("");
 		OpenAlProbe.Report report = OpenAlProbe.last();
@@ -92,14 +94,15 @@ public final class AcousticsScreen extends OptionsSubScreen {
 		list.addSmall(occlusion, pathing);
 		list.addSmall(reverb, airAbsorption);
 		list.addSmall(underwater, doppler);
-		list.addSmall(voice, hrtf);
+		list.addSmall(voice, ownVoice);
+		list.addBig(hrtf);
 	}
 
 	@Override
 	public void removed() {
 		EarshotConfig next = new EarshotConfig(Preset.valueOf(preset.get().toUpperCase(Locale.ROOT)), occlusion.get(),
 				pathing.get(), Reverb.valueOf(reverb.get().toUpperCase(Locale.ROOT)), airAbsorption.get(),
-				underwater.get(), doppler.get(), voice.get(), hrtf.get());
+				underwater.get(), doppler.get(), voice.get(), hrtf.get(), ownVoice.get());
 		if (!next.equals(initial)) EarshotClient.apply(next);
 		super.removed();
 	}

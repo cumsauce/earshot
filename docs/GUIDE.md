@@ -53,6 +53,7 @@ Options → Music & Sounds → **Acoustics…**, or Earshot's config button in M
 | Underwater | Everything is muffled while your head is underwater. |
 | Doppler | Sounds moving towards or away from you shift in pitch. |
 | Voice Chat | Plays Yak VC's voice through Earshot. Off gives it back to Yak VC's own speakers. |
+| Own Voice Echo | Off by default. Your own voice in Yak VC echoes off the room around you (only the echo, never your voice itself). For headphones, and needs a Yak VC that sends your own voice; with an older one Earshot notices and leaves it off. |
 | HRTF | Which head-related transfer function Directional Audio uses. Changing it restarts the sound engine. |
 
 ### Quality
@@ -129,5 +130,4 @@ unless you set them to something else.
 
 ## Not yet
 
-Earshot is an alpha. Planned next: your own voice in Yak VC echoing off the room, and a choice of bundled HRTF
-datasets.
+Earshot is an alpha. Planned next: a choice of bundled HRTF datasets.

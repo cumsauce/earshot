@@ -9,11 +9,13 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-/// The `YakVcVoiceSink` layout this is (yakvc's `YAKVC_VOICE_SINK_VERSION`).
-pub(crate) const VOICE_SINK_VERSION: u32 = 1;
+/// yakvc's `YAKVC_VOICE_SELF`: a frame of the player's own voice, which
+/// only a version 2 sink gets.
+pub(crate) const VOICE_SELF: u32 = 1 << 2;
 
 /// Samples per second and per frame of yakvc's voice.
 const RATE: u32 = 48_000;
@@ -67,13 +69,38 @@ pub struct Sink(pub YakVcVoiceSink);
 // the callbacks are thread-safe functions of this module.
 unsafe impl Sync for Sink {}
 
-pub static SINK: Sink = Sink(YakVcVoiceSink {
-    version: VOICE_SINK_VERSION,
-    user: std::ptr::null_mut(),
-    wants_frame: Some(wants_frame),
-    frame: Some(frame),
-    stream_end: Some(stream_end),
-});
+/// The sink as version 1, for other players' voices only, which every yakvc
+/// with a voice sink takes.
+pub static SINK: Sink = sink(1);
+/// The sink as version 2, which also asks for the player's own voice; a
+/// yakvc from before own voice refuses it.
+pub static SINK_WITH_OWN_VOICE: Sink = sink(2);
+
+const fn sink(version: u32) -> Sink {
+    Sink(YakVcVoiceSink {
+        version,
+        user: std::ptr::null_mut(),
+        wants_frame: Some(wants_frame),
+        frame: Some(frame),
+        stream_end: Some(stream_end),
+    })
+}
+
+/// How often yakvc has asked either sink for a frame: it does every few
+/// milliseconds once it has taken one.
+static POLLS: AtomicU64 = AtomicU64::new(0);
+/// Whether own-voice frames are kept (else dropped as they come).
+static OWN_VOICE: AtomicBool = AtomicBool::new(false);
+
+/// How often yakvc has asked for a frame, to tell whether it took the sink.
+pub fn polls() -> u64 {
+    POLLS.load(Ordering::Relaxed)
+}
+
+/// Keeps the player's own voice from now on, or drops it.
+pub fn set_own_voice(keep: bool) {
+    OWN_VOICE.store(keep, Ordering::Relaxed);
+}
 
 /// One speaker's voice.
 #[derive(Debug, Default)]
@@ -165,6 +192,7 @@ pub fn pull(stream: &Stream, out: &mut [f32]) {
 
 /// Whether yakvc should play the next 20 ms now.
 unsafe extern "C" fn wants_frame(_user: *mut c_void) -> bool {
+    POLLS.fetch_add(1, Ordering::Relaxed);
     lock(&VOICE.clock).due(Instant::now())
 }
 
@@ -178,6 +206,9 @@ unsafe extern "C" fn frame(_user: *mut c_void, frame: *const YakVcVoiceFrame) {
     let Some(frame) = (unsafe { frame.as_ref() }) else {
         return;
     };
+    if frame.flags & VOICE_SELF != 0 && !OWN_VOICE.load(Ordering::Relaxed) {
+        return;
+    }
     let pcm = if frame.pcm.is_null() || frame.samples > FRAME * 4 {
         &[][..]
     } else {
@@ -344,6 +375,43 @@ mod tests {
             [0.375, 0.375, 0.375, 0.375, 0.0, 0.0, 0.0, 0.0],
             "at half volume"
         );
+    }
+
+    #[test]
+    fn own_voice_is_kept_only_when_asked_and_polls_are_counted() {
+        let uuid = [12; 16];
+        let own = |pcm: &[f32]| {
+            let frame_struct = YakVcVoiceFrame {
+                uuid,
+                pcm: pcm.as_ptr(),
+                samples: pcm.len(),
+                tick: 1,
+                volume: 1.0,
+                range: 0.0,
+                flags: VOICE_SELF | VOICE_UNPOSITIONED,
+                heard_from: [0.0; 3],
+                occlusion: 0.0,
+            };
+            // SAFETY: the frame and its samples are valid for the call.
+            unsafe { (SINK_WITH_OWN_VOICE.0.frame.unwrap())(std::ptr::null_mut(), &frame_struct) };
+        };
+        own(&[1.0; FRAME]);
+        assert!(
+            streams().iter().all(|s| s.0 != uuid),
+            "kept while not asked"
+        );
+        set_own_voice(true);
+        own(&[1.0; FRAME]);
+        set_own_voice(false);
+        let (_, info, queued) = streams().into_iter().find(|s| s.0 == uuid).unwrap();
+        assert_eq!(info.flags & VOICE_SELF, VOICE_SELF);
+        assert_eq!(queued, FRAME);
+        assert_eq!(SINK_WITH_OWN_VOICE.0.version, 2);
+
+        let before = polls();
+        // SAFETY: the callback ignores its argument.
+        unsafe { (SINK.0.wants_frame.unwrap())(std::ptr::null_mut()) };
+        assert!(polls() > before);
     }
 
     #[test]
