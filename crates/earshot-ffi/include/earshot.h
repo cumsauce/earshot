@@ -10,12 +10,165 @@
 /**
  * Version of this C ABI. Java refuses to use a library whose version differs
  * from the one it was built against. Bump on any incompatible change.
+ * 2: the engine, its world mirror, transmission and path traces.
  */
-#define EARSHOT_ABI_VERSION 1
+#define EARSHOT_ABI_VERSION 2
+
+#define EARSHOT_OK 0
+
+/**
+ * A null pointer, unknown material or out-of-range value.
+ */
+#define EARSHOT_ERR_INVALID_ARGUMENT -1
+
+/**
+ * `earshot_create` was passed a different ABI version.
+ */
+#define EARSHOT_ERR_ABI_MISMATCH -2
+
+/**
+ * The call panicked.
+ */
+#define EARSHOT_ERR_PANIC -3
+
+/**
+ * Doubles per segment from `earshot_trace_paths`: from `x, y, z`, to
+ * `x, y, z`, the energy at its start, and 1 if it escaped (else 0).
+ */
+#define EARSHOT_SEGMENT_DOUBLES 8
+
+/**
+ * Opaque engine handle.
+ */
+typedef struct EarshotEngine EarshotEngine;
 
 /**
  * Returns [`EARSHOT_ABI_VERSION`]. Safe to call before anything else.
  */
 uint32_t earshot_abi_version(void);
+
+/**
+ * Starts an engine with an empty world.
+ *
+ * # Safety
+ * `out` must be writable.
+ */
+int32_t earshot_create(uint32_t abi_version, struct EarshotEngine **out);
+
+/**
+ * Frees the engine. Must be the last call on `engine`. Null is ignored.
+ *
+ * # Safety
+ * `engine` must come from `earshot_create` and not be used afterwards.
+ */
+void earshot_destroy(struct EarshotEngine *engine);
+
+/**
+ * Writes the material names in id order as a JSON array of strings, for
+ * Java to check its own list against. `*needed` is the full length; if it
+ * exceeds `cap`, nothing is written and the caller retries.
+ *
+ * # Safety
+ * `buf` must be writable for `cap` bytes; `needed` must be writable.
+ */
+int32_t earshot_material_names(uint8_t *buf, size_t cap, size_t *needed);
+
+/**
+ * Replaces the section at section coordinates `x, y, z` with `blocks`:
+ * 4096 material ids in Minecraft's order, index `(y << 8) | (z << 4) | x`.
+ *
+ * # Safety
+ * `engine` must be live; `blocks` must be readable for 4096 bytes.
+ */
+int32_t earshot_set_section(struct EarshotEngine *engine,
+                            int32_t x,
+                            int32_t y,
+                            int32_t z,
+                            const uint8_t *blocks);
+
+/**
+ * Forgets the section at section coordinates `x, y, z`, as when its chunk
+ * unloads.
+ *
+ * # Safety
+ * `engine` must be live.
+ */
+int32_t earshot_remove_section(struct EarshotEngine *engine, int32_t x, int32_t y, int32_t z);
+
+/**
+ * Sets block `x, y, z` to `material`, as when the game changes it.
+ *
+ * # Safety
+ * `engine` must be live.
+ */
+int32_t earshot_set_block(struct EarshotEngine *engine,
+                          int32_t x,
+                          int32_t y,
+                          int32_t z,
+                          uint8_t material);
+
+/**
+ * Forgets every section, as when the player changes dimension or leaves.
+ *
+ * # Safety
+ * `engine` must be live.
+ */
+int32_t earshot_clear_world(struct EarshotEngine *engine);
+
+/**
+ * Writes how many sections hold anything but air.
+ *
+ * # Safety
+ * `engine` must be live; `out` must be writable.
+ */
+int32_t earshot_section_count(struct EarshotEngine *engine, size_t *out);
+
+/**
+ * Writes to `out` the share of sound energy, low, mid and high, that gets
+ * straight through the blocks between `from` and `to`. The blocks at either
+ * end don't count.
+ *
+ * # Safety
+ * `engine` must be live; `from` and `to` must point to 3 doubles; `out` must
+ * be writable for 3 floats.
+ */
+int32_t earshot_transmission(struct EarshotEngine *engine,
+                             const double *from,
+                             const double *to,
+                             float *out);
+
+/**
+ * Traces `rays` paths from `origin`, evenly spread, with up to `bounces`
+ * reflections and at most `reach` blocks per leg. Writes the first `cap`
+ * legs to `out`, [`EARSHOT_SEGMENT_DOUBLES`] doubles each, and how many it
+ * wrote to `*written`. `stats` gets four doubles: legs traced, rays that
+ * escaped on their first leg, legs that escaped, and the mean free path in
+ * blocks.
+ *
+ * # Safety
+ * `engine` must be live; `origin` must point to 3 doubles; `out` must be
+ * writable for `cap * EARSHOT_SEGMENT_DOUBLES` doubles; `written` must be
+ * writable; `stats` must be writable for 4 doubles.
+ */
+int32_t earshot_trace_paths(struct EarshotEngine *engine,
+                            const double *origin,
+                            uint32_t rays,
+                            uint32_t bounces,
+                            double reach,
+                            uint64_t seed,
+                            double *out,
+                            size_t cap,
+                            size_t *written,
+                            double *stats);
+
+/**
+ * Copies this thread's last error message into `buf` (truncated to `cap`,
+ * at a character boundary) and returns its full length, or 0 if there is
+ * none.
+ *
+ * # Safety
+ * `buf` must be writable for `cap` bytes.
+ */
+size_t earshot_last_error(uint8_t *buf, size_t cap);
 
 #endif  /* EARSHOT_H */

@@ -1,12 +1,14 @@
 package io.github.cumsauce.earshot;
 
+import io.github.cumsauce.earshot.command.EarshotCommands;
 import io.github.cumsauce.earshot.natives.NativeBridge;
 import io.github.cumsauce.earshot.natives.NativeLoader;
-import io.github.cumsauce.earshot.openal.OpenAlProbe;
+import io.github.cumsauce.earshot.world.WorldMirror;
+import java.lang.foreign.MemorySegment;
 import java.nio.file.Path;
 import net.fabricmc.api.ClientModInitializer;
-import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.loader.api.FabricLoader;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -14,6 +16,9 @@ public final class EarshotClient implements ClientModInitializer {
 	public static final Logger LOGGER = LoggerFactory.getLogger("earshot");
 
 	private static int nativeAbi = -1;
+	private static @Nullable NativeBridge bridge;
+	private static @Nullable MemorySegment engine;
+	private static @Nullable WorldMirror mirror;
 
 	/** {@code config/earshot/}: settings and extracted natives. */
 	public static Path configDir() {
@@ -25,24 +30,46 @@ public final class EarshotClient implements ClientModInitializer {
 		return nativeAbi;
 	}
 
+	/** The native bridge, or null if the engine didn't start. */
+	public static @Nullable NativeBridge bridge() {
+		return bridge;
+	}
+
+	/** The native engine handle, or null if it didn't start. It lives as long as the game. */
+	public static @Nullable MemorySegment engine() {
+		return engine;
+	}
+
+	/** The world mirror, or null if the engine didn't start. */
+	public static @Nullable WorldMirror mirror() {
+		return mirror;
+	}
+
 	@Override
 	public void onInitializeClient() {
+		NativeBridge bridge;
 		try {
-			nativeAbi = new NativeBridge(NativeLoader.load(configDir())).abiVersion();
-			if (nativeAbi == NativeBridge.ABI_VERSION) {
-				LOGGER.info("Loaded the native engine (ABI version {})", nativeAbi);
-			} else {
-				LOGGER.error("Native ABI version {} does not match expected {}", nativeAbi, NativeBridge.ABI_VERSION);
-			}
+			bridge = new NativeBridge(NativeLoader.load(configDir()));
+			nativeAbi = bridge.abiVersion();
 		} catch (NativeLoader.UnsupportedPlatformException e) {
 			LOGGER.error("Earshot is off: this platform has no native engine", e);
+			return;
 		} catch (Exception | LinkageError e) {
 			LOGGER.error("Earshot is off: could not load the native engine", e);
+			return;
 		}
-		// The Library mixin probes OpenAL as soon as the sound engine opens its device. If it didn't (no device, or
-		// the mixin missed), try once more when the client is up, so the log always says why.
-		ClientLifecycleEvents.CLIENT_STARTED.register(minecraft -> {
-			if (OpenAlProbe.last() == null) OpenAlProbe.run("client started");
-		});
+		if (nativeAbi != NativeBridge.ABI_VERSION) {
+			LOGGER.error("Earshot is off: native ABI version {} does not match expected {}", nativeAbi,
+					NativeBridge.ABI_VERSION);
+			return;
+		}
+		MemorySegment engine = bridge.create();
+		LOGGER.info("Started the native engine (ABI version {})", nativeAbi);
+		WorldMirror mirror = new WorldMirror(bridge, engine);
+		mirror.register();
+		EarshotCommands.register(bridge, engine, mirror);
+		EarshotClient.bridge = bridge;
+		EarshotClient.engine = engine;
+		EarshotClient.mirror = mirror;
 	}
 }

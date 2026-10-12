@@ -3,6 +3,7 @@
 	"package": "io.github.cumsauce.earshot.mixin",
 	"compatibilityLevel": "JAVA_25",
 	"client": [
+		"ClientLevelMixin",
 		"LibraryMixin"
 	],
 	"injectors": {

@@ -13,6 +13,8 @@ publish = false
 [workspace.dependencies]
 # Internal crates
 earshot-ffi = { path = "crates/earshot-ffi" }
+earshot-sim = { path = "crates/earshot-sim" }
+earshot-world = { path = "crates/earshot-world" }
 
 # Third party
 anyhow = "1.0.104"

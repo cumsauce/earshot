@@ -181,6 +181,21 @@ dependencies = [
 [[package]]
 name = "earshot-ffi"
 version = "0.1.0-alpha.0"
+dependencies = [
+ "earshot-sim",
+ "earshot-world",
+]
+
+[[package]]
+name = "earshot-sim"
+version = "0.1.0-alpha.0"
+dependencies = [
+ "earshot-world",
+]
+
+[[package]]
+name = "earshot-world"
+version = "0.1.0-alpha.0"
 
 [[package]]
 name = "equivalent"
