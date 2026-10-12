@@ -189,9 +189,11 @@ impl Engine {
         let built = self.built();
         let field = built.as_ref().map(|built| &built.field);
         let rays = self.quality().occlusion_rays;
+        // How sound gets round corners depends on how shut in the listener is.
+        let enclosure = self.room().map_or(0.0, |room| room.enclosure);
         self.world(|world| {
             for (source, heard) in sources.iter().zip(out) {
-                *heard = hear(world, field, listener, *source, rays);
+                *heard = hear(world, field, listener, *source, rays, enclosure);
             }
         });
     }
