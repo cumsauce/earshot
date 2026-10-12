@@ -29,7 +29,7 @@ import org.tukaani.xz.XZInputStream;
  * unloaded, because it owns live threads.
  */
 public final class NativeLoader {
-	private static final String RESOURCE_ROOT = "/natives/";
+	private static final String RESOURCE_ROOT = "/earshot/natives/";
 
 	private NativeLoader() {}
 

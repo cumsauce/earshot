@@ -127,7 +127,9 @@ processResources {
 		expand 'version': version
 	}
 
-	from(compressNatives) { into 'natives' }
+	// Under earshot/, not natives/: Foley and Yak VC ship their own natives/natives.sha256, and mods share one
+	// resource namespace, so another mod's manifest could be read instead of Earshot's.
+	from(compressNatives) { into 'earshot/natives' }
 }
 
 fabricApi {
