@@ -20,6 +20,8 @@ public final class SourceState {
 	/** The OpenAL filter for the send to another space's reverb, 0 until made, and whether that send is set. */
 	int spaceFilter;
 	boolean spaceSent;
+	/** Whether the source sends to an early-reflections slot of its own. */
+	boolean earlySent;
 	private boolean started;
 	private final float[] gains = {1, 1, 1};
 	private Vec3 offset = Vec3.ZERO;

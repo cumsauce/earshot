@@ -20,8 +20,9 @@
  * 8: `earshot_room_at`.
  * 9: `earshot_voice_sink` takes the sink version; `earshot_voice_polls` and
  *    `earshot_voice_own`.
+ * 10: `earshot_early`.
  */
-#define EARSHOT_ABI_VERSION 9
+#define EARSHOT_ABI_VERSION 10
 
 #define EARSHOT_OK 0
 
@@ -86,6 +87,15 @@
  * build time in milliseconds, and how far that field reaches (0 for none).
  */
 #define EARSHOT_STATS_DOUBLES 4
+
+/**
+ * Doubles per source from `earshot_early`: the first reflections' energy
+ * (mid band, relative to the direct sound in the open), how much later than
+ * the direct sound the first arrives in seconds, where they come from on
+ * average as a world-axes `x, y, z` from the listener (no longer than 1),
+ * and how many there are.
+ */
+#define EARSHOT_EARLY_DOUBLES 6
 
 /**
  * Opaque engine handle.
@@ -224,6 +234,22 @@ int32_t earshot_hear(struct EarshotEngine *engine,
  * doubles.
  */
 int32_t earshot_room(struct EarshotEngine *engine, double *out);
+
+/**
+ * The first reflections off the walls around each of `count` sources, as
+ * heard at `listener`: [`EARSHOT_EARLY_DOUBLES`] doubles per source into
+ * `out`. For an early-reflections effect on the loudest few sounds.
+ *
+ * # Safety
+ * `engine` must be live; `listener` must point to 3 doubles, `sources` to
+ * `3 * count` doubles, and `out` must be writable for
+ * `EARSHOT_EARLY_DOUBLES * count` doubles.
+ */
+int32_t earshot_early(struct EarshotEngine *engine,
+                      const double *listener,
+                      const double *sources,
+                      size_t count,
+                      double *out);
 
 /**
  * Measures the room around `at` now, on the calling thread, with `rays` ×

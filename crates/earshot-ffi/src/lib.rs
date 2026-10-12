@@ -17,7 +17,7 @@ mod voice;
 
 use std::ffi::c_void;
 
-use earshot_sim::{Engine, Heard, Quality, Room, eax_reverb, trace_paths};
+use earshot_sim::{Engine, Heard, Quality, Room, early_reflections, eax_reverb, trace_paths};
 use earshot_world::{BANDS, Material, SECTION_BLOCKS, SectionPos, Vec3, World};
 
 use crate::guard::{FfiError, array_arg, guard, out_arg, slice_arg, slice_mut_arg};
@@ -34,7 +34,8 @@ use crate::guard::{FfiError, array_arg, guard, out_arg, slice_arg, slice_mut_arg
 /// 8: `earshot_room_at`.
 /// 9: `earshot_voice_sink` takes the sink version; `earshot_voice_polls` and
 ///    `earshot_voice_own`.
-pub const EARSHOT_ABI_VERSION: u32 = 9;
+/// 10: `earshot_early`.
+pub const EARSHOT_ABI_VERSION: u32 = 10;
 
 pub const EARSHOT_OK: i32 = 0;
 /// A null pointer, unknown material or out-of-range value.
@@ -78,6 +79,13 @@ pub const EARSHOT_QUALITY_DOUBLES: usize = 6;
 /// the budget), its share of one core (smoothed), the latest pathing field's
 /// build time in milliseconds, and how far that field reaches (0 for none).
 pub const EARSHOT_STATS_DOUBLES: usize = 4;
+
+/// Doubles per source from `earshot_early`: the first reflections' energy
+/// (mid band, relative to the direct sound in the open), how much later than
+/// the direct sound the first arrives in seconds, where they come from on
+/// average as a world-axes `x, y, z` from the listener (no longer than 1),
+/// and how many there are.
+pub const EARSHOT_EARLY_DOUBLES: usize = 6;
 
 /// Opaque engine handle.
 #[derive(Debug)]
@@ -421,6 +429,62 @@ pub unsafe extern "C" fn earshot_room(engine: *mut EarshotEngine, out: *mut f64)
             // `EARSHOT_ROOM_DOUBLES` doubles.
             let out = slice_mut_arg(out, EARSHOT_ROOM_DOUBLES, "out")?;
             write_room(&e.engine.room().unwrap_or(Room::OPEN_AIR), out);
+            Ok(())
+        })
+    }
+}
+
+/// The first reflections off the walls around each of `count` sources, as
+/// heard at `listener`: [`EARSHOT_EARLY_DOUBLES`] doubles per source into
+/// `out`. For an early-reflections effect on the loudest few sounds.
+///
+/// # Safety
+/// `engine` must be live; `listener` must point to 3 doubles, `sources` to
+/// `3 * count` doubles, and `out` must be writable for
+/// `EARSHOT_EARLY_DOUBLES * count` doubles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earshot_early(
+    engine: *mut EarshotEngine,
+    listener: *const f64,
+    sources: *const f64,
+    count: usize,
+    out: *mut f64,
+) -> i32 {
+    // SAFETY: the caller guarantees `engine` is live.
+    unsafe {
+        with_engine(engine, |e| {
+            // SAFETY: the caller guarantees `listener` points to 3 doubles.
+            let listener = point_arg(listener, "listener")?;
+            let len = count
+                .checked_mul(EARSHOT_EARLY_DOUBLES)
+                .ok_or_else(|| FfiError::invalid("count is too large"))?;
+            // SAFETY: the caller guarantees `sources` points to `3 * count`
+            // doubles (which fits, being less than `len`).
+            let xyz = slice_arg(sources, 3 * count, "sources")?;
+            // SAFETY: the caller guarantees `out` is writable for `len` doubles.
+            let out = slice_mut_arg(out, len, "out")?;
+            if !xyz.iter().all(|v| v.is_finite()) {
+                return Err(FfiError::invalid("sources are not finite"));
+            }
+            e.world(|world| {
+                for (&[x, y, z], out) in xyz
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .zip(out.as_chunks_mut::<EARSHOT_EARLY_DOUBLES>().0)
+                {
+                    let early = early_reflections(world, listener, Vec3::new(x, y, z));
+                    let d = early.direction;
+                    *out = [
+                        f64::from(early.energy),
+                        f64::from(early.delay),
+                        d.x,
+                        d.y,
+                        d.z,
+                        f64::from(early.count),
+                    ];
+                }
+            });
             Ok(())
         })
     }
