@@ -127,6 +127,7 @@ unless you set them to something else.
 | `/earshot material` | The material of the block you look at. |
 | `/earshot materials reload` | Reads `materials.json` again. |
 | `/earshot stats` | How much of the world is copied, and what the trace is costing. |
+| `/earshot overlay` | A debug overlay in the top-left corner: quality and cost, the room, the reverbs playing, and the nearest sounds. It can also go on a key: **Debug Overlay** under Controls → Earshot. |
 
 ## Troubleshooting
 

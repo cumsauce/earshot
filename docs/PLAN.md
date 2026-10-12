@@ -198,6 +198,9 @@ The gametest checks a looping beacon hum in three states:
   - Rain needs nothing: its sounds are positional, so they're already muffled indoors.
   - The reverb send's 0.5 room rolloff wants tuning by ear.
 
+- **Debug overlay** (`/earshot overlay` or its key), top left, English only like F3: quality and what tracing costs, the room's decay per band and how enclosed it is, which reverbs play, voice, and the six nearest sounds with their band gains and whether they come round a corner, have their own space's reverb or their own early echoes. While building it, the overlay showed a glass room with rock's decays: the room hadn't settled from the stone hall just removed. The gametest now checks the hall's removal reaches the world copy, and that the glass room settles with its lows dying first (its panes soak them up).
+- **Voice sink version** (desocketed/yakvc#193): Yak VC publishes the newest sink version it takes under `yakvc:voice_sink_version`. Earshot offers that version directly, keeping the 3 s poll fallback for a Yak VC without the key.
+
 ## Approaches considered
 
 | Option | What it is | Verdict |

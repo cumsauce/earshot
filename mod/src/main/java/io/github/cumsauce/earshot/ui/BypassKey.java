@@ -14,6 +14,7 @@ import net.minecraft.resources.Identifier;
  */
 public final class BypassKey {
 	private static KeyMapping key;
+	private static KeyMapping overlayKey;
 
 	private BypassKey() {}
 
@@ -26,7 +27,10 @@ public final class BypassKey {
 		KeyMapping.Category category = KeyMapping.Category.register(Identifier.fromNamespaceAndPath("earshot", "keys"));
 		key = KeyMappingHelper.registerKeyMapping(
 				new KeyMapping("key.earshot.bypass", InputConstants.UNKNOWN.getValue(), category));
+		overlayKey = KeyMappingHelper.registerKeyMapping(
+				new KeyMapping("key.earshot.debug_overlay", InputConstants.UNKNOWN.getValue(), category));
 		ClientTickEvents.END_CLIENT_TICK.register(minecraft -> {
+			while (overlayKey.consumeClick()) DebugOverlay.toggle();
 			boolean pressed = false;
 			while (key.consumeClick()) pressed = !pressed;
 			if (!pressed || EarshotClient.shaper() == null) return;
