@@ -130,10 +130,15 @@ fabricApi {
 	}
 }
 
+// Minecraft locks its saves, which a VirtioFS shared folder (a VM building in a folder shared from the host) can't:
+// `-Pearshot.runDir=<dir on a local disk>` moves the game directories of the runs there.
+def runDirOverride = providers.gradleProperty('earshot.runDir')
+
 loom {
 	runs {
 		configureEach {
 			vmArg '--enable-native-access=ALL-UNNAMED'
+			if (runDirOverride.isPresent()) runDir = "${runDirOverride.get()}/${name}"
 		}
 	}
 }

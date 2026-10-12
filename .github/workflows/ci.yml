@@ -128,13 +128,15 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: m0-reports
+          name: gametest-reports
           path: |
             mod/build/sound-classes.txt
             mod/build/run/clientGameTest/openal-probe.txt
+            mod/build/run/clientGameTest/screenshots/
             mod/build/run/clientGameTest/logs/
 
-  # The OpenAL cost benchmark from M0, on the runners' Apple Silicon and x86.
+  # The OpenAL cost benchmark (M0) and the path tracer's (M1), on the
+  # runners' Apple Silicon and x86.
   bench:
     strategy:
       fail-fast: false
@@ -152,6 +154,11 @@ jobs:
       - name: OpenAL bench
         working-directory: mod
         run: ./gradlew alBench
+      - name: Install toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Path tracer bench
+        run: cargo run --release --locked -p earshot-sim --example trace_bench
 
   # The one check branch protection requires.
   ci-ok:

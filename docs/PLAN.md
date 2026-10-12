@@ -89,6 +89,21 @@ Non-goals: replacing vanilla's sound assets, server-side anything, changing game
 
 M0 is done apart from tidying: the convolution tier is confirmed, the mixin targets exist, and CI builds, tests and benchmarks on every push.
 
+## M1 results so far (2026-10-11)
+
+**Path tracer** (`cargo run --release -p earshot-sim --example trace_bench`, M3 Pro VM with 4 cores).
+- Setup: 4096 rays × up to 16 bounces, reach 64 blocks, median of 5 runs.
+- The DDA looks up the section only when a ray crosses into a new one, and section positions use an FxHash-style hasher.
+
+| World | Legs | Escaped at once | Mean free path | 1 thread | Legs/s | 4 threads |
+| --- | --- | --- | --- | --- | --- | --- |
+| stone hall 40×20×40 | 69 632 | 0 % | 19.8 blocks | 22.6 ms | 3.1 M | 6.7 ms |
+| noise caves 160×80×160 | 65 162 | 0 % | 9.0 blocks | 13.0 ms | 5.0 M | 3.3 ms |
+| open ground | 6 093 | 51 % | 6.1 blocks | 4.0 ms | 1.5 M | 1.1 ms |
+
+- The High preset's reverb trace (4096 × 16 at 10 Hz) costs at most about 23 % of one core, or about 7 % spread over 4. That is well inside the plan's one-core budget.
+- Open-air legs are the slowest per leg: they step through 64 empty blocks. Skipping empty sections is the obvious next optimization, but it isn't needed yet.
+
 ## Approaches considered
 
 | Option | What it is | Verdict |

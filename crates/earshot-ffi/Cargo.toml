@@ -10,5 +10,9 @@ publish.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[dependencies]
+earshot-sim.workspace = true
+earshot-world.workspace = true
+
 [lints]
 workspace = true
