@@ -209,6 +209,8 @@ The gametest checks a looping beacon hum in three states:
 
 - **HRTF listening test** (alpha.11), from the Acoustics screen. For each HRTF: switch to it, restarting the sound engine, then once the probe reports it in use, play a snare relative to the head (ahead, right, behind, left, above, below, 0.6 s apart) and let the player keep the one that places it best. Directional Audio is on for the test, and Directional Audio and the HRTF go back as they were if none is kept. The gametest plays the KEMAR through it and checks leaving puts things back.
 
+- **Edge diffraction** (alpha.12): the way round loses ISO 9613-2's barrier attenuation (after Maekawa), `10 log10(3 + 20 δ/λ)` dB per band at 250 Hz, 1 kHz and 4 kHz, capped at 25 dB. Here δ is the detour: the field's way, scaled by how much longer its grid steps run than a straight line with nothing in the way, minus the straight line. That model is for the open. Shut in, sound gets round corners mostly by reflecting off the walls, so the loss is the earlier 3/6/12 dB per right angle; in between, the two are blended in dB by the room's enclosure. On open ground, a sound in a stone hut heard round to its far doorway comes through at about -9/-12/-14 dB, where the stone passes under -23 dB.
+
 ## Approaches considered
 
 | Option | What it is | Verdict |

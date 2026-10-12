@@ -6,7 +6,8 @@ only how you hear it:
 - **Occlusion.** Blocks between you and a sound muffle it by what they are made of. Wool deadens, glass lets a lot
   through, stone blocks almost everything. A closed wooden door muffles; an open one doesn't.
 - **Round corners.** A sound behind a wall comes round through the nearest opening, and you hear it from that
-  direction, a little duller for each bend.
+  direction. Out in the open it bends round edges as real sound does, low rumbles far better than highs; in caves and
+  corridors, the walls carry it round each turn.
 - **Reverb and echo**, measured from the space around you by tracing rays: a stone hall rings for seconds, a small
   wooden room barely at all, an open field not at all. Where the game's OpenAL can do it, the reverb is a convolution
   with an impulse response made from the room, with early echoes from where the walls actually are. On High and Ultra,
