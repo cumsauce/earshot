@@ -1,8 +1,10 @@
 package io.github.cumsauce.earshot.openal;
 
 import java.nio.IntBuffer;
+import org.lwjgl.openal.ALC10;
 import org.lwjgl.openal.ALC11;
 import org.lwjgl.openal.EXTEfx;
+import org.lwjgl.openal.SOFTHRTF;
 import org.lwjgl.system.MemoryStack;
 
 /**
@@ -12,7 +14,8 @@ import org.lwjgl.system.MemoryStack;
  * reverb needs 4 (two listener slots to crossfade, two for the spaces sources are in; docs/PLAN.md);
  * <li>{@value #VOICE_SOURCES} sources for Yak VC's voices beyond what the game takes. The game sizes its source pools
  * from the context's mono sources and takes all of them up to {@value #GAME_SOURCES} (255 for sounds, 8 for streams),
- * so asking for that many more leaves those free.
+ * so asking for that many more leaves those free;
+ * <li>the HRTF dataset picked in the settings, when the game asks for HRTF (Directional Audio) and OpenAL lists it.
  * </ul>
  */
 public final class ContextAttributes {
@@ -23,16 +26,35 @@ public final class ContextAttributes {
 
 	private ContextAttributes() {}
 
-	/** A copy of {@code attributes} (key, value pairs ending in 0) with Earshot's set, on {@code stack}. */
-	public static IntBuffer withEarshotAttributes(MemoryStack stack, IntBuffer attributes) {
-		IntBuffer out = stack.mallocInt(attributes.remaining() + 4);
+	/**
+	 * A copy of {@code attributes} (key, value pairs ending in 0) with Earshot's set, on {@code stack}.
+	 *
+	 * @param device the device the context is for
+	 * @param hrtf   whether the game asked for HRTF
+	 * @param hrtfName the HRTF dataset to use, or empty for OpenAL's default
+	 */
+	public static IntBuffer withEarshotAttributes(MemoryStack stack, IntBuffer attributes, long device, boolean hrtf,
+			String hrtfName) {
+		int hrtfId = hrtf ? hrtfIndex(device, hrtfName) : -1;
+		IntBuffer out = stack.mallocInt(attributes.remaining() + 6);
 		for (int i = attributes.position(); i + 1 < attributes.limit() && attributes.get(i) != 0; i += 2) {
 			int key = attributes.get(i);
 			if (key == EXTEfx.ALC_MAX_AUXILIARY_SENDS || key == ALC11.ALC_MONO_SOURCES) continue;
+			if (key == SOFTHRTF.ALC_HRTF_ID_SOFT && hrtfId >= 0) continue;
 			out.put(key).put(attributes.get(i + 1));
 		}
-		return out.put(EXTEfx.ALC_MAX_AUXILIARY_SENDS).put(SENDS)
-				.put(ALC11.ALC_MONO_SOURCES).put(GAME_SOURCES + VOICE_SOURCES)
-				.put(0).flip();
+		out.put(EXTEfx.ALC_MAX_AUXILIARY_SENDS).put(SENDS).put(ALC11.ALC_MONO_SOURCES).put(GAME_SOURCES + VOICE_SOURCES);
+		if (hrtfId >= 0) out.put(SOFTHRTF.ALC_HRTF_ID_SOFT).put(hrtfId);
+		return out.put(0).flip();
+	}
+
+	/** The index of the HRTF dataset {@code name} on {@code device}, or -1 if it isn't listed (or name is empty). */
+	private static int hrtfIndex(long device, String name) {
+		if (name.isEmpty() || device == 0 || !ALC10.alcIsExtensionPresent(device, "ALC_SOFT_HRTF")) return -1;
+		int count = ALC10.alcGetInteger(device, SOFTHRTF.ALC_NUM_HRTF_SPECIFIERS_SOFT);
+		for (int i = 0; i < count; i++) {
+			if (name.equals(SOFTHRTF.alcGetStringiSOFT(device, SOFTHRTF.ALC_HRTF_SPECIFIER_SOFT, i))) return i;
+		}
+		return -1;
 	}
 }

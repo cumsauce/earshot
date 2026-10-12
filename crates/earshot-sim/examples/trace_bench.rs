@@ -4,7 +4,7 @@
 
 use std::time::Instant;
 
-use earshot_sim::{FIELD_HALF, Field, trace_paths};
+use earshot_sim::{Field, trace_paths};
 use earshot_world::{Material, Vec3, World};
 
 const RAYS: u32 = 4096;
@@ -48,16 +48,19 @@ fn main() {
             parallel * 1e3,
         );
     }
-    let side = 2 * FIELD_HALF + 1;
     table += &format!(
-        "\n### Pathing field\n\n{side}³ blocks around the listener, median of {RUNS} builds.\n\n\
-         | World | Build |\n| --- | --- |\n"
+        "\n### Pathing field\n\nBlocks each way from the listener (the presets use 16 to 48), \
+         median of {RUNS} builds.\n\n| World | 16 | 24 | 32 | 48 |\n| --- | --- | --- | --- | --- |\n"
     );
     for (name, world, origin) in [hall(), caves(), open_ground()] {
-        let build = median(|| {
-            Field::build(&world, origin, FIELD_HALF);
-        });
-        table += &format!("| {name} | {:.1} ms |\n", build * 1e3);
+        table += &format!("| {name} |");
+        for half in [16, 24, 32, 48] {
+            let build = median(|| {
+                Field::build(&world, origin, half);
+            });
+            table += &format!(" {:.1} ms |", build * 1e3);
+        }
+        table += "\n";
     }
     print!("{table}");
     if let Ok(summary) = std::env::var("GITHUB_STEP_SUMMARY") {

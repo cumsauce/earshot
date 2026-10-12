@@ -31,7 +31,7 @@ import java.util.UUID;
  */
 public final class NativeBridge {
 	/** Must equal {@code EARSHOT_ABI_VERSION} in {@code earshot.h}. */
-	public static final int ABI_VERSION = 6;
+	public static final int ABI_VERSION = 7;
 	/** Blocks in a section, in Minecraft's order. */
 	public static final int SECTION_BLOCKS = 4096;
 	/** Doubles per traced leg: from x, y, z, to x, y, z, energy, escaped (1 or 0). */
@@ -45,6 +45,17 @@ public final class NativeBridge {
 	public static final int ROOM_DOUBLES = 21;
 	/** Where the EAX reverb parameters start in {@link #room}'s doubles. */
 	public static final int EAX_FIRST = 7;
+	/**
+	 * Doubles for {@link #setQuality}: the room measurement's rays (0 for none), bounces and interval in seconds,
+	 * occlusion rays per source (0, 1, 5 or 9), the pathing field's reach in blocks (0 for none), and the share of one
+	 * core the room measurement may take.
+	 */
+	public static final int QUALITY_DOUBLES = 6;
+	/**
+	 * Doubles from {@link #stats}: rays in the latest room measurement, its share of one core, the latest pathing
+	 * field's build time in milliseconds, and its reach (0 for none).
+	 */
+	public static final int STATS_DOUBLES = 4;
 	/** Doubles per stream from {@code earshot_voice_streams}. */
 	private static final int VOICE_DOUBLES = 10;
 
@@ -66,6 +77,8 @@ public final class NativeBridge {
 	private final MethodHandle hear;
 	private final MethodHandle room;
 	private final MethodHandle impulseResponse;
+	private final MethodHandle setQuality;
+	private final MethodHandle stats;
 	private final MethodHandle voiceSink;
 	private final MethodHandle voiceCallback;
 	private final MethodHandle voiceStream;
@@ -103,6 +116,10 @@ public final class NativeBridge {
 				critical);
 		impulseResponse = linker.downcallHandle(find(library, "earshot_impulse_response"),
 				FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_INT, JAVA_FLOAT, JAVA_LONG, ADDRESS, SIZE_T, ADDRESS),
+				critical);
+		setQuality = linker.downcallHandle(find(library, "earshot_set_quality"),
+				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS), critical);
+		stats = linker.downcallHandle(find(library, "earshot_stats"), FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS),
 				critical);
 		voiceSink = linker.downcallHandle(find(library, "earshot_voice_sink"), FunctionDescriptor.of(ADDRESS));
 		voiceCallback = linker.downcallHandle(find(library, "earshot_voice_callback"), FunctionDescriptor.of(ADDRESS));
@@ -252,6 +269,19 @@ public final class NativeBridge {
 			// The room may have changed between the calls, and with it the length.
 			if (needed[0] <= out.length) return needed[0] == out.length ? out : Arrays.copyOf(out, (int) needed[0]);
 		}
+	}
+
+	/** How much the engine traces from now on ({@value #QUALITY_DOUBLES} doubles). */
+	public void setQuality(MemorySegment engine, double[] quality) {
+		requireLength(quality, QUALITY_DOUBLES, "quality");
+		check((int) invoke(setQuality, engine, MemorySegment.ofArray(quality)));
+	}
+
+	/** What the engine is spending ({@value #STATS_DOUBLES} doubles). */
+	public double[] stats(MemorySegment engine) {
+		double[] out = new double[STATS_DOUBLES];
+		check((int) invoke(stats, engine, MemorySegment.ofArray(out)));
+		return out;
 	}
 
 	/**

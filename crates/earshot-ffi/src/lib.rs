@@ -17,7 +17,7 @@ mod voice;
 
 use std::ffi::c_void;
 
-use earshot_sim::{Engine, Heard, Room, eax_reverb, trace_paths};
+use earshot_sim::{Engine, Heard, Quality, Room, eax_reverb, trace_paths};
 use earshot_world::{BANDS, Material, SECTION_BLOCKS, SectionPos, Vec3, World};
 
 use crate::guard::{FfiError, array_arg, guard, out_arg, slice_arg, slice_mut_arg};
@@ -30,7 +30,8 @@ use crate::guard::{FfiError, array_arg, guard, out_arg, slice_arg, slice_mut_arg
 /// 5: `earshot_impulse_response`.
 /// 6: Yak VC's voice: `earshot_voice_sink`, `earshot_voice_callback`,
 ///    `earshot_voice_stream` and `earshot_voice_streams`.
-pub const EARSHOT_ABI_VERSION: u32 = 6;
+/// 7: `earshot_set_quality` and `earshot_stats`.
+pub const EARSHOT_ABI_VERSION: u32 = 7;
 
 pub const EARSHOT_OK: i32 = 0;
 /// A null pointer, unknown material or out-of-range value.
@@ -61,6 +62,19 @@ pub const EARSHOT_ROOM_DOUBLES: usize = 21;
 /// `x, y, z`; seconds since that frame (infinite before one); 1 if the
 /// stream has ended (else 0); and seconds of voice queued.
 pub const EARSHOT_VOICE_DOUBLES: usize = 10;
+
+/// Doubles for `earshot_set_quality`: the room measurement's rays (0 for no
+/// room, so no reverb), bounces and interval in seconds; occlusion rays per
+/// source (0, 1, 5 or 9; 0 turns occlusion off); how far the pathing field
+/// reaches each way in blocks (0 to 64; 0 turns sound round corners off);
+/// and the share of one core the room measurement may take, above which it
+/// uses fewer rays.
+pub const EARSHOT_QUALITY_DOUBLES: usize = 6;
+
+/// Doubles from `earshot_stats`: rays in the latest room measurement (after
+/// the budget), its share of one core (smoothed), the latest pathing field's
+/// build time in milliseconds, and how far that field reaches (0 for none).
+pub const EARSHOT_STATS_DOUBLES: usize = 4;
 
 /// Opaque engine handle.
 #[derive(Debug)]
@@ -627,6 +641,75 @@ pub unsafe extern "C" fn earshot_voice_streams(
     })
 }
 
+/// Sets how much the engine traces from now on (see
+/// [`EARSHOT_QUALITY_DOUBLES`]).
+///
+/// # Safety
+/// `engine` must be live; `quality` must point to `EARSHOT_QUALITY_DOUBLES`
+/// doubles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earshot_set_quality(
+    engine: *mut EarshotEngine,
+    quality: *const f64,
+) -> i32 {
+    // SAFETY: the caller guarantees `engine` is live.
+    unsafe {
+        with_engine(engine, |e| {
+            // SAFETY: the caller guarantees `quality` points to
+            // `EARSHOT_QUALITY_DOUBLES` doubles.
+            let [rays, bounces, every, occlusion, half, budget] =
+                array_arg::<f64, EARSHOT_QUALITY_DOUBLES>(quality, "quality")?;
+            let whole = |v: f64| v.is_finite() && v >= 0.0 && v.fract() == 0.0 && v <= 1e6;
+            if !(whole(rays) && whole(bounces) && whole(occlusion) && whole(half))
+                || !(every.is_finite() && budget.is_finite())
+            {
+                return Err(FfiError::invalid("quality values out of range"));
+            }
+            let quality = Quality {
+                room_rays: rays as u32,
+                room_bounces: bounces as u32,
+                room_every: std::time::Duration::from_secs_f64(every.clamp(0.0, 60.0)),
+                occlusion_rays: occlusion as u32,
+                field_half: half as i32,
+                budget: budget as f32,
+            };
+            if !quality.is_valid() {
+                return Err(FfiError::invalid(format!(
+                    "quality out of range: {quality:?}"
+                )));
+            }
+            e.engine.set_quality(quality);
+            Ok(())
+        })
+    }
+}
+
+/// Writes what the engine is spending into `out` (see
+/// [`EARSHOT_STATS_DOUBLES`]).
+///
+/// # Safety
+/// `engine` must be live; `out` must be writable for `EARSHOT_STATS_DOUBLES`
+/// doubles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earshot_stats(engine: *mut EarshotEngine, out: *mut f64) -> i32 {
+    // SAFETY: the caller guarantees `engine` is live.
+    unsafe {
+        with_engine(engine, |e| {
+            // SAFETY: the caller guarantees `out` is writable for
+            // `EARSHOT_STATS_DOUBLES` doubles.
+            let out = slice_mut_arg(out, EARSHOT_STATS_DOUBLES, "out")?;
+            let stats = e.engine.stats();
+            out.copy_from_slice(&[
+                f64::from(stats.room_rays),
+                f64::from(stats.room_cost),
+                stats.field_build.as_secs_f64() * 1e3,
+                f64::from(stats.field_half),
+            ]);
+            Ok(())
+        })
+    }
+}
+
 /// Copies this thread's last error message into `buf` (truncated to `cap`,
 /// at a character boundary) and returns its full length, or 0 if there is
 /// none.
@@ -938,6 +1021,25 @@ mod tests {
         let bytes = unsafe { callback(stream, out.as_mut_ptr().cast(), 960 * 4) };
         assert_eq!(bytes, 960 * 4);
         assert_eq!(out, pcm);
+    }
+
+    #[test]
+    fn quality_is_checked_and_stats_follow_it() {
+        let engine = engine();
+        let off = [0.0, 0.0, 0.1, 0.0, 0.0, 0.25];
+        let bad = [1024.0, 8.0, 0.1, 3.0, 24.0, 0.25];
+        let mut stats = [f64::NAN; EARSHOT_STATS_DOUBLES];
+        // SAFETY: `engine` is live and every buffer is valid for its length.
+        unsafe {
+            assert_eq!(earshot_set_quality(engine, off.as_ptr()), EARSHOT_OK);
+            assert_eq!(
+                earshot_set_quality(engine, bad.as_ptr()),
+                EARSHOT_ERR_INVALID_ARGUMENT
+            );
+            assert_eq!(earshot_stats(engine, stats.as_mut_ptr()), EARSHOT_OK);
+            earshot_destroy(engine);
+        }
+        assert!(stats.iter().all(|v| v.is_finite()), "{stats:?}");
     }
 
     #[test]

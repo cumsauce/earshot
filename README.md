@@ -2,7 +2,9 @@
 
 Physically based acoustics for Minecraft 26.3: occlusion, sound bending around corners, raytraced reverb and echo, and binaural (HRTF) audio. It applies to the game's own sounds and, through [Yak VC](https://github.com/desocketed/yakvc)'s voice sink ([desocketed/yakvc#174](https://github.com/desocketed/yakvc/issues/174)), to proximity voice. It is a client-only Fabric mod.
 
-Status: **M2**: game sounds are muffled by what is in the way, come round corners from the opening they pass through, fade with air absorption, and are muffled underwater. Each also feeds a reverb measured from the space around you: a convolution with an impulse response synthesized from the room where OpenAL Soft has the effect, EAX reverb otherwise (M3). [docs/PLAN.md](docs/PLAN.md) has the design, the milestones and the measurements so far.
+Status: **alpha (M5)**. Game sounds are muffled by what is in the way, come round corners from the opening they pass through, fade with air absorption, shift with Doppler, and are muffled underwater. Each also feeds a reverb measured from the space around you: a convolution with an impulse response synthesized from the room where OpenAL Soft has the effect, EAX reverb otherwise. Yak VC's voices, with its voice sink, get the same treatment. Settings are under Options → Music & Sounds → Acoustics….
+
+**Players:** see the [user guide](docs/GUIDE.md). [docs/PLAN.md](docs/PLAN.md) has the design, the milestones and the measurements so far.
 
 ## How it works
 
@@ -28,7 +30,7 @@ Building in a VM, from a folder shared with the host over VirtioFS, needs two se
 - `CARGO_TARGET_DIR` on a local disk, because rustc can't memory-map its fresh objects there.
 - `-Pearshot.runDir=<local dir>` for the game runs, because Minecraft can't lock its saves there.
 
-In game, `/earshot rays [count] [bounces]` draws traced sound paths, `/earshot occlusion` measures what blocks the way ahead, `/earshot sources` shows how each playing sound is heard, `/earshot room` describes the room the reverb hears, `/earshot reverb auto|convolution|eax|off` switches the reverb, `/earshot voice [on|off]` shows Yak VC's voices playing through Earshot and switches them back to Yak VC's own speakers, and `/earshot stats` shows how much of the world is mirrored.
+In game, `/earshot rays [count] [bounces]` draws traced sound paths, `/earshot sources` shows how each playing sound is heard, and `/earshot room` describes the room the reverb hears. [The guide](docs/GUIDE.md#commands) lists every command.
 
 Release jars hold the native library for every platform. CI builds each one on its own runner and packages them with `cargo xtask dist --from <dir>`. Pushing a `v<version>` tag publishes a prerelease.
 

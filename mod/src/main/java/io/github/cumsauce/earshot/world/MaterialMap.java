@@ -25,7 +25,9 @@ import net.minecraft.world.phys.shapes.VoxelShape;
 /**
  * Which {@link AcousticMaterial} each block state is. Decided once per state, from the block's class, tags, the sound
  * type and the collision shape, so modded blocks get a sensible material without a list, then kept in an array by
- * state id. Tags come with a world's data, so {@link #clear} starts over whenever they reload.
+ * state id. Tags come with a world's data, so {@link #clear} starts over whenever they reload. Materials set by hand
+ * ({@link MaterialOverrides}) win over the guesses, except that what lets sound through (air, open doors, fences,
+ * small shapes) stays open unless an override says so.
  */
 public final class MaterialMap {
 	/** Smaller shapes (buttons, rails, carpets, torches' bases, fence posts) let sound by. */
@@ -70,10 +72,21 @@ public final class MaterialMap {
 	}
 
 	private byte[] byState = new byte[0];
+	private MaterialOverrides overrides = MaterialOverrides.NONE;
 
 	/** Forgets every decision, for when tags reload. */
 	public void clear() {
 		byState = new byte[0];
+	}
+
+	/** Uses {@code overrides} from now on, and forgets every decision. */
+	public void setOverrides(MaterialOverrides overrides) {
+		this.overrides = overrides;
+		clear();
+	}
+
+	public MaterialOverrides overrides() {
+		return overrides;
 	}
 
 	/** The material of {@code state}. */
@@ -84,7 +97,7 @@ public final class MaterialMap {
 	/** The native id of {@code state}'s material. */
 	public byte id(BlockState state) {
 		int stateId = Block.getId(state);
-		if (stateId < 0) return classify(state).id();
+		if (stateId < 0) return classify(state, overrides).id();
 		if (stateId >= byState.length) {
 			int size = Math.max(stateId + 1, Block.BLOCK_STATE_REGISTRY.size());
 			int old = byState.length;
@@ -93,15 +106,22 @@ public final class MaterialMap {
 		}
 		byte id = byState[stateId];
 		if (id == UNKNOWN) {
-			id = classify(state).id();
+			id = classify(state, overrides).id();
 			byState[stateId] = id;
 		}
 		return id;
 	}
 
-	/** Decides a state's material. */
+	/** Decides a state's material, with no overrides. */
 	static AcousticMaterial classify(BlockState state) {
+		return classify(state, MaterialOverrides.NONE);
+	}
+
+	/** Decides a state's material. */
+	static AcousticMaterial classify(BlockState state, MaterialOverrides overrides) {
 		if (state.isAir()) return AcousticMaterial.AIR;
+		AcousticMaterial set = overrides.find(state);
+		if (set == AcousticMaterial.AIR) return set;
 		Block block = state.getBlock();
 		FluidState fluid = state.getFluidState();
 		VoxelShape shape = state.getCollisionShape(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
@@ -122,6 +142,7 @@ public final class MaterialMap {
 		// A closed door is thin, but it fills its doorway.
 		boolean panel = block instanceof DoorBlock || block instanceof TrapDoorBlock || block instanceof FenceGateBlock;
 		if (!panel && volume(shape) < SOLID_VOLUME) return AcousticMaterial.AIR;
+		if (set != null) return set;
 
 		if (block instanceof LeavesBlock || state.is(BlockTags.LEAVES)) return AcousticMaterial.LEAVES;
 		if (block instanceof IceBlock || state.is(BlockTags.ICE)) return AcousticMaterial.ICE;

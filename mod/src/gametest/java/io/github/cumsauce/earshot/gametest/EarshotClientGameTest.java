@@ -3,8 +3,11 @@ package io.github.cumsauce.earshot.gametest;
 import io.github.cumsauce.earshot.EarshotClient;
 import io.github.cumsauce.earshot.audio.SoundShaper;
 import io.github.cumsauce.earshot.audio.VoicePlayer;
+import io.github.cumsauce.earshot.config.EarshotConfig;
 import io.github.cumsauce.earshot.natives.NativeBridge;
 import io.github.cumsauce.earshot.openal.OpenAlProbe;
+import io.github.cumsauce.earshot.ui.AcousticsScreen;
+import io.github.cumsauce.earshot.ui.SoundOptionsButton;
 import io.github.cumsauce.earshot.world.AcousticMaterial;
 import io.github.cumsauce.earshot.world.MaterialMap;
 import io.github.cumsauce.earshot.world.WorldMirror;
@@ -21,6 +24,7 @@ import java.util.function.Predicate;
 import net.fabricmc.fabric.api.client.gametest.v1.FabricClientGameTest;
 import net.fabricmc.fabric.api.client.gametest.v1.context.ClientGameTestContext;
 import net.fabricmc.fabric.api.client.gametest.v1.context.TestSingleplayerContext;
+import net.minecraft.client.gui.screens.options.SoundOptionsScreen;
 import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.client.resources.sounds.SoundInstance;
 import net.minecraft.core.BlockPos;
@@ -42,7 +46,10 @@ import net.minecraft.world.phys.Vec3;
  * <li>a playing sound is muffled in a closed box, comes round through a doorway, and is clear in the open (M2);
  * <li>Yak VC's voice, through Earshot's voice sink, is shaped the same way and played as it comes (M4);
  * <li>the reverb is nearly dry on open ground and rings in a stone hall (M3);
- * <li>{@code /earshot rays} draws traced paths (screenshot {@code rays-in-a-glass-room}).
+ * <li>with the Off preset, Earshot leaves sounds as the game plays them (M5);
+ * <li>{@code /earshot rays} draws traced paths (screenshot {@code rays-in-a-glass-room});
+ * <li>Options → Music &amp; Sounds has an Acoustics button that opens the settings (screenshot
+ * {@code acoustics-settings}).
  * </ul>
  *
  * <p>CI has no sound card, so it runs this with {@code ALSOFT_DRIVERS=null}: OpenAL Soft's null backend still opens
@@ -117,6 +124,12 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 					SoundInstance.createUnseededRandom(), true, 0, SoundInstance.Attenuation.LINEAR, inside.x, inside.y,
 					inside.z, false)));
 			awaitSound(context, shaper, inside, s -> s.gains()[0] < 0.1f, "in a closed box");
+			// The Off preset leaves it as the game plays it; back on, it is muffled again.
+			EarshotConfig settings = EarshotClient.config();
+			context.runOnClient(mc -> EarshotClient.apply(settings.withPreset(EarshotConfig.Preset.OFF)));
+			awaitSound(context, shaper, inside, s -> s.gains()[0] > 0.95f, "with Earshot off");
+			context.runOnClient(mc -> EarshotClient.apply(settings));
+			awaitSound(context, shaper, inside, s -> s.gains()[0] < 0.1f, "in a closed box, Earshot back on");
 			singleplayer.getServer().runCommand("fill 8 -60 -3 8 -59 -3 air");
 			awaitSound(context, shaper, inside, s -> s.gains()[1] > 0.1f && s.heardFrom().z < 0.3,
 					"round through a doorway on the far side");
@@ -182,6 +195,17 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 			context.runOnClient(mc -> mc.player.connection.sendCommand("earshot rays 256 6"));
 			context.waitTicks(2);
 			context.takeScreenshot("rays-in-a-glass-room");
+
+			// The settings, where players look first: Options → Music & Sounds → Acoustics.
+			context.setScreen(() -> new SoundOptionsScreen(null, net.minecraft.client.Minecraft.getInstance().options));
+			// The button is inside the screen's options list, where clickScreenButton doesn't look.
+			context.runOnClient(mc -> SoundOptionsButton.find(mc.gui.screen())
+					.orElseThrow(() -> new AssertionError("no Acoustics button in Music & Sounds"))
+					.onPress(new net.minecraft.client.input.KeyEvent(
+							com.mojang.blaze3d.platform.InputConstants.KEY_RETURN, 0, 0)));
+			context.waitForScreen(AcousticsScreen.class);
+			context.takeScreenshot("acoustics-settings");
+			context.setScreen(() -> null);
 		}
 	}
 

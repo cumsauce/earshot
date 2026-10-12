@@ -66,6 +66,16 @@ public final class WorldMirror {
 	/** Materials depend on tags, which come with a world's data: decide them again and copy every chunk again. */
 	private void tagsLoaded() {
 		materials.clear();
+		recopy();
+	}
+
+	/** Uses {@code overrides} from now on, copying every chunk again with them. */
+	public void setOverrides(MaterialOverrides overrides) {
+		materials.setOverrides(overrides);
+		recopy();
+	}
+
+	private void recopy() {
 		pending.addAll(mirrored);
 		mirrored.clear();
 	}
