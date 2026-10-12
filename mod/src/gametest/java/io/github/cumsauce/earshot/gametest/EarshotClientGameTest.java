@@ -201,6 +201,14 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 			}
 			context.runOnClient(mc -> EarshotClient.apply(withoutOwnVoice));
 			if (FakeSpeaker.offeredVersion() != 1) throw new AssertionError("still offering own voice");
+			// A Yak VC that publishes only version 1 gets version 1, even with Own Voice Echo on.
+			var share = net.fabricmc.loader.api.FabricLoader.getInstance().getObjectShare();
+			share.put(VoicePlayer.SINK_VERSION_KEY, 1);
+			context.runOnClient(mc -> EarshotClient.apply(withoutOwnVoice.withOwnVoice(true)));
+			int offered = FakeSpeaker.offeredVersion();
+			context.runOnClient(mc -> EarshotClient.apply(withoutOwnVoice));
+			share.remove(VoicePlayer.SINK_VERSION_KEY);
+			if (offered != 1) throw new AssertionError("offered version " + offered + " to a Yak VC that takes 1");
 
 			// M3: the reverb follows the room. Out on the superflat it is nearly dry; shut in a stone hall it rings.
 			double[] outside = awaitRoom(context, shaper, r -> r[4] < 0.7 && r[1] < 0.6, "on open ground");
