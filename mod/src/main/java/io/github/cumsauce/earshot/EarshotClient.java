@@ -134,6 +134,7 @@ public final class EarshotClient implements ClientModInitializer {
 	@Override
 	public void onInitializeClient() {
 		config = EarshotConfig.load(configDir().resolve("earshot.json"));
+		io.github.cumsauce.earshot.openal.HrtfFiles.install();
 		SoundOptionsButton.register();
 		BypassKey.register();
 		net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry.addLast(

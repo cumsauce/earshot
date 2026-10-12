@@ -298,11 +298,7 @@ Java owns everything that touches game state and makes the OpenAL calls on the s
   Everything else uses Fabric API events.
 - Non-positional sounds (relative or `Attenuation.NONE`: music, UI, some ambience) stay dry and untouched. Jukebox records are processed. Each category can be turned off.
 - The applier runs on Minecraft's sound thread at tick rate. It reads the shared table and calls OpenAL only for values that changed by more than a small epsilon.
-- HRTF: vanilla's Directional Audio option stays the switch. M5 adds a choice of HRTF dataset (OpenAL Soft `.mhr` files, selected with `ALC_HRTF_ID_SOFT`). Bundled datasets need a licence check first. Status (2026-10-12):
-  - The original SADIE datasets (University of York) are Apache 2.0, with the dataset to be cited. SADIE II's licence isn't stated on the pages found so far, so its Zenodo record or the authors need checking before shipping it.
-  - KEMAR sets vary: RWTH Aachen's is CC BY; Schlieper, Preihs and Peissig's is CC BY-SA 3.0, whose share-alike would carry over to a converted `.mhr`.
-  - OpenAL Soft's `makemhr` (1.20+) converts SOFA files to `.mhr`; it isn't bundled with LWJGL, so conversion would happen once, offline, in the repo.
-  - Until one is cleared, players can drop `.mhr` files where OpenAL Soft looks for them, and the HRTF setting lists them.
+- HRTF: vanilla's Directional Audio option stays the switch. M5 adds a choice of HRTF dataset (OpenAL Soft `.mhr` files, selected with `ALC_HRTF_ID_SOFT`). Bundled since alpha.8: SADIE II's KU100 (D1) and KEMAR (D2), 48 kHz, which are Apache 2.0 (copyright University of York 2018, per its Zenodo record and the York page). They were converted with OpenAL Soft 1.25.2's `makemhr` (built against libmysofa) at its defaults, about 750 KB each. Earshot unpacks them into the game's working directory before the sound engine starts, since OpenAL Soft searches there first and names each set after its file. Because it would otherwise default to the first set it finds, Earshot asks for "Built-In HRTF" when none is picked. The gametest checks both are listed, and that picking the KU100 loads it.
 
 ### 8. Yak VC voice
 

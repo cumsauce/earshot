@@ -80,6 +80,10 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 			throw new UncheckedIOException(e);
 		}
 		if (!report.efx()) throw new AssertionError("the game's OpenAL has no EFX");
+		// The HRTFs Earshot ships were unpacked before the sound engine started, so OpenAL lists them.
+		for (String hrtf : io.github.cumsauce.earshot.openal.HrtfFiles.NAMES) {
+			if (!report.hrtfs().contains(hrtf)) throw new AssertionError(hrtf + " isn't listed: " + report.hrtfs());
+		}
 
 		WorldMirror mirror = EarshotClient.mirror();
 		NativeBridge bridge = EarshotClient.bridge();
@@ -262,6 +266,23 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 			context.waitTicks(2);
 			context.takeScreenshot("acoustics-settings-end");
 			context.setScreen(() -> null);
+
+			// With Directional Audio on, the HRTF picked is the one OpenAL loads: here a shipped SADIE II set, which
+			// takes restarting the sound engine.
+			context.runOnClient(mc -> {
+				mc.options.directionalAudio().set(true);
+				EarshotClient.apply(EarshotClient.config().withHrtf("SADIE II KU100"));
+			});
+			try {
+				context.waitFor(mc -> OpenAlProbe.last() != null && OpenAlProbe.last().hrtf().equals("SADIE II KU100"),
+						10 * 20);
+			} catch (RuntimeException | AssertionError e) {
+				throw new AssertionError("the KU100 HRTF isn't in use: " + OpenAlProbe.last().describe(), e);
+			}
+			context.runOnClient(mc -> {
+				mc.options.directionalAudio().set(false);
+				EarshotClient.apply(EarshotClient.config().withHrtf(""));
+			});
 		}
 	}
 

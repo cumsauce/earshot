@@ -45,3 +45,5 @@ Earshot loads its native library through FFM. Like Yak VC, it needs this in your
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT), at your option. The build setup and native loader are adapted from Yak VC, under the same licenses.
+
+The KU100 and KEMAR HRTFs come from the [SADIE II database](https://www.york.ac.uk/sadie-project/database.html), copyright University of York 2018, under the Apache License 2.0 (C. Armstrong, L. Thresh, D. Murphy and G. Kearney, "A Perceptual Evaluation of Individual and Non-Individual HRTFs: A Case Study of the SADIE II Database", *Applied Sciences* 8(11), 2029, 2018, [doi:10.3390/app8112029](https://doi.org/10.3390/app8112029)). They were converted to OpenAL Soft's format with its `makemhr`; [the notice](mod/src/main/resources/earshot/hrtf/NOTICE.txt) says how.

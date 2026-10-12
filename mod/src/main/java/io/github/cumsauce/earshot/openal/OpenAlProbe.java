@@ -41,6 +41,8 @@ public final class OpenAlProbe {
 			boolean callbackBuffer,
 			boolean hrtfExtension,
 			int hrtfStatus,
+			/* The HRTF in use, or empty when none is. */
+			String hrtf,
 			List<String> hrtfs,
 			String alExtensions,
 			String alcExtensions) {
@@ -55,7 +57,8 @@ public final class OpenAlProbe {
 					"  EAX reverb effect: " + eaxReverb,
 					"  convolution: extension " + convolutionExtension + ", effect type " + convolutionEffect,
 					"  callback buffers: " + callbackBuffer,
-					"  HRTF: extension " + hrtfExtension + ", status " + describeHrtfStatus(hrtfStatus) + ", available " + hrtfs,
+					"  HRTF: extension " + hrtfExtension + ", status " + describeHrtfStatus(hrtfStatus)
+							+ (hrtf.isEmpty() ? "" : ", using " + hrtf) + ", available " + hrtfs,
 					"  AL extensions: " + alExtensions,
 					"  ALC extensions: " + alcExtensions);
 		}
@@ -114,11 +117,18 @@ public final class OpenAlProbe {
 				ALC10.alcGetInteger(device, ALC11.ALC_STEREO_SOURCES),
 				efx, sends, eaxReverb, convolutionExtension, convolutionEffect,
 				AL10.alIsExtensionPresent("AL_SOFT_callback_buffer"),
-				hrtfExtension, hrtfStatus, hrtfs,
+				hrtfExtension, hrtfStatus, hrtfInUse(device, hrtfExtension), hrtfs,
 				AL10.alGetString(AL10.AL_EXTENSIONS),
 				ALC10.alcGetString(device, ALC10.ALC_EXTENSIONS));
 		AL10.alGetError();
 		return report;
+	}
+
+	/** The HRTF the device uses, or empty when it uses none. */
+	private static String hrtfInUse(long device, boolean extension) {
+		if (!extension || ALC10.alcGetInteger(device, SOFTHRTF.ALC_HRTF_SOFT) != ALC10.ALC_TRUE) return "";
+		String name = ALC10.alcGetString(device, SOFTHRTF.ALC_HRTF_SPECIFIER_SOFT);
+		return name == null ? "" : name;
 	}
 
 	/** Whether an effect of {@code type} can be made, by making one and deleting it. */

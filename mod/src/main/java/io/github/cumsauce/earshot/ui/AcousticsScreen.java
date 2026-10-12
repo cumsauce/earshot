@@ -7,6 +7,7 @@ import io.github.cumsauce.earshot.config.EarshotConfig;
 import io.github.cumsauce.earshot.config.EarshotConfig.Preset;
 import io.github.cumsauce.earshot.config.EarshotConfig.Reverb;
 import io.github.cumsauce.earshot.natives.NativeBridge;
+import io.github.cumsauce.earshot.openal.ContextAttributes;
 import io.github.cumsauce.earshot.openal.OpenAlProbe;
 import java.lang.foreign.MemorySegment;
 import java.util.ArrayList;
@@ -82,7 +83,10 @@ public final class AcousticsScreen extends OptionsSubScreen {
 		List<String> hrtfs = new ArrayList<>();
 		hrtfs.add("");
 		OpenAlProbe.Report report = OpenAlProbe.last();
-		if (report != null) hrtfs.addAll(report.hrtfs());
+		// The built-in one is "Default"; the rest as OpenAL lists them, the ones Earshot ships among them.
+		if (report != null) {
+			report.hrtfs().stream().filter(h -> !h.equals(ContextAttributes.BUILT_IN_HRTF)).forEach(hrtfs::add);
+		}
 		if (!hrtfs.contains(config.hrtf())) hrtfs.add(config.hrtf());
 		hrtf = new OptionInstance<>("earshot.settings.hrtf",
 				OptionInstance.cachedConstantTooltip(Component.translatable("earshot.settings.hrtf.tooltip")),
