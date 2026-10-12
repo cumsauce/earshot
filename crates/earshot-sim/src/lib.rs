@@ -9,14 +9,16 @@ mod hear;
 mod ir;
 mod pathing;
 mod paths;
+mod quality;
 mod reverb;
 mod rng;
 
 pub use crate::eax::{EaxReverb, eax_reverb};
-pub use crate::engine::{Engine, FIELD_HALF, ROOM_BOUNCES, ROOM_RAYS, ROOM_REACH};
+pub use crate::engine::{Engine, ROOM_REACH};
 pub use crate::hear::{Heard, hear, occlusion};
 pub use crate::ir::{IR_CHANNELS, Reflection, impulse_response, late_energy};
 pub use crate::pathing::{Field, Route};
 pub use crate::paths::{Segment, TraceStats, sphere_directions, trace_paths};
+pub use crate::quality::{Quality, Stats};
 pub use crate::reverb::{Room, SPEED_OF_SOUND, measure, measure_with_early};
 pub use crate::rng::Rng;

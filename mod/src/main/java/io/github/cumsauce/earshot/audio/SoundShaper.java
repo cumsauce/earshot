@@ -27,7 +27,8 @@ import org.lwjgl.openal.EXTEfx;
 
 /**
  * Shapes every positional sound the game plays by how it reaches the listener (M2): muffled by what is in the way,
- * moved to the opening it comes round through, damped by the air over distance, and muffled hard underwater. Each also
+ * moved to the opening it comes round through, damped by the air over distance, and muffled hard underwater. Moving
+ * sounds, and the listener, get velocities for OpenAL's Doppler shift. Each also
  * sends to a reverb made from the room measured around the listener (M3): a convolution with a synthesized impulse
  * response where OpenAL Soft has the effect, else EAX reverb set from the room's measurements. Yak VC's voices, played
  * by {@link VoicePlayer}, are shaped the same way (M4).
@@ -48,6 +49,7 @@ public final class SoundShaper {
 
 	/** OpenAL's air absorption: 1 is about 0.05 dB lost per metre at 5 kHz. */
 	private static final float AIR_ABSORPTION = 1.0f;
+	private static final float[] NO_VELOCITY = {0, 0, 0};
 	/** Underwater, everything sounds like this, low to high. */
 	private static final float[] UNDERWATER = {0.7f, 0.2f, 0.05f};
 	/**
@@ -81,6 +83,11 @@ public final class SoundShaper {
 	private volatile @Nullable ReverbMode wantedMode;
 	private volatile ReverbMode mode = ReverbMode.OFF;
 	private volatile boolean failed;
+	private volatile float airAbsorption = AIR_ABSORPTION;
+	private volatile boolean underwaterMuffling = true;
+	private volatile boolean doppler = true;
+	/** The listener's velocity, estimated on the client thread. */
+	private final SourceState.Motion listenerMotion = new SourceState.Motion();
 
 	/** One shaped sound, for the debug command and tests; {@code voice} for a Yak VC voice. */
 	public record Snapshot(Vec3 position, Vec3 heardFrom, float[] gains, boolean voice) {
@@ -130,6 +137,20 @@ public final class SoundShaper {
 		wantedMode = wanted;
 	}
 
+	/** Takes up the settings (the engine's quality is set separately). */
+	public void configure(io.github.cumsauce.earshot.config.EarshotConfig config) {
+		boolean active = config.active();
+		airAbsorption = active && config.airAbsorption() ? AIR_ABSORPTION : 0;
+		underwaterMuffling = active && config.underwater();
+		doppler = active && config.doppler();
+		wantMode(!active ? ReverbMode.OFF : switch (config.reverb()) {
+			case AUTO -> null;
+			case CONVOLUTION -> ReverbMode.CONVOLUTION;
+			case EAX -> ReverbMode.EAX;
+			case OFF -> ReverbMode.OFF;
+		});
+	}
+
 	/**
 	 * The game is closing its OpenAL context, which frees every object in it: forget the reverbs, so the next context
 	 * gets its own.
@@ -151,7 +172,8 @@ public final class SoundShaper {
 		if (minecraft.level == null || !camera.isInitialized()) return;
 		Vec3 eye = camera.position();
 		double[] listener = {eye.x, eye.y, eye.z};
-		boolean underwater = camera.getFluidInCamera() == FogType.WATER;
+		boolean underwater = underwaterMuffling && camera.getFluidInCamera() == FogType.WATER;
+		Vec3 listenerVelocity = doppler ? listenerMotion.update(eye, System.nanoTime()) : Vec3.ZERO;
 		float[] orientation = worldAxesFor(camera);
 		OpenAlProbe.Report report = OpenAlProbe.last();
 		boolean efx = report != null && report.efx();
@@ -166,7 +188,8 @@ public final class SoundShaper {
 			}
 		}
 		channels.executeOnChannels(
-				stream -> update(stream, listener, underwater, efx, mode, orientation, players, voiceVolume));
+				stream -> update(stream, listener, underwater, efx, mode, orientation, players, voiceVolume,
+						listenerVelocity));
 	}
 
 	/** The wanted reverb, if the game's OpenAL can do it, else the best it can; underwater, EAX's preset. */
@@ -194,8 +217,12 @@ public final class SoundShaper {
 
 	/** On the sound thread: shapes every positional source, the game's and Yak VC's voices. */
 	private void update(Stream<Channel> channels, double[] listener, boolean underwater, boolean efx,
-			ReverbMode mode, float[] orientation, Map<UUID, Vec3> players, float voiceVolume) {
+			ReverbMode mode, float[] orientation, Map<UUID, Vec3> players, float voiceVolume, Vec3 listenerVelocity) {
 		int[] sends = reverb(mode, underwater, orientation);
+		AL10.alListener3f(AL10.AL_VELOCITY, (float) listenerVelocity.x, (float) listenerVelocity.y,
+				(float) listenerVelocity.z);
+		long now = System.nanoTime();
+		boolean doppler = this.doppler;
 		List<Target> targets = new ArrayList<>();
 		channels.forEach(channel -> {
 			ShapedChannel c = (ShapedChannel) channel;
@@ -240,6 +267,13 @@ public final class SoundShaper {
 			Vec3 heardFrom = state.heardFrom(position);
 			AL10.alSource3f(target.source(), AL10.AL_POSITION, (float) heardFrom.x, (float) heardFrom.y,
 					(float) heardFrom.z);
+			Vec3 velocity = state.velocity(position, now);
+			if (doppler) {
+				AL10.alSource3f(target.source(), AL10.AL_VELOCITY, (float) velocity.x, (float) velocity.y,
+						(float) velocity.z);
+			} else {
+				AL10.alSourcefv(target.source(), AL10.AL_VELOCITY, NO_VELOCITY);
+			}
 			if (target.voice() != null) {
 				target.voice().heardFrom = heardFrom;
 				target.voice().gains = gains;
@@ -289,12 +323,12 @@ public final class SoundShaper {
 	 * Sets the source's direct filter: a low-pass whose gain is the low band and whose high-frequency gain brings the
 	 * high band down to its own value. OpenAL copies a filter when it is attached, so it is attached again each time.
 	 */
-	private static void filter(int source, SourceState state, float[] gains) {
+	private void filter(int source, SourceState state, float[] gains) {
 		if (state.filter == 0) {
 			state.filter = EXTEfx.alGenFilters();
 			EXTEfx.alFilteri(state.filter, EXTEfx.AL_FILTER_TYPE, EXTEfx.AL_FILTER_LOWPASS);
-			AL10.alSourcef(source, EXTEfx.AL_AIR_ABSORPTION_FACTOR, AIR_ABSORPTION);
 		}
+		AL10.alSourcef(source, EXTEfx.AL_AIR_ABSORPTION_FACTOR, airAbsorption);
 		float low = Math.clamp(gains[0], 0f, 1f);
 		float highRatio = low > 0 ? Math.clamp(gains[2] / low, 0f, 1f) : 0f;
 		EXTEfx.alFilterf(state.filter, EXTEfx.AL_LOWPASS_GAIN, low);

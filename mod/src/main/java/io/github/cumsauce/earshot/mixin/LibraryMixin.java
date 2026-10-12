@@ -8,6 +8,7 @@ import io.github.cumsauce.earshot.openal.OpenAlProbe;
 import java.nio.IntBuffer;
 import org.lwjgl.system.MemoryStack;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -19,9 +20,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  */
 @Mixin(Library.class)
 abstract class LibraryMixin {
+	@Shadow
+	private long currentDevice;
+
 	@Inject(method = "createAttributes", at = @At("RETURN"), cancellable = true)
 	private void earshot$attributes(MemoryStack stack, boolean hrtf, CallbackInfoReturnable<IntBuffer> cir) {
-		cir.setReturnValue(ContextAttributes.withEarshotAttributes(stack, cir.getReturnValue()));
+		cir.setReturnValue(ContextAttributes.withEarshotAttributes(stack, cir.getReturnValue(), currentDevice, hrtf,
+				EarshotClient.config().hrtf()));
 	}
 
 	@Inject(method = "cleanup", at = @At("HEAD"))

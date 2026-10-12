@@ -38,6 +38,11 @@ pub struct Route {
 }
 
 impl Field {
+    /// How far the field reaches each way from the listener's block.
+    pub fn half(&self) -> i32 {
+        self.size / 2
+    }
+
     /// The field for a listener at `listener`, `half` blocks each way.
     pub fn build(world: &World, listener: Vec3, half: i32) -> Field {
         let size = 2 * half + 1;

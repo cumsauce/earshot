@@ -16,8 +16,9 @@
  * 5: `earshot_impulse_response`.
  * 6: Yak VC's voice: `earshot_voice_sink`, `earshot_voice_callback`,
  *    `earshot_voice_stream` and `earshot_voice_streams`.
+ * 7: `earshot_set_quality` and `earshot_stats`.
  */
-#define EARSHOT_ABI_VERSION 6
+#define EARSHOT_ABI_VERSION 7
 
 #define EARSHOT_OK 0
 
@@ -65,6 +66,23 @@
  * stream has ended (else 0); and seconds of voice queued.
  */
 #define EARSHOT_VOICE_DOUBLES 10
+
+/**
+ * Doubles for `earshot_set_quality`: the room measurement's rays (0 for no
+ * room, so no reverb), bounces and interval in seconds; occlusion rays per
+ * source (0, 1, 5 or 9; 0 turns occlusion off); how far the pathing field
+ * reaches each way in blocks (0 to 64; 0 turns sound round corners off);
+ * and the share of one core the room measurement may take, above which it
+ * uses fewer rays.
+ */
+#define EARSHOT_QUALITY_DOUBLES 6
+
+/**
+ * Doubles from `earshot_stats`: rays in the latest room measurement (after
+ * the budget), its share of one core (smoothed), the latest pathing field's
+ * build time in milliseconds, and how far that field reaches (0 for none).
+ */
+#define EARSHOT_STATS_DOUBLES 4
 
 /**
  * Opaque engine handle.
@@ -283,6 +301,26 @@ int32_t earshot_voice_stream(const uint8_t *uuid, void **out);
  * `EARSHOT_VOICE_DOUBLES * cap` doubles; `count` must be writable.
  */
 int32_t earshot_voice_streams(uint8_t *uuids, double *info, size_t cap, size_t *count);
+
+/**
+ * Sets how much the engine traces from now on (see
+ * [`EARSHOT_QUALITY_DOUBLES`]).
+ *
+ * # Safety
+ * `engine` must be live; `quality` must point to `EARSHOT_QUALITY_DOUBLES`
+ * doubles.
+ */
+int32_t earshot_set_quality(struct EarshotEngine *engine, const double *quality);
+
+/**
+ * Writes what the engine is spending into `out` (see
+ * [`EARSHOT_STATS_DOUBLES`]).
+ *
+ * # Safety
+ * `engine` must be live; `out` must be writable for `EARSHOT_STATS_DOUBLES`
+ * doubles.
+ */
+int32_t earshot_stats(struct EarshotEngine *engine, double *out);
 
 /**
  * Copies this thread's last error message into `buf` (truncated to `cap`,

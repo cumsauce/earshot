@@ -5,25 +5,30 @@ use std::time::{Duration, Instant};
 
 use earshot_world::{Vec3, World};
 
-use crate::{Field, Heard, Reflection, Room, hear, impulse_response, measure_with_early};
+use crate::{
+    Field, Heard, Quality, Reflection, Room, Stats, hear, impulse_response, measure_with_early,
+};
 
-/// How far the pathing field reaches each way from the listener, in blocks.
-pub const FIELD_HALF: i32 = 24;
 /// The field is rebuilt once the listener moves this far from where it was
 /// built.
 const REBUILD_DISTANCE: f64 = 0.5;
 /// Or, after blocks change, once it is this old.
 const REBUILD_AFTER_CHANGES: Duration = Duration::from_millis(200);
+/// After a build, the next waits at least this many times as long as the
+/// build took, so pathing takes at most about a quarter of a core even while
+/// the listener runs through big fields.
+const REBUILD_SPACING: u32 = 3;
 /// How often the worker looks.
 const WORKER_TICK: Duration = Duration::from_millis(25);
-/// How often the room around the listener is measured, and with what trace.
-const ROOM_EVERY: Duration = Duration::from_millis(200);
-pub const ROOM_RAYS: u32 = 1024;
-pub const ROOM_BOUNCES: u32 = 12;
+/// How far room rays reach, in blocks.
 pub const ROOM_REACH: f64 = 64.0;
-/// Each measurement moves the room this much of the way to what it measured:
-/// about half a second to cross a doorway, and no flicker from ray noise.
-const ROOM_SMOOTHING: f32 = 0.35;
+/// The room follows its measurements with this time constant: about half a
+/// second to cross a doorway, and no flicker from ray noise.
+const ROOM_TIME_CONSTANT: f32 = 0.46;
+/// The budget scales the room's rays down to this share at the least, and
+/// never below this many.
+const MIN_RAY_SCALE: f32 = 1.0 / 16.0;
+const MIN_ROOM_RAYS: u32 = 64;
 
 /// The acoustics engine: the mirrored world, the listener, and a worker
 /// thread that keeps the pathing field around the listener current. Every
@@ -40,6 +45,8 @@ struct Shared {
     /// Bumped on every change to the world.
     world_version: AtomicU64,
     listener: Mutex<Option<Vec3>>,
+    quality: RwLock<Quality>,
+    stats: Mutex<Stats>,
     field: RwLock<Option<Arc<Built>>>,
     room: RwLock<Option<Room>>,
     /// The early reflections from the latest measurement.
@@ -95,6 +102,32 @@ impl Engine {
         )
     }
 
+    /// How much to trace from now on. The worker picks it up within a tick.
+    pub fn set_quality(&self, quality: Quality) {
+        *self
+            .shared
+            .quality
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = quality;
+    }
+
+    pub fn quality(&self) -> Quality {
+        *self
+            .shared
+            .quality
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// What the engine is spending.
+    pub fn stats(&self) -> Stats {
+        *self
+            .shared
+            .stats
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Where the listener is now; the pathing field follows.
     pub fn set_listener(&self, listener: Vec3) {
         *self
@@ -145,9 +178,10 @@ impl Engine {
     pub fn hear(&self, listener: Vec3, sources: &[Vec3], out: &mut [Heard]) {
         let built = self.built();
         let field = built.as_ref().map(|built| &built.field);
+        let rays = self.quality().occlusion_rays;
         self.world(|world| {
             for (source, heard) in sources.iter().zip(out) {
-                *heard = hear(world, field, listener, *source);
+                *heard = hear(world, field, listener, *source, rays);
             }
         });
     }
@@ -170,58 +204,177 @@ impl Drop for Engine {
     }
 }
 
-/// Rebuilds the field when the listener has moved, or the world has changed
-/// and the field is old enough.
+/// Keeps the pathing field and the room around the listener current, as
+/// much as the quality asks for and the budget allows.
 fn worker(shared: &Shared) {
-    let mut room_at: Option<Instant> = None;
-    let mut seed = 0u64;
+    let mut room = RoomTrace::default();
+    let mut next_build = Instant::now();
     while !shared.stop.load(Ordering::Relaxed) {
+        let quality = *shared
+            .quality
+            .read()
+            .unwrap_or_else(PoisonError::into_inner);
         let listener = *shared
             .listener
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         if let Some(listener) = listener {
-            let version = shared.world_version.load(Ordering::Acquire);
-            let current = shared
-                .field
-                .read()
-                .unwrap_or_else(PoisonError::into_inner)
-                .clone();
-            let due = current.is_none_or(|built| {
-                (built.field.listener() - listener).length() >= REBUILD_DISTANCE
-                    || (built.world_version != version
-                        && built.at.elapsed() >= REBUILD_AFTER_CHANGES)
-            });
-            if due {
-                let field = {
-                    let world = shared.world.read().unwrap_or_else(PoisonError::into_inner);
-                    Field::build(&world, listener, FIELD_HALF)
-                };
-                *shared.field.write().unwrap_or_else(PoisonError::into_inner) =
-                    Some(Arc::new(Built {
-                        field,
-                        world_version: version,
-                        at: Instant::now(),
-                    }));
+            if quality.field_half == 0 {
+                drop_field(shared);
+            } else if Instant::now() >= next_build && field_due(shared, listener, quality) {
+                let took = build_field(shared, listener, quality.field_half);
+                next_build = Instant::now() + took * REBUILD_SPACING;
+            }
+            if quality.room_rays == 0 {
+                room.forget(shared);
+            } else if room.due(quality) {
+                room.measure(shared, listener, quality);
             }
         }
-        if let Some(listener) = listener
-            && room_at.is_none_or(|at| at.elapsed() >= ROOM_EVERY)
-        {
-            room_at = Some(Instant::now());
-            seed += 1;
-            let (measured, early) = {
-                let world = shared.world.read().unwrap_or_else(PoisonError::into_inner);
-                measure_with_early(&world, listener, ROOM_RAYS, ROOM_BOUNCES, ROOM_REACH, seed)
-            };
-            *shared.early.write().unwrap_or_else(PoisonError::into_inner) = early;
-            let mut room = shared.room.write().unwrap_or_else(PoisonError::into_inner);
-            *room = Some(match *room {
-                Some(old) => blend(&old, &measured, ROOM_SMOOTHING),
-                None => measured,
-            });
-        }
         std::thread::sleep(WORKER_TICK);
+    }
+}
+
+/// Whether the field is missing, the wrong size, left behind by the
+/// listener, or older than a change to the world.
+fn field_due(shared: &Shared, listener: Vec3, quality: Quality) -> bool {
+    let version = shared.world_version.load(Ordering::Acquire);
+    let current = shared
+        .field
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    current.is_none_or(|built| {
+        built.field.half() != quality.field_half
+            || (built.field.listener() - listener).length() >= REBUILD_DISTANCE
+            || (built.world_version != version && built.at.elapsed() >= REBUILD_AFTER_CHANGES)
+    })
+}
+
+/// Builds the field around `listener` and returns how long it took.
+fn build_field(shared: &Shared, listener: Vec3, half: i32) -> Duration {
+    let start = Instant::now();
+    let version = shared.world_version.load(Ordering::Acquire);
+    let field = {
+        let world = shared.world.read().unwrap_or_else(PoisonError::into_inner);
+        Field::build(&world, listener, half)
+    };
+    let took = start.elapsed();
+    *shared.field.write().unwrap_or_else(PoisonError::into_inner) = Some(Arc::new(Built {
+        field,
+        world_version: version,
+        at: Instant::now(),
+    }));
+    let mut stats = shared.stats.lock().unwrap_or_else(PoisonError::into_inner);
+    stats.field_build = took;
+    stats.field_half = half;
+    took
+}
+
+fn drop_field(shared: &Shared) {
+    let mut field = shared.field.write().unwrap_or_else(PoisonError::into_inner);
+    if field.take().is_some() {
+        shared
+            .stats
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .field_half = 0;
+    }
+}
+
+/// The room measurement's schedule and budget.
+#[derive(Debug)]
+struct RoomTrace {
+    at: Option<Instant>,
+    seed: u64,
+    /// The share of the quality's rays the budget allows.
+    scale: f32,
+    /// The measurement's share of one core, smoothed.
+    cost: Option<f32>,
+}
+
+impl Default for RoomTrace {
+    fn default() -> Self {
+        RoomTrace {
+            at: None,
+            seed: 0,
+            scale: 1.0,
+            cost: None,
+        }
+    }
+}
+
+impl RoomTrace {
+    fn due(&self, quality: Quality) -> bool {
+        self.at.is_none_or(|at| at.elapsed() >= quality.room_every)
+    }
+
+    /// Measures the room around `listener` and moves the engine's room
+    /// towards it, then fits the next measurement's rays to the budget.
+    fn measure(&mut self, shared: &Shared, listener: Vec3, quality: Quality) {
+        let start = Instant::now();
+        let every = match self.at {
+            Some(at) => start.duration_since(at).max(quality.room_every),
+            None => quality.room_every,
+        };
+        self.at = Some(start);
+        self.seed += 1;
+        let rays = ((quality.room_rays as f32 * self.scale).round() as u32)
+            .max(quality.room_rays.min(MIN_ROOM_RAYS));
+        let (measured, early) = {
+            let world = shared.world.read().unwrap_or_else(PoisonError::into_inner);
+            measure_with_early(
+                &world,
+                listener,
+                rays,
+                quality.room_bounces,
+                ROOM_REACH,
+                self.seed,
+            )
+        };
+        let share = start.elapsed().as_secs_f32() / quality.room_every.as_secs_f32();
+        let cost = self.cost.map_or(share, |cost| cost + (share - cost) * 0.3);
+        self.cost = Some(cost);
+        self.scale = adjust_scale(self.scale, cost, quality.budget);
+
+        *shared.early.write().unwrap_or_else(PoisonError::into_inner) = early;
+        let t = 1.0 - (-every.as_secs_f32() / ROOM_TIME_CONSTANT).exp();
+        let mut room = shared.room.write().unwrap_or_else(PoisonError::into_inner);
+        *room = Some(match *room {
+            Some(old) => blend(&old, &measured, t),
+            None => measured,
+        });
+        let mut stats = shared.stats.lock().unwrap_or_else(PoisonError::into_inner);
+        stats.room_rays = rays;
+        stats.room_cost = cost;
+    }
+
+    /// No room is measured at this quality: there is none, and no reverb.
+    fn forget(&mut self, shared: &Shared) {
+        if self.at.take().is_none() {
+            return;
+        }
+        *shared.room.write().unwrap_or_else(PoisonError::into_inner) = None;
+        shared
+            .early
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clear();
+        let mut stats = shared.stats.lock().unwrap_or_else(PoisonError::into_inner);
+        stats.room_rays = 0;
+        stats.room_cost = 0.0;
+    }
+}
+
+/// Fewer rays when the measurement costs more than the budget, more (back
+/// up to all of them) when it costs well under.
+fn adjust_scale(scale: f32, cost: f32, budget: f32) -> f32 {
+    if cost > budget {
+        (scale * 0.8).max(MIN_RAY_SCALE)
+    } else if cost < 0.6 * budget {
+        (scale * 1.1).min(1.0)
+    } else {
+        scale
     }
 }
 
@@ -298,6 +451,64 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(engine.room().unwrap().decay[1] > 1.0);
+    }
+
+    #[test]
+    fn the_quality_turns_pathing_and_the_room_off_and_on() {
+        let engine = Engine::start();
+        engine.set_listener(Vec3::new(0.5, 0.5, 0.5));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while engine.field().is_none() || engine.room().is_none() {
+            assert!(Instant::now() < deadline, "no field or room");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(engine.stats().field_half, Quality::DEFAULT.field_half);
+        engine.set_quality(Quality {
+            room_rays: 0,
+            field_half: 0,
+            ..Quality::DEFAULT
+        });
+        while engine.field().is_some() || engine.room().is_some() {
+            assert!(
+                Instant::now() < deadline,
+                "still tracing: {:?}",
+                engine.stats()
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        engine.set_quality(Quality {
+            field_half: 8,
+            ..Quality::DEFAULT
+        });
+        while engine.field().is_none_or(|field| field.half() != 8) || engine.room().is_none() {
+            assert!(Instant::now() < deadline, "not back: {:?}", engine.stats());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let stats = engine.stats();
+        assert!(stats.room_rays > 0 && stats.room_cost > 0.0, "{stats:?}");
+    }
+
+    #[test]
+    fn the_budget_trades_rays_for_time() {
+        let mut scale = 1.0;
+        for _ in 0..100 {
+            scale = adjust_scale(scale, 0.5, 0.25);
+        }
+        assert_eq!(scale, MIN_RAY_SCALE);
+        scale = adjust_scale(scale, 0.2, 0.25);
+        assert_eq!(scale, MIN_RAY_SCALE, "inside the budget: no change");
+        for _ in 0..100 {
+            scale = adjust_scale(scale, 0.01, 0.25);
+        }
+        assert_eq!(scale, 1.0);
+        assert!(Quality::DEFAULT.is_valid());
+        assert!(
+            !Quality {
+                occlusion_rays: 3,
+                ..Quality::DEFAULT
+            }
+            .is_valid()
+        );
     }
 
     #[test]

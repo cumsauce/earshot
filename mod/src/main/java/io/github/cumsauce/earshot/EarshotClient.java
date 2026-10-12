@@ -2,8 +2,11 @@ package io.github.cumsauce.earshot;
 
 import io.github.cumsauce.earshot.audio.SoundShaper;
 import io.github.cumsauce.earshot.command.EarshotCommands;
+import io.github.cumsauce.earshot.config.EarshotConfig;
+import io.github.cumsauce.earshot.ui.SoundOptionsButton;
 import io.github.cumsauce.earshot.natives.NativeBridge;
 import io.github.cumsauce.earshot.natives.NativeLoader;
+import io.github.cumsauce.earshot.world.MaterialOverrides;
 import io.github.cumsauce.earshot.world.WorldMirror;
 import java.lang.foreign.MemorySegment;
 import java.nio.file.Path;
@@ -21,10 +24,41 @@ public final class EarshotClient implements ClientModInitializer {
 	private static @Nullable MemorySegment engine;
 	private static @Nullable WorldMirror mirror;
 	private static @Nullable SoundShaper shaper;
+	private static volatile EarshotConfig config = EarshotConfig.DEFAULT;
 
 	/** {@code config/earshot/}: settings and extracted natives. */
 	public static Path configDir() {
 		return FabricLoader.getInstance().getConfigDir().resolve("earshot");
+	}
+
+	/** {@code config/earshot/materials.json}: materials set by hand. */
+	public static Path materialsFile() {
+		return configDir().resolve("materials.json");
+	}
+
+	/** The settings in use. */
+	public static EarshotConfig config() {
+		return config;
+	}
+
+	/**
+	 * Uses {@code config} from now on, and saves it. A different HRTF dataset takes a new OpenAL context, so the game's
+	 * sound engine reloads for it.
+	 */
+	public static void apply(EarshotConfig next) {
+		EarshotConfig previous = config;
+		config = next;
+		next.save(configDir().resolve("earshot.json"));
+		NativeBridge bridge = EarshotClient.bridge;
+		MemorySegment engine = EarshotClient.engine;
+		SoundShaper shaper = EarshotClient.shaper;
+		if (bridge == null || engine == null || shaper == null) return;
+		bridge.setQuality(engine, next.quality());
+		shaper.configure(next);
+		shaper.voice().setEnabled(next.voice());
+		if (!next.hrtf().equals(previous.hrtf())) {
+			net.minecraft.client.Minecraft.getInstance().getSoundManager().reload();
+		}
 	}
 
 	/** The loaded native library's ABI version, or -1 if it didn't load. */
@@ -54,6 +88,8 @@ public final class EarshotClient implements ClientModInitializer {
 
 	@Override
 	public void onInitializeClient() {
+		config = EarshotConfig.load(configDir().resolve("earshot.json"));
+		SoundOptionsButton.register();
 		NativeBridge bridge;
 		try {
 			bridge = new NativeBridge(NativeLoader.load(configDir()));
@@ -73,6 +109,7 @@ public final class EarshotClient implements ClientModInitializer {
 		MemorySegment engine = bridge.create();
 		LOGGER.info("Started the native engine (ABI version {})", nativeAbi);
 		WorldMirror mirror = new WorldMirror(bridge, engine);
+		mirror.materials().setOverrides(MaterialOverrides.load(materialsFile()));
 		mirror.register();
 		SoundShaper shaper = new SoundShaper(bridge, engine);
 		EarshotCommands.register(bridge, engine, mirror, shaper);
@@ -80,5 +117,9 @@ public final class EarshotClient implements ClientModInitializer {
 		EarshotClient.engine = engine;
 		EarshotClient.mirror = mirror;
 		EarshotClient.shaper = shaper;
+		bridge.setQuality(engine, config.quality());
+		shaper.configure(config);
+		shaper.voice().setEnabled(config.voice());
+		LOGGER.info("Preset {} ({})", config.preset().key(), config.preset().resolve().key());
 	}
 }

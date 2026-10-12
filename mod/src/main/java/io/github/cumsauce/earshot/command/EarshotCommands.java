@@ -1,7 +1,10 @@
 package io.github.cumsauce.earshot.command;
 
 import com.mojang.brigadier.arguments.IntegerArgumentType;
+import io.github.cumsauce.earshot.EarshotClient;
 import io.github.cumsauce.earshot.audio.SoundShaper;
+import io.github.cumsauce.earshot.config.EarshotConfig;
+import io.github.cumsauce.earshot.world.MaterialOverrides;
 import io.github.cumsauce.earshot.audio.VoicePlayer;
 import io.github.cumsauce.earshot.natives.NativeBridge;
 import io.github.cumsauce.earshot.world.WorldMirror;
@@ -11,6 +14,10 @@ import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallba
 import net.fabricmc.fabric.api.client.command.v2.ClientCommands;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.minecraft.core.particles.DustParticleOptions;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.phys.Vec3;
 
@@ -60,6 +67,9 @@ public final class EarshotCommands {
 										.executes(c -> setVoice(shaper.voice(), c.getSource(), true)))
 								.then(ClientCommands.literal("off")
 										.executes(c -> setVoice(shaper.voice(), c.getSource(), false))))
+						.then(ClientCommands.literal("material").executes(c -> material(mirror, c.getSource())))
+						.then(ClientCommands.literal("materials").then(ClientCommands.literal("reload")
+								.executes(c -> reloadMaterials(mirror, c.getSource()))))
 						.then(ClientCommands.literal("stats").executes(c -> stats(bridge, engine, mirror, c.getSource())))));
 	}
 
@@ -164,8 +174,30 @@ public final class EarshotCommands {
 	}
 
 	private static int setVoice(VoicePlayer voice, FabricClientCommandSource source, boolean on) {
-		voice.setEnabled(on);
+		EarshotClient.apply(EarshotClient.config().withVoice(on));
 		return voice(voice, source);
+	}
+
+	/** The material of the block the player looks at, and whether it was set by hand. */
+	private static int material(WorldMirror mirror, FabricClientCommandSource source) {
+		if (!(source.getClient().hitResult instanceof BlockHitResult hit) || hit.getType() == HitResult.Type.MISS) {
+			source.sendError(Component.literal("Look at a block"));
+			return 0;
+		}
+		BlockState state = source.getPlayer().level().getBlockState(hit.getBlockPos());
+		boolean set = mirror.materials().overrides().find(state) != null;
+		source.sendFeedback(Component.literal(String.format(Locale.ROOT, "%s: %s%s",
+				BuiltInRegistries.BLOCK.getKey(state.getBlock()), mirror.materials().material(state).nativeName(),
+				set ? " (set in materials.json)" : "")));
+		return 1;
+	}
+
+	private static int reloadMaterials(WorldMirror mirror, FabricClientCommandSource source) {
+		MaterialOverrides overrides = MaterialOverrides.load(EarshotClient.materialsFile());
+		mirror.setOverrides(overrides);
+		source.sendFeedback(Component.literal(overrides.size() + " material overrides from "
+				+ EarshotClient.materialsFile() + "; copying the world again"));
+		return 1;
 	}
 
 	private static com.mojang.brigadier.builder.LiteralArgumentBuilder<FabricClientCommandSource> reverbModes(
@@ -174,19 +206,15 @@ public final class EarshotCommands {
 			c.getSource().sendFeedback(Component.literal("Reverb: " + shaper.mode()));
 			return 1;
 		});
-		reverb.then(ClientCommands.literal("auto").executes(c -> setReverb(shaper, c.getSource(), null)));
-		for (SoundShaper.ReverbMode mode : SoundShaper.ReverbMode.values()) {
-			reverb.then(ClientCommands.literal(mode.name().toLowerCase(Locale.ROOT))
-					.executes(c -> setReverb(shaper, c.getSource(), mode)));
+		for (EarshotConfig.Reverb choice : EarshotConfig.Reverb.values()) {
+			reverb.then(ClientCommands.literal(choice.key()).executes(c -> {
+				EarshotClient.apply(EarshotClient.config().withReverb(choice));
+				c.getSource().sendFeedback(Component.literal("Reverb: " + (choice == EarshotConfig.Reverb.AUTO
+						? "auto (the best this OpenAL has)" : choice.key())));
+				return 1;
+			}));
 		}
 		return reverb;
-	}
-
-	private static int setReverb(SoundShaper shaper, FabricClientCommandSource source,
-			SoundShaper.@org.jspecify.annotations.Nullable ReverbMode mode) {
-		shaper.wantMode(mode);
-		source.sendFeedback(Component.literal("Reverb: " + (mode == null ? "auto (the best this OpenAL has)" : mode)));
-		return 1;
 	}
 
 	private static int room(SoundShaper shaper, FabricClientCommandSource source) {
@@ -212,6 +240,12 @@ public final class EarshotCommands {
 		source.sendFeedback(Component.literal(String.format(Locale.ROOT,
 				"Mirrored %d chunks (%d sections with blocks), %d waiting", mirror.mirrored(),
 				bridge.sectionCount(engine), mirror.pending())));
+		double[] stats = bridge.stats(engine);
+		EarshotConfig config = EarshotClient.config();
+		source.sendFeedback(Component.literal(String.format(Locale.ROOT,
+				"Preset %s (%s): room trace %.0f rays at %.0f %% of a core; pathing field %.0f blocks each way, built in"
+						+ " %.1f ms", config.preset().key(), config.preset().resolve().key(), stats[0], 100 * stats[1],
+				stats[3], stats[2])));
 		return 1;
 	}
 }

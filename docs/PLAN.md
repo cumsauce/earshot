@@ -165,6 +165,18 @@ The gametest checks a looping beacon hum in three states:
 - **Gametest:** a fake speaker calls the sink from its own thread every 20 ms, as yakvc's audio thread would, with a 220 Hz tone from inside a closed stone box. The voice is muffled in the box (low band under −10 dB), clear once the box is gone, its queue stays under 150 ms (OpenAL is playing it as it comes), and its source goes once it falls silent. On the M3 VM the game got the 295 mono sources it asked for.
 - **Still to do for the M4 exit:** a two-client session with yakvc built from #177, listening behind a wall and in a cave. That needs #177 merged or a build of the fork.
 
+## M5 results so far (2026-10-11)
+
+- **Quality** (`earshot-sim/src/quality.rs`, FFI ABI 7 `earshot_set_quality`/`earshot_stats`): the room trace's rays, bounces and interval, occlusion rays per source (1, 5 or 9; 9 adds the diagonals), the pathing field's reach, and a CPU budget. Presets live in Java (`EarshotConfig.Preset`), from the table above except Medium's field (24 blocks each way, not 32). Auto picks High on 8+ cores, Medium on 4+, else Low.
+- **Adaptive budget.** The room trace's cost, as a share of one core, is smoothed; above the budget its rays shrink by 20 % a measurement (down to a sixteenth, never below 64), and grow back by 10 % once it costs under 60 % of the budget. The room's smoothing is now a time constant (0.46 s), so it doesn't change with the measurement rate.
+- **Pathing field cost** (trace_bench on the M3 VM): 2 ms at 16 blocks each way, 3–6 ms at 24, 4–14 ms at 32, and 5–51 ms at 48. Rebuilds now wait at least three times as long as the last build took, so pathing stays under about a quarter of a core even on Ultra while running.
+- **Settings:** Options → Music & Sounds → Acoustics… (Fabric's screen events, no mixin), saved in `config/earshot/earshot.json`: Quality, Occlusion, Round Corners, Reverb, Air Absorption, Underwater, Doppler, Voice Chat, HRTF. No Mod Menu entry yet.
+- **Doppler:** each shaped source's velocity, and the listener's, is estimated from successive positions (smoothed, and zeroed after a jump over 80 blocks a second) and handed to OpenAL, which does the shift. Relative sources (music, UI, centred voice) are untouched.
+- **HRTF choice:** the dataset is picked by name from what OpenAL Soft lists (`ALC_HRTF_ID_SOFT` in the context attributes); changing it reloads the sound engine. Bundling datasets still waits on a licence check.
+- **Material overrides** and the **user guide** ([GUIDE.md](GUIDE.md)).
+- **Gametest:** the Off preset leaves a sound in a closed box unmuffled, and turning it back on muffles it again; the Acoustics button opens the settings (screenshot `acoustics-settings`).
+- **Left for later:** source-space reverb slots, own-voice reverb (needs Yak VC to pass the local mic frames), and a Mod Menu entry.
+
 ## Approaches considered
 
 | Option | What it is | Verdict |
@@ -210,7 +222,7 @@ Java owns everything that touches game state and makes the OpenAL calls on the s
 
 - Each material has absorption in 3 bands (low ≤ 500 Hz, mid, high ≥ 2 kHz), a scattering coefficient and transmission loss per block in each band.
 - Defaults are seeded from Steam Audio's published table (rock, wood, glass, carpet and so on), then mapped by block tags and `SoundType`. Wool, carpet and moss absorb, stone reflects, glass passes low frequencies, leaves are mostly transmissive and scattering, and water is its own case. This way modded blocks get sensible values without a list.
-- A data-driven override (`assets/<ns>/earshot/materials.json`, resource-pack friendly) is added in M5.
+- Overrides by block id or `#tag` in `config/earshot/materials.json` (M5), checked with `/earshot material` and reread with `/earshot materials reload`. A resource-pack version (`assets/<ns>/earshot/materials.json`) can follow if modpacks want to ship them.
 
 ### 3. Tracer
 

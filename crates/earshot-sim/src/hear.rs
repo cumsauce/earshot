@@ -25,12 +25,16 @@ pub struct Heard {
 }
 
 /// The share of energy per band that gets straight from `source` to
-/// `listener`: the mean over five rays, one to the source and four to points
-/// [`SPREAD`] around it.
-pub fn occlusion(world: &World, listener: Vec3, source: Vec3) -> Bands {
+/// `listener`: the mean over `rays` rays, one to the source and the rest to
+/// points [`SPREAD`] around it (4 or 8 of them, so `rays` is 1, 5 or 9; any
+/// other count is taken as 5).
+pub fn occlusion(world: &World, listener: Vec3, source: Vec3, rays: u32) -> Bands {
     let dir = (source - listener).normalized();
     if dir == Vec3::ZERO {
         return [1.0; BANDS];
+    }
+    if rays == 1 {
+        return transmission(world, listener, source);
     }
     let helper = if dir.x.abs() < 0.9 {
         Vec3::new(1.0, 0.0, 0.0)
@@ -39,25 +43,50 @@ pub fn occlusion(world: &World, listener: Vec3, source: Vec3) -> Bands {
     };
     let u = cross(dir, helper).normalized() * SPREAD;
     let v = cross(dir, u).normalized() * SPREAD;
+    let (a, b) = (
+        (u + v) * std::f64::consts::FRAC_1_SQRT_2,
+        (u - v) * std::f64::consts::FRAC_1_SQRT_2,
+    );
+    let offsets = [Vec3::ZERO, u, -u, v, -v, a, -a, b, -b];
+    let offsets = if rays == 9 {
+        &offsets[..]
+    } else {
+        &offsets[..5]
+    };
     let mut sum = [0.0f32; BANDS];
-    for offset in [Vec3::ZERO, u, -u, v, -v] {
+    for &offset in offsets {
         let through = transmission(world, listener, source + offset);
         for (sum, through) in sum.iter_mut().zip(through) {
             *sum += through;
         }
     }
-    sum.map(|s| s / 5.0)
+    sum.map(|s| s / offsets.len() as f32)
 }
 
 /// How a sound at `source` reaches `listener`: straight through whatever is in
-/// the way, or round it along `field`'s shortest path, whichever loses less
-/// in the mid band. Round, it seems to come from the opening.
-pub fn hear(world: &World, field: Option<&Field>, listener: Vec3, source: Vec3) -> Heard {
-    let direct = occlusion(world, listener, source);
+/// the way (over `rays` occlusion rays), or round it along `field`'s shortest
+/// path, whichever loses less in the mid band. Round, it seems to come from
+/// the opening. With no rays, nothing is in the way.
+pub fn hear(
+    world: &World,
+    field: Option<&Field>,
+    listener: Vec3,
+    source: Vec3,
+    rays: u32,
+) -> Heard {
+    let path_length = (source - listener).length();
+    if rays == 0 {
+        return Heard {
+            gains: [1.0; BANDS],
+            heard_from: source,
+            path_length,
+        };
+    }
+    let direct = occlusion(world, listener, source, rays);
     let straight = Heard {
         gains: direct,
         heard_from: source,
-        path_length: (source - listener).length(),
+        path_length,
     };
     if direct[1] >= CLEAR {
         return straight;
@@ -126,7 +155,7 @@ mod tests {
     #[test]
     fn nothing_in_the_way_is_heard_as_is() {
         let world = World::new();
-        let heard = hear(&world, None, LISTENER, SOURCE);
+        let heard = hear(&world, None, LISTENER, SOURCE, 5);
         assert_eq!(heard.gains, [1.0; BANDS]);
         assert_eq!(heard.heard_from, SOURCE);
     }
@@ -134,12 +163,12 @@ mod tests {
     #[test]
     fn a_wall_muffles_and_a_doorway_brings_the_sound_round() {
         // Straight through the wall.
-        let through = hear(&wall(None), None, LISTENER, SOURCE);
+        let through = hear(&wall(None), None, LISTENER, SOURCE, 5);
         assert!(through.gains[1] < 0.05, "{through:?}");
 
         let open = wall(Some(4));
         let field = Field::build(&open, LISTENER, 16);
-        let round = hear(&open, Some(&field), LISTENER, SOURCE);
+        let round = hear(&open, Some(&field), LISTENER, SOURCE, 5);
         assert!(round.gains[1] > through.gains[1] * 5.0, "{round:?}");
         assert!(
             round.gains[2] < round.gains[0],
@@ -161,8 +190,28 @@ mod tests {
                 world.set_block(5, y, z, Material::Rock);
             }
         }
-        let edge = occlusion(&world, LISTENER, Vec3::new(9.5, 0.5, 1.4));
+        let edge = occlusion(&world, LISTENER, Vec3::new(9.5, 0.5, 1.4), 5);
         assert!(edge[1] > 0.1 && edge[1] < 0.95, "{edge:?}");
+    }
+
+    #[test]
+    fn the_ray_count_sets_how_soft_edges_are_and_none_turns_occlusion_off() {
+        let mut world = World::new();
+        for z in -10..=0 {
+            for y in -2..=2 {
+                world.set_block(5, y, z, Material::Rock);
+            }
+        }
+        let at = Vec3::new(9.5, 0.5, 1.4);
+        // One ray clips the wall's end, through half a block of rock; nine
+        // see past it too.
+        let one = occlusion(&world, LISTENER, at, 1);
+        let nine = occlusion(&world, LISTENER, at, 9);
+        assert!(one[1] < 0.1, "{one:?}");
+        assert!(nine[1] > 0.1 && nine[1] < 0.95, "{nine:?}");
+        let off = hear(&wall(None), None, LISTENER, SOURCE, 0);
+        assert_eq!(off.gains, [1.0; BANDS]);
+        assert_eq!(off.heard_from, SOURCE);
     }
 
     #[test]
