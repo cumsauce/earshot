@@ -21,6 +21,12 @@ pub const IR_CHANNELS: usize = 4;
 /// The late field's directional channels against W: a diffuse field puts two
 /// thirds of W's energy (with FuMa's 1/√2 on W) in each of X, Y and Z.
 const DIFFUSE_XYZ: f32 = 0.816;
+/// The most energy a response may carry, relative to the sound sent to it:
+/// what the EAX reverb gives a shut-in room (its 0.32 gain, about -8 dB in
+/// all). The diffuse-field level is right for a sound a block away, but a
+/// small reverberant room comes out at twice the input's energy, and every
+/// sound sends to the same reverb, so the convolution clipped.
+pub const MAX_ENERGY: f32 = 0.16;
 /// Fades the end in the last this many seconds, so a cut tail doesn't click.
 const FADE: f32 = 0.05;
 /// Crossovers between the low, mid and high bands, in hertz.
@@ -85,6 +91,15 @@ pub fn impulse_response(
         out[at + 1] += a * -d.z as f32;
         out[at + 2] += a * -d.x as f32;
         out[at + 3] += a * d.y as f32;
+    }
+
+    // Energy in W is half the field's (FuMa's 1/sqrt 2).
+    let energy = 2.0 * out.iter().step_by(IR_CHANNELS).map(|s| s * s).sum::<f32>();
+    if energy > MAX_ENERGY {
+        let scale = (MAX_ENERGY / energy).sqrt();
+        for sample in &mut out {
+            *sample *= scale;
+        }
     }
 
     let fade = ((FADE * rate) as usize).min(length);
@@ -223,6 +238,25 @@ mod tests {
     }
 
     #[test]
+    fn no_response_is_louder_than_the_eax_reverb() {
+        // A small hard room is the worst: its diffuse field is twice the
+        // input's energy before the cap.
+        for (t60, mfp) in [(3.0, 5.0), (0.6, 3.0), (3.0, 20.0)] {
+            let early = [Reflection {
+                direction: Vec3::new(1.0, 0.0, 0.0),
+                delay: 0.005,
+                energy: 0.5,
+            }];
+            let ir = impulse_response(&room([t60; 3], mfp, 1.0), &early, 48_000, 1.5, 1);
+            let energy = 2.0 * ir.iter().step_by(IR_CHANNELS).map(|s| s * s).sum::<f32>();
+            assert!(
+                energy <= MAX_ENERGY * 1.01,
+                "{energy} for t60 {t60}, mfp {mfp}"
+            );
+        }
+    }
+
+    #[test]
     fn early_reflections_land_where_and_when_they_should() {
         let reflection = Reflection {
             direction: Vec3::new(1.0, 0.0, 0.0),
@@ -238,7 +272,12 @@ mod tests {
         );
         let at = 480 * IR_CHANNELS;
         // From +x: in B-format that is Y = -1 (to the right).
-        assert!(ir[at + 2] < -0.4, "{:?}", &ir[at..at + 4]);
+        let [_, x, y, z] = [ir[at], ir[at + 1], ir[at + 2], ir[at + 3]];
+        assert!(
+            y < 0.0 && y.abs() > 4.0 * x.abs().max(z.abs()),
+            "{:?}",
+            &ir[at..at + 4]
+        );
     }
 
     #[test]
