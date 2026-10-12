@@ -62,6 +62,13 @@ fn root() -> PathBuf {
         .to_path_buf()
 }
 
+/// Where cargo builds: `CARGO_TARGET_DIR` if set (a build on a VirtioFS
+/// shared folder needs it elsewhere: rustc can't map its fresh objects
+/// there), else `target/`.
+fn target_dir() -> PathBuf {
+    env::var_os("CARGO_TARGET_DIR").map_or_else(|| root().join("target"), PathBuf::from)
+}
+
 /// The workspace version, which the mod shares.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -114,7 +121,7 @@ fn natives(target: &str, out: &Path) -> Result<()> {
 /// cargo-zigbuild, so the library runs on any glibc since 2.17.
 fn build_ffi(target: Option<&str>) -> Result<PathBuf> {
     let mut cmd = cargo(&["build", "--profile", "dist", "--package", "earshot-ffi"]);
-    let mut built = root().join("target");
+    let mut built = target_dir();
     let os = match target {
         None => env::consts::OS,
         Some(triple) => {
@@ -227,7 +234,7 @@ fn write_manifest(out: &Path) -> Result<()> {
 /// Packages the release jar from the staged natives with the Gradle build,
 /// which also runs the mod's unit tests.
 fn dist(from: Option<&Path>) -> Result<()> {
-    let natives_dir = root().join("target/dist/natives");
+    let natives_dir = target_dir().join("dist/natives");
     if natives_dir.exists() {
         fs::remove_dir_all(&natives_dir)?;
     }
