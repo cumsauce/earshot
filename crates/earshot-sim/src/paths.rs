@@ -66,16 +66,38 @@ pub fn trace_paths(
     bounces: u32,
     reach: f64,
     seed: u64,
+    segment: impl FnMut(Segment),
+) -> TraceStats {
+    trace_directions(
+        world,
+        origin,
+        &sphere_directions(rays),
+        bounces,
+        reach,
+        seed,
+        segment,
+    )
+}
+
+/// [`trace_paths`], with the rays starting along `directions`: for splitting
+/// one trace between threads.
+pub fn trace_directions(
+    world: &World,
+    origin: Vec3,
+    directions: &[Vec3],
+    bounces: u32,
+    reach: f64,
+    seed: u64,
     mut segment: impl FnMut(Segment),
 ) -> TraceStats {
     let mut rng = Rng::new(seed);
     let mut stats = TraceStats {
-        rays,
+        rays: directions.len() as u32,
         ..TraceStats::default()
     };
     let mut hit_lengths = 0.0;
     let mut hits = 0u32;
-    for start in sphere_directions(rays) {
+    for &start in directions {
         let (mut from, mut dir, mut energy) = (origin, start, 1.0f32);
         for leg in 0..=bounces {
             stats.segments += 1;

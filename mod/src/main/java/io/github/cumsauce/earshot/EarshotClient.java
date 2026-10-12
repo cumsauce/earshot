@@ -58,6 +58,11 @@ public final class EarshotClient implements ClientModInitializer {
 		}
 	}
 
+	/** Whether Earshot is shaping sounds now: not Off, and not bypassed. */
+	public static boolean shaping() {
+		return !bypassed && config.active() && shaper != null;
+	}
+
 	/** Whether the bypass key has Earshot leaving sounds alone for now. */
 	public static boolean bypassed() {
 		return bypassed;
@@ -72,13 +77,31 @@ public final class EarshotClient implements ClientModInitializer {
 		use(bypass ? config.withPreset(EarshotConfig.Preset.OFF) : config);
 	}
 
+	/** How far room rays reach: twice as far under a dimension's ceiling, whose caverns are far bigger. */
+	private static double roomReach() {
+		var level = net.minecraft.client.Minecraft.getInstance().level;
+		return level != null && level.dimensionType().hasCeiling() ? 128 : 64;
+	}
+
+	/** Under a ceiling or not, as {@link #roomReach} last saw. */
+	private static boolean ceiling;
+
+	/** Takes up the room reach of a dimension just entered. Called on the client thread each tick. */
+	private static void followDimension() {
+		var level = net.minecraft.client.Minecraft.getInstance().level;
+		boolean now = level != null && level.dimensionType().hasCeiling();
+		if (now == ceiling) return;
+		ceiling = now;
+		use(bypassed ? config.withPreset(EarshotConfig.Preset.OFF) : config);
+	}
+
 	/** Hands {@code settings} to the engine and the shaper. */
 	private static void use(EarshotConfig settings) {
 		NativeBridge bridge = EarshotClient.bridge;
 		MemorySegment engine = EarshotClient.engine;
 		SoundShaper shaper = EarshotClient.shaper;
 		if (bridge == null || engine == null || shaper == null) return;
-		bridge.setQuality(engine, settings.quality());
+		bridge.setQuality(engine, settings.quality(roomReach()));
 		shaper.configure(settings);
 		shaper.voice().configure(settings.voice(), settings.ownVoice());
 	}
@@ -140,7 +163,9 @@ public final class EarshotClient implements ClientModInitializer {
 		EarshotClient.engine = engine;
 		EarshotClient.mirror = mirror;
 		EarshotClient.shaper = shaper;
-		bridge.setQuality(engine, config.quality());
+		bridge.setQuality(engine, config.quality(64));
+		net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.END_CLIENT_TICK
+				.register(minecraft -> followDimension());
 		shaper.configure(config);
 		shaper.voice().configure(config.voice(), config.ownVoice());
 		LOGGER.info("Preset {} ({})", config.preset().key(), config.preset().resolve().key());

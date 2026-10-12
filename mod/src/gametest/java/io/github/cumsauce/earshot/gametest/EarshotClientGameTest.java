@@ -242,6 +242,9 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 							com.mojang.blaze3d.platform.InputConstants.KEY_RETURN, 0, 0)));
 			context.waitForScreen(AcousticsScreen.class);
 			context.takeScreenshot("acoustics-settings");
+			context.runOnClient(mc -> ((AcousticsScreen) mc.gui.screen()).scrollToEnd());
+			context.waitTicks(2);
+			context.takeScreenshot("acoustics-settings-end");
 			context.setScreen(() -> null);
 		}
 	}

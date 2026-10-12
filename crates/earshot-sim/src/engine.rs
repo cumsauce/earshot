@@ -7,7 +7,7 @@ use earshot_world::{Vec3, World};
 
 use crate::{
     Field, Heard, Quality, Reflection, Room, Stats, hear, impulse_response, measure,
-    measure_with_early,
+    measure_threads, measure_with_early,
 };
 
 /// The field is rebuilt once the listener moves this far from where it was
@@ -23,8 +23,6 @@ const REBUILD_SPACING: u32 = 3;
 const MAX_REBUILD_WAIT: Duration = Duration::from_millis(250);
 /// How often the worker looks.
 const WORKER_TICK: Duration = Duration::from_millis(25);
-/// How far room rays reach, in blocks.
-pub const ROOM_REACH: f64 = 64.0;
 /// The room follows its measurements with this time constant: about half a
 /// second to cross a doorway, and no flicker from ray noise.
 const ROOM_TIME_CONSTANT: f32 = 0.46;
@@ -177,7 +175,8 @@ impl Engine {
     /// when the listener is elsewhere. A point inside a solid block is
     /// measured from the open block next to it nearest the point, if any.
     pub fn room_at(&self, at: Vec3, rays: u32, bounces: u32, seed: u64) -> Room {
-        self.world(|world| measure(world, open_near(world, at), rays, bounces, ROOM_REACH, seed))
+        let reach = self.quality().room_reach;
+        self.world(|world| measure(world, open_near(world, at), rays, bounces, reach, seed))
     }
 
     /// The current pathing field, if one has been built.
@@ -372,11 +371,13 @@ impl RoomTrace {
                 listener,
                 rays,
                 quality.room_bounces,
-                ROOM_REACH,
+                quality.room_reach,
                 self.seed,
             )
         };
-        let share = start.elapsed().as_secs_f32() / quality.room_every.as_secs_f32();
+        // Spread over threads, it takes their time together.
+        let share = start.elapsed().as_secs_f32() * measure_threads(rays) as f32
+            / quality.room_every.as_secs_f32();
         let cost = self.cost.map_or(share, |cost| cost + (share - cost) * 0.3);
         self.cost = Some(cost);
         self.scale = adjust_scale(self.scale, cost, quality.budget);

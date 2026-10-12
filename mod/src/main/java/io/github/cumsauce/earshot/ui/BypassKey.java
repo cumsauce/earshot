@@ -13,11 +13,18 @@ import net.minecraft.resources.Identifier;
  * difference. The action bar says which it is.
  */
 public final class BypassKey {
+	private static KeyMapping key;
+
 	private BypassKey() {}
+
+	/** The key, once registered. */
+	public static KeyMapping key() {
+		return key;
+	}
 
 	public static void register() {
 		KeyMapping.Category category = KeyMapping.Category.register(Identifier.fromNamespaceAndPath("earshot", "keys"));
-		KeyMapping key = KeyMappingHelper.registerKeyMapping(
+		key = KeyMappingHelper.registerKeyMapping(
 				new KeyMapping("key.earshot.bypass", InputConstants.UNKNOWN.getValue(), category));
 		ClientTickEvents.END_CLIENT_TICK.register(minecraft -> {
 			boolean pressed = false;

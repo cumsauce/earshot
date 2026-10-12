@@ -35,7 +35,8 @@ use crate::guard::{FfiError, array_arg, guard, out_arg, slice_arg, slice_mut_arg
 /// 9: `earshot_voice_sink` takes the sink version; `earshot_voice_polls` and
 ///    `earshot_voice_own`.
 /// 10: `earshot_early`.
-pub const EARSHOT_ABI_VERSION: u32 = 10;
+/// 11: `earshot_set_quality` takes the room rays' reach.
+pub const EARSHOT_ABI_VERSION: u32 = 11;
 
 pub const EARSHOT_OK: i32 = 0;
 /// A null pointer, unknown material or out-of-range value.
@@ -71,9 +72,9 @@ pub const EARSHOT_VOICE_DOUBLES: usize = 10;
 /// room, so no reverb), bounces and interval in seconds; occlusion rays per
 /// source (0, 1, 5 or 9; 0 turns occlusion off); how far the pathing field
 /// reaches each way in blocks (0 to 64; 0 turns sound round corners off);
-/// and the share of one core the room measurement may take, above which it
-/// uses fewer rays.
-pub const EARSHOT_QUALITY_DOUBLES: usize = 6;
+/// the share of one core the room measurement may take, above which it
+/// uses fewer rays; and how far room rays reach in blocks (8 to 256).
+pub const EARSHOT_QUALITY_DOUBLES: usize = 7;
 
 /// Doubles from `earshot_stats`: rays in the latest room measurement (after
 /// the budget), its share of one core (smoothed), the latest pathing field's
@@ -784,11 +785,11 @@ pub unsafe extern "C" fn earshot_set_quality(
         with_engine(engine, |e| {
             // SAFETY: the caller guarantees `quality` points to
             // `EARSHOT_QUALITY_DOUBLES` doubles.
-            let [rays, bounces, every, occlusion, half, budget] =
+            let [rays, bounces, every, occlusion, half, budget, reach] =
                 array_arg::<f64, EARSHOT_QUALITY_DOUBLES>(quality, "quality")?;
             let whole = |v: f64| v.is_finite() && v >= 0.0 && v.fract() == 0.0 && v <= 1e6;
             if !(whole(rays) && whole(bounces) && whole(occlusion) && whole(half))
-                || !(every.is_finite() && budget.is_finite())
+                || !(every.is_finite() && budget.is_finite() && reach.is_finite())
             {
                 return Err(FfiError::invalid("quality values out of range"));
             }
@@ -798,6 +799,7 @@ pub unsafe extern "C" fn earshot_set_quality(
                 room_every: std::time::Duration::from_secs_f64(every.clamp(0.0, 60.0)),
                 occlusion_rays: occlusion as u32,
                 field_half: half as i32,
+                room_reach: reach,
                 budget: budget as f32,
             };
             if !quality.is_valid() {
@@ -1154,8 +1156,8 @@ mod tests {
     #[test]
     fn quality_is_checked_and_stats_follow_it() {
         let engine = engine();
-        let off = [0.0, 0.0, 0.1, 0.0, 0.0, 0.25];
-        let bad = [1024.0, 8.0, 0.1, 3.0, 24.0, 0.25];
+        let off = [0.0, 0.0, 0.1, 0.0, 0.0, 0.25, 64.0];
+        let bad = [1024.0, 8.0, 0.1, 3.0, 24.0, 0.25, 64.0];
         let mut stats = [f64::NAN; EARSHOT_STATS_DOUBLES];
         // SAFETY: `engine` is live and every buffer is valid for its length.
         unsafe {

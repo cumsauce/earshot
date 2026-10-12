@@ -21,8 +21,9 @@
  * 9: `earshot_voice_sink` takes the sink version; `earshot_voice_polls` and
  *    `earshot_voice_own`.
  * 10: `earshot_early`.
+ * 11: `earshot_set_quality` takes the room rays' reach.
  */
-#define EARSHOT_ABI_VERSION 10
+#define EARSHOT_ABI_VERSION 11
 
 #define EARSHOT_OK 0
 
@@ -76,10 +77,10 @@
  * room, so no reverb), bounces and interval in seconds; occlusion rays per
  * source (0, 1, 5 or 9; 0 turns occlusion off); how far the pathing field
  * reaches each way in blocks (0 to 64; 0 turns sound round corners off);
- * and the share of one core the room measurement may take, above which it
- * uses fewer rays.
+ * the share of one core the room measurement may take, above which it
+ * uses fewer rays; and how far room rays reach in blocks (8 to 256).
  */
-#define EARSHOT_QUALITY_DOUBLES 6
+#define EARSHOT_QUALITY_DOUBLES 7
 
 /**
  * Doubles from `earshot_stats`: rays in the latest room measurement (after

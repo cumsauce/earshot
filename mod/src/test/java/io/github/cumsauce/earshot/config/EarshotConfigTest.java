@@ -22,6 +22,7 @@ class EarshotConfigTest {
 		assertEquals(EarshotConfig.DEFAULT.occlusion(), config.occlusion());
 		assertEquals(EarshotConfig.DEFAULT.hrtf(), config.hrtf());
 		assertFalse(config.ownVoice(), "own voice is off unless asked for");
+		assertFalse(config.realisticFalloff(), "the game's falloff unless asked for");
 	}
 
 	@Test
@@ -29,7 +30,7 @@ class EarshotConfigTest {
 		Path file = dir.resolve("earshot").resolve("earshot.json");
 		assertEquals(EarshotConfig.DEFAULT, EarshotConfig.load(file), "no file: the defaults");
 		EarshotConfig config = new EarshotConfig(EarshotConfig.Preset.LOW, false, true, EarshotConfig.Reverb.EAX, false,
-				true, false, false, "Built-In HRTF", true);
+				true, false, false, "Built-In HRTF", true, true);
 		config.save(file);
 		assertEquals(config, EarshotConfig.load(file));
 		Files.writeString(file, "not json {");
@@ -39,15 +40,15 @@ class EarshotConfigTest {
 	@Test
 	void togglesTurnTheirPartOfTheTraceOff() {
 		EarshotConfig high = new EarshotConfig(EarshotConfig.Preset.HIGH, true, true, EarshotConfig.Reverb.AUTO, true,
-				true, true, true, "", false);
-		assertArrayEquals(new double[] {4096, 16, 0.1, 9, 32, 0.3}, high.quality());
+				true, true, true, "", false, false);
+		assertArrayEquals(new double[] {4096, 16, 0.1, 9, 32, 0.3, 64}, high.quality(64));
 		EarshotConfig noPaths = new EarshotConfig(EarshotConfig.Preset.HIGH, true, false, EarshotConfig.Reverb.OFF,
-				true, true, true, true, "", false);
-		assertArrayEquals(new double[] {0, 16, 0.1, 9, 0, 0.3}, noPaths.quality());
+				true, true, true, true, "", false, false);
+		assertArrayEquals(new double[] {0, 16, 0.1, 9, 0, 0.3, 128}, noPaths.quality(128));
 		EarshotConfig off = new EarshotConfig(EarshotConfig.Preset.OFF, true, true, EarshotConfig.Reverb.AUTO, true,
-				true, true, true, "", false);
+				true, true, true, "", false, false);
 		assertFalse(off.active());
-		assertEquals(0, off.quality()[0]);
-		assertEquals(0, off.quality()[3]);
+		assertEquals(0, off.quality(64)[0]);
+		assertEquals(0, off.quality(64)[3]);
 	}
 }

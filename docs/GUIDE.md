@@ -13,6 +13,8 @@ only how you hear it:
   a sound in another space (a cave you stand outside, the next room) rings with that space's reverb, coming from its
   direction.
 - **Air absorption, underwater muffling and Doppler.**
+- **Thunder arrives late**, as sound takes to come from the bolt: about three seconds a kilometre after the flash.
+- **The Nether rings like the cavern it is**: under a dimension's ceiling, Earshot traces rays twice as far.
 - **Proximity voice chat**, if you use [Yak VC](https://github.com/desocketed/yakvc): voices get all of the above too.
 
 It is a client-only Fabric mod. Servers need nothing.
@@ -40,7 +42,10 @@ Earshot can't run with Sound Physics Remastered, which does the same job; Fabric
 
 ## Settings
 
-Options → Music & Sounds → **Acoustics…**, or Earshot's config button in Mod Menu. Changes apply when you leave the screen and are saved in
+Options → Music & Sounds → **Acoustics…**, or Earshot's config button in Mod Menu. The screen has sections for
+Sound, Reverb, Headphones and Voice Chat; settings that can't take effect (any effect while Quality is Off, HRTF while
+Directional Audio is off, Own Voice Echo while Voice Chat is off) are greyed out. Under Quality it shows what Auto
+picked and what tracing costs right now; under Reverb, which reverb is playing. Changes apply when you leave the screen and are saved in
 `config/earshot/earshot.json`.
 
 | Setting | What it does |
@@ -51,9 +56,11 @@ Options → Music & Sounds → **Acoustics…**, or Earshot's config button in M
 | Reverb | Auto (convolution where the game's OpenAL has it, else EAX), Convolution, EAX, or Off. |
 | Air Absorption | Far sounds lose their highs. |
 | Underwater | Everything is muffled while your head is underwater. |
+| Realistic Falloff | Off by default. Sounds fade as in real air, halving with each doubling of distance past two blocks, instead of the game's straight line to silence. |
 | Doppler | Sounds moving towards or away from you shift in pitch. |
 | Voice Chat | Plays Yak VC's voice through Earshot. Off gives it back to Yak VC's own speakers. |
 | Own Voice Echo | Off by default. Your own voice in Yak VC echoes off the room around you (only the echo, never your voice itself). For headphones, and needs a Yak VC that sends your own voice; with an older one Earshot notices and leaves it off. |
+| Directional Audio | The game's own switch for HRTF, shown here too. |
 | HRTF | Which head-related transfer function Directional Audio uses. Changing it restarts the sound engine. |
 
 To hear the difference, bind **Bypass (A/B)** under Options → Controls → Key Binds → Earshot. Each press switches
@@ -70,8 +77,8 @@ Earshot off and on again; your settings stay as they are.
 
 **Auto** picks High on 8 or more cores, Medium on 4 to 7, and Low below that. At any quality the room trace has a
 share of the CPU (from a tenth of a core on Low to six tenths on Ultra), and uses fewer rays when a big space would take
-more. On an M3 MacBook, High costs about a quarter of a core on Earshot's own thread, plus about a tenth for the
-convolution reverb.
+more. The room trace splits over up to four threads, so on Ultra it can take over a core in all without slowing any
+one. On an M3 MacBook, High costs about a quarter of a core, plus about a tenth for the convolution reverb.
 
 ## Voice chat
 

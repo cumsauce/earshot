@@ -22,6 +22,8 @@ public final class SourceState {
 	boolean spaceSent;
 	/** Whether the source sends to an early-reflections slot of its own. */
 	boolean earlySent;
+	/** Whether the source has Earshot's realistic distance falloff rather than the game's linear one. */
+	boolean realistic;
 	private boolean started;
 	private final float[] gains = {1, 1, 1};
 	private Vec3 offset = Vec3.ZERO;

@@ -27,11 +27,12 @@ import java.util.Locale;
  * @param voice         whether Yak VC's voice plays through Earshot
  * @param hrtf          the HRTF dataset for Directional Audio, or empty for OpenAL's default
  * @param ownVoice      whether the player's own voice in Yak VC echoes off the room (headphones only)
+ * @param realisticFalloff whether the game's sounds fall off as 1/distance rather than linearly
  */
 public record EarshotConfig(Preset preset, boolean occlusion, boolean pathing, Reverb reverb, boolean airAbsorption,
-		boolean underwater, boolean doppler, boolean voice, String hrtf, boolean ownVoice) {
+		boolean underwater, boolean doppler, boolean voice, String hrtf, boolean ownVoice, boolean realisticFalloff) {
 	public static final EarshotConfig DEFAULT = new EarshotConfig(Preset.AUTO, true, true, Reverb.AUTO, true, true, true,
-			true, "", false);
+			true, "", false, false);
 
 	/** How much the engine traces. */
 	public enum Preset {
@@ -42,7 +43,8 @@ public record EarshotConfig(Preset preset, boolean occlusion, boolean pathing, R
 		LOW(new double[] {256, 4, 0.25, 1, 16, 0.1}),
 		MEDIUM(new double[] {1024, 8, 0.125, 5, 24, 0.2}),
 		HIGH(new double[] {4096, 16, 0.1, 9, 32, 0.3}),
-		ULTRA(new double[] {16384, 32, 0.1, 9, 48, 0.6});
+		/** Its room trace may take 1.2 cores, spread over up to 4 threads. */
+		ULTRA(new double[] {16384, 32, 0.1, 9, 48, 1.2});
 
 		/** {@code earshot_set_quality}'s doubles: room rays, bounces, interval, occlusion rays, field reach, budget. */
 		private final double[] quality;
@@ -80,9 +82,12 @@ public record EarshotConfig(Preset preset, boolean occlusion, boolean pathing, R
 		return preset.resolve() != Preset.OFF;
 	}
 
-	/** {@code earshot_set_quality}'s doubles for these settings. */
-	public double[] quality() {
-		double[] quality = preset.resolve().quality.clone();
+	/**
+	 * {@code earshot_set_quality}'s doubles for these settings, with room rays reaching {@code reach} blocks.
+	 */
+	public double[] quality(double reach) {
+		double[] quality = java.util.Arrays.copyOf(preset.resolve().quality, 7);
+		quality[6] = reach;
 		if (!occlusion) {
 			quality[3] = 0;
 			quality[4] = 0;
@@ -94,22 +99,27 @@ public record EarshotConfig(Preset preset, boolean occlusion, boolean pathing, R
 
 	public EarshotConfig withPreset(Preset preset) {
 		return new EarshotConfig(preset, occlusion, pathing, reverb, airAbsorption, underwater, doppler, voice, hrtf,
-				ownVoice);
+				ownVoice, realisticFalloff);
 	}
 
 	public EarshotConfig withReverb(Reverb reverb) {
 		return new EarshotConfig(preset, occlusion, pathing, reverb, airAbsorption, underwater, doppler, voice, hrtf,
-				ownVoice);
+				ownVoice, realisticFalloff);
 	}
 
 	public EarshotConfig withVoice(boolean voice) {
 		return new EarshotConfig(preset, occlusion, pathing, reverb, airAbsorption, underwater, doppler, voice, hrtf,
-				ownVoice);
+				ownVoice, realisticFalloff);
+	}
+
+	public EarshotConfig withRealisticFalloff(boolean realisticFalloff) {
+		return new EarshotConfig(preset, occlusion, pathing, reverb, airAbsorption, underwater, doppler, voice, hrtf,
+				ownVoice, realisticFalloff);
 	}
 
 	public EarshotConfig withOwnVoice(boolean ownVoice) {
 		return new EarshotConfig(preset, occlusion, pathing, reverb, airAbsorption, underwater, doppler, voice, hrtf,
-				ownVoice);
+				ownVoice, realisticFalloff);
 	}
 
 	/** The settings in {@code file}, or the defaults if there is none or it can't be read. */
@@ -146,7 +156,8 @@ public record EarshotConfig(Preset preset, boolean occlusion, boolean pathing, R
 				flag(json, "doppler", d.doppler),
 				flag(json, "voice", d.voice),
 				text(json, "hrtf", d.hrtf),
-				flag(json, "own_voice", d.ownVoice));
+				flag(json, "own_voice", d.ownVoice),
+				flag(json, "realistic_falloff", d.realisticFalloff));
 	}
 
 	JsonObject toJson() {
@@ -161,6 +172,7 @@ public record EarshotConfig(Preset preset, boolean occlusion, boolean pathing, R
 		json.addProperty("voice", voice);
 		json.addProperty("hrtf", hrtf);
 		json.addProperty("own_voice", ownVoice);
+		json.addProperty("realistic_falloff", realisticFalloff);
 		return json;
 	}
 
