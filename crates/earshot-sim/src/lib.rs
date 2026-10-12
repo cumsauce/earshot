@@ -14,7 +14,7 @@ mod quality;
 mod reverb;
 mod rng;
 
-pub use crate::early::{Early, early_reflections};
+pub use crate::early::{ECHO_REACH, Early, early_reflections, echoes};
 pub use crate::eax::{EaxReverb, eax_reverb};
 pub use crate::engine::Engine;
 pub use crate::hear::{Heard, hear, occlusion};

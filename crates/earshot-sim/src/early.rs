@@ -1,6 +1,6 @@
-use earshot_world::{Vec3, World, transmission};
+use earshot_world::{Material, Vec3, World, transmission};
 
-use crate::SPEED_OF_SOUND;
+use crate::{Reflection, SPEED_OF_SOUND};
 
 /// How far from the source a wall may be to give a first reflection, in
 /// blocks.
@@ -98,11 +98,100 @@ pub fn early_reflections(world: &World, listener: Vec3, source: Vec3) -> Early {
     }
 }
 
+/// How far echoes are looked for, in blocks: as far as the world is copied.
+pub const ECHO_REACH: i32 = 128;
+/// Echoes up to this order: a ravine's walls send a shout back and forth.
+const ECHO_ORDER: u32 = 4;
+/// Reflections arriving sooner than this after the sound blend into the
+/// reverb; only later ones are heard as echoes.
+const ECHO_MIN_DELAY: f64 = 0.05;
+/// A wall must be solid this far round the point a ray hits it to give a
+/// clean echo, so a tree trunk or a pillar doesn't.
+const WALL_SPAN: i32 = 2;
+
+/// The echoes of a sound beside `listener` off the big walls along each axis
+/// (cliffs, ravine sides, a cave's far end), up to [`ECHO_ORDER`] bounces
+/// back and forth between two facing walls, from their image sources. Only
+/// echoes later than [`ECHO_MIN_DELAY`] count, and first ones within
+/// `traced` blocks are left out: the room trace already has those.
+pub fn echoes(world: &World, listener: Vec3, traced: f64) -> Vec<Reflection> {
+    let mut out = Vec::new();
+    for axis in 0..3 {
+        // The wall each way: its distance and how much of a reflection it
+        // mirrors.
+        let side = |sign: i32| -> Option<(f64, f32)> {
+            let plane = wall_along_within(world, listener, axis, sign, ECHO_REACH)?;
+            let material = wall_material(world, listener, axis, sign, plane)?;
+            let a = material.acoustics();
+            let distance = (plane - get(listener, axis)).abs();
+            let behind = with(listener, axis, plane - f64::from(sign) * NUDGE);
+            if transmission(world, listener, behind)[1] < CLEAR {
+                return None;
+            }
+            Some((distance, (1.0 - a.absorption[1]) * (1.0 - a.scattering)))
+        };
+        let walls = [side(-1), side(1)];
+        // Images of the listener: start off each wall, then alternate.
+        for first in 0..2 {
+            let Some((d, r)) = walls[first] else {
+                continue;
+            };
+            let (mut position, mut energy, mut wall) = (2.0 * d, r, first);
+            for order in 1..=ECHO_ORDER {
+                let delay = position / SPEED_OF_SOUND;
+                if delay >= ECHO_MIN_DELAY && (order > 1 || d > traced) {
+                    let sign = if wall == 0 { -1.0 } else { 1.0 };
+                    out.push(Reflection {
+                        direction: with(Vec3::ZERO, axis, sign),
+                        delay: delay as f32,
+                        energy: energy / (position * position) as f32,
+                    });
+                }
+                // Back across the room to the other wall, if there is one.
+                wall = 1 - wall;
+                let Some((d, r)) = walls[wall] else {
+                    break;
+                };
+                position += 2.0 * d;
+                energy *= r;
+            }
+        }
+    }
+    out
+}
+
+/// What the wall at `plane` along `axis` is made of, if it is a wall: solid
+/// for [`WALL_SPAN`] blocks each way round where the axis meets it.
+fn wall_material(world: &World, at: Vec3, axis: usize, sign: i32, plane: f64) -> Option<Material> {
+    let hit = with(at, axis, plane + f64::from(sign) * NUDGE);
+    let cell = [hit.x, hit.y, hit.z].map(|v| v.floor() as i32);
+    let material = world.block(cell[0], cell[1], cell[2]);
+    let (u, v) = ((axis + 1) % 3, (axis + 2) % 3);
+    for (du, dv) in [
+        (-WALL_SPAN, 0),
+        (WALL_SPAN, 0),
+        (0, -WALL_SPAN),
+        (0, WALL_SPAN),
+    ] {
+        let mut c = cell;
+        c[u] += du;
+        c[v] += dv;
+        if !world.block(c[0], c[1], c[2]).is_solid() {
+            return None;
+        }
+    }
+    Some(material)
+}
+
 /// The nearest wall from `from` along `axis` in direction `sign`, within
 /// [`REACH`]: the coordinate of its face.
 fn wall_along(world: &World, from: Vec3, axis: usize, sign: i32) -> Option<f64> {
+    wall_along_within(world, from, axis, sign, REACH)
+}
+
+fn wall_along_within(world: &World, from: Vec3, axis: usize, sign: i32, reach: i32) -> Option<f64> {
     let mut cell = [from.x, from.y, from.z].map(|v| v.floor() as i32);
-    for _ in 0..REACH {
+    for _ in 0..reach {
         cell[axis] += sign;
         if world.block(cell[0], cell[1], cell[2]).is_solid() {
             let face = if sign > 0 { cell[axis] } else { cell[axis] + 1 };
@@ -165,6 +254,69 @@ mod tests {
             early_reflections(&World::new(), listener, source),
             Early::NONE
         );
+    }
+
+    /// Two big rock walls facing across x, `width` blocks apart, the listener
+    /// `left` blocks from the west one.
+    fn ravine(width: i32, left: f64) -> (World, Vec3) {
+        let mut world = World::new();
+        for y in -10..10 {
+            for z in -10..10 {
+                world.set_block(-1, y, z, Material::Rock);
+                world.set_block(width, y, z, Material::Rock);
+            }
+        }
+        (world, Vec3::new(left, 0.5, 0.5))
+    }
+
+    #[test]
+    fn a_ravine_sends_echoes_back_and_forth() {
+        let (world, listener) = ravine(40, 10.0);
+        let echoes = echoes(&world, listener, 0.0);
+        let delays: Vec<f64> = echoes
+            .iter()
+            .map(|e| f64::from(e.delay) * SPEED_OF_SOUND)
+            .collect();
+        // Off the near wall (2 × 10 = 20 blocks there and back) and the far
+        // one (60), then both (80), and on: 20 + 60 + 20 ...
+        for expected in [20.0, 60.0, 80.0, 100.0] {
+            assert!(
+                delays.iter().any(|d| (d - expected).abs() < 0.01),
+                "no echo at {expected}: {delays:?}"
+            );
+        }
+        // Later echoes are fainter, and come from the wall they last left.
+        let near = echoes
+            .iter()
+            .find(|e| (f64::from(e.delay) * SPEED_OF_SOUND - 20.0).abs() < 0.01)
+            .unwrap();
+        let far = echoes
+            .iter()
+            .find(|e| (f64::from(e.delay) * SPEED_OF_SOUND - 60.0).abs() < 0.01)
+            .unwrap();
+        assert!(far.energy < near.energy && near.direction.x < 0.0 && far.direction.x > 0.0);
+    }
+
+    #[test]
+    fn a_pillar_or_a_close_wall_gives_no_echo() {
+        let mut world = World::new();
+        for y in -10..10 {
+            world.set_block(30, y, 0, Material::Rock);
+        }
+        assert!(
+            echoes(&world, Vec3::new(0.5, 0.5, 0.5), 0.0).is_empty(),
+            "a pillar is no wall"
+        );
+        // A wall 5 blocks off answers within 50 ms: reverb, not an echo.
+        let (world, listener) = ravine(200, 5.0);
+        assert!(
+            echoes(&world, listener, 0.0)
+                .iter()
+                .all(|e| e.delay >= 0.05)
+        );
+        // And one the room trace already reached isn't counted twice.
+        let (world, listener) = ravine(200, 30.0);
+        assert!(echoes(&world, listener, 64.0).is_empty());
     }
 
     #[test]
