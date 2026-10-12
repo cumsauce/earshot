@@ -31,7 +31,7 @@ import java.util.UUID;
  */
 public final class NativeBridge {
 	/** Must equal {@code EARSHOT_ABI_VERSION} in {@code earshot.h}. */
-	public static final int ABI_VERSION = 8;
+	public static final int ABI_VERSION = 9;
 	/** Blocks in a section, in Minecraft's order. */
 	public static final int SECTION_BLOCKS = 4096;
 	/** Doubles per traced leg: from x, y, z, to x, y, z, energy, escaped (1 or 0). */
@@ -81,6 +81,8 @@ public final class NativeBridge {
 	private final MethodHandle setQuality;
 	private final MethodHandle stats;
 	private final MethodHandle voiceSink;
+	private final MethodHandle voicePolls;
+	private final MethodHandle voiceOwn;
 	private final MethodHandle voiceCallback;
 	private final MethodHandle voiceStream;
 	private final MethodHandle voiceStreams;
@@ -124,7 +126,10 @@ public final class NativeBridge {
 				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS), critical);
 		stats = linker.downcallHandle(find(library, "earshot_stats"), FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS),
 				critical);
-		voiceSink = linker.downcallHandle(find(library, "earshot_voice_sink"), FunctionDescriptor.of(ADDRESS));
+		voiceSink = linker.downcallHandle(find(library, "earshot_voice_sink"), FunctionDescriptor.of(ADDRESS, JAVA_INT));
+		voicePolls = linker.downcallHandle(find(library, "earshot_voice_polls"), FunctionDescriptor.of(JAVA_LONG));
+		voiceOwn = linker.downcallHandle(find(library, "earshot_voice_own"),
+				FunctionDescriptor.ofVoid(ValueLayout.JAVA_BOOLEAN));
 		voiceCallback = linker.downcallHandle(find(library, "earshot_voice_callback"), FunctionDescriptor.of(ADDRESS));
 		voiceStream = linker.downcallHandle(find(library, "earshot_voice_stream"),
 				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS), critical);
@@ -298,11 +303,24 @@ public final class NativeBridge {
 	}
 
 	/**
-	 * The native {@code YakVcVoiceSink} ({@code yakvc.h}) for Yak VC's voice, to offer it in Fabric's object share. It
-	 * lives for the rest of the process.
+	 * The native {@code YakVcVoiceSink} ({@code yakvc.h}) for Yak VC's voice, to offer it in Fabric's object share:
+	 * {@code version} 1 for other players' voices, 2 to also get the player's own. Both live for the rest of the
+	 * process.
 	 */
-	public MemorySegment voiceSink() {
-		return (MemorySegment) invoke(voiceSink);
+	public MemorySegment voiceSink(int version) {
+		MemorySegment sink = (MemorySegment) invoke(voiceSink, version);
+		if (sink.address() == 0) throw new IllegalArgumentException("no voice sink version " + version);
+		return sink;
+	}
+
+	/** How often Yak VC has asked a voice sink for a frame: a count that stays put means it refused the sink. */
+	public long voicePolls() {
+		return (long) invoke(voicePolls);
+	}
+
+	/** Keeps the player's own voice as a stream from now on, or drops it as it comes. */
+	public void setOwnVoice(boolean keep) {
+		invoke(voiceOwn, keep);
 	}
 
 	/**

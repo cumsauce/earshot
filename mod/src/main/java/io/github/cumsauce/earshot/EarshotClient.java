@@ -55,7 +55,7 @@ public final class EarshotClient implements ClientModInitializer {
 		if (bridge == null || engine == null || shaper == null) return;
 		bridge.setQuality(engine, next.quality());
 		shaper.configure(next);
-		shaper.voice().setEnabled(next.voice());
+		shaper.voice().configure(next.voice(), next.ownVoice());
 		if (!next.hrtf().equals(previous.hrtf())) {
 			net.minecraft.client.Minecraft.getInstance().getSoundManager().reload();
 		}
@@ -119,7 +119,7 @@ public final class EarshotClient implements ClientModInitializer {
 		EarshotClient.shaper = shaper;
 		bridge.setQuality(engine, config.quality());
 		shaper.configure(config);
-		shaper.voice().setEnabled(config.voice());
+		shaper.voice().configure(config.voice(), config.ownVoice());
 		LOGGER.info("Preset {} ({})", config.preset().key(), config.preset().resolve().key());
 	}
 }

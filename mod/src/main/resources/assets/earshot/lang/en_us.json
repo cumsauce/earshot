@@ -38,6 +38,8 @@
 	"earshot.settings.doppler.tooltip": "Sounds moving towards or away from you, or you towards them, shift in pitch.",
 	"earshot.settings.voice": "Voice Chat",
 	"earshot.settings.voice.tooltip": "Plays Yak VC's proximity voice through Earshot, with the same acoustics as the game's sounds. Off gives it back to Yak VC's own speakers.",
+	"earshot.settings.own_voice": "Own Voice Echo",
+	"earshot.settings.own_voice.tooltip": "Your own voice in Yak VC echoes off the room around you: a cave answers you. Only the echo, never your voice itself. For headphones; needs a Yak VC that sends your own voice.",
 	"earshot.settings.hrtf": "HRTF",
 	"earshot.settings.hrtf.default": "Default",
 	"earshot.settings.hrtf.tooltip": "The head-related transfer function used when Directional Audio is on. OpenAL Soft lists its built-in one and any .mhr files it finds. Changing it restarts the sound engine."

@@ -26,11 +26,12 @@ import java.util.Locale;
  * @param doppler       whether moving sounds shift in pitch
  * @param voice         whether Yak VC's voice plays through Earshot
  * @param hrtf          the HRTF dataset for Directional Audio, or empty for OpenAL's default
+ * @param ownVoice      whether the player's own voice in Yak VC echoes off the room (headphones only)
  */
 public record EarshotConfig(Preset preset, boolean occlusion, boolean pathing, Reverb reverb, boolean airAbsorption,
-		boolean underwater, boolean doppler, boolean voice, String hrtf) {
+		boolean underwater, boolean doppler, boolean voice, String hrtf, boolean ownVoice) {
 	public static final EarshotConfig DEFAULT = new EarshotConfig(Preset.AUTO, true, true, Reverb.AUTO, true, true, true,
-			true, "");
+			true, "", false);
 
 	/** How much the engine traces. */
 	public enum Preset {
@@ -92,15 +93,23 @@ public record EarshotConfig(Preset preset, boolean occlusion, boolean pathing, R
 	}
 
 	public EarshotConfig withPreset(Preset preset) {
-		return new EarshotConfig(preset, occlusion, pathing, reverb, airAbsorption, underwater, doppler, voice, hrtf);
+		return new EarshotConfig(preset, occlusion, pathing, reverb, airAbsorption, underwater, doppler, voice, hrtf,
+				ownVoice);
 	}
 
 	public EarshotConfig withReverb(Reverb reverb) {
-		return new EarshotConfig(preset, occlusion, pathing, reverb, airAbsorption, underwater, doppler, voice, hrtf);
+		return new EarshotConfig(preset, occlusion, pathing, reverb, airAbsorption, underwater, doppler, voice, hrtf,
+				ownVoice);
 	}
 
 	public EarshotConfig withVoice(boolean voice) {
-		return new EarshotConfig(preset, occlusion, pathing, reverb, airAbsorption, underwater, doppler, voice, hrtf);
+		return new EarshotConfig(preset, occlusion, pathing, reverb, airAbsorption, underwater, doppler, voice, hrtf,
+				ownVoice);
+	}
+
+	public EarshotConfig withOwnVoice(boolean ownVoice) {
+		return new EarshotConfig(preset, occlusion, pathing, reverb, airAbsorption, underwater, doppler, voice, hrtf,
+				ownVoice);
 	}
 
 	/** The settings in {@code file}, or the defaults if there is none or it can't be read. */
@@ -136,7 +145,8 @@ public record EarshotConfig(Preset preset, boolean occlusion, boolean pathing, R
 				flag(json, "underwater", d.underwater),
 				flag(json, "doppler", d.doppler),
 				flag(json, "voice", d.voice),
-				text(json, "hrtf", d.hrtf));
+				text(json, "hrtf", d.hrtf),
+				flag(json, "own_voice", d.ownVoice));
 	}
 
 	JsonObject toJson() {
@@ -150,6 +160,7 @@ public record EarshotConfig(Preset preset, boolean occlusion, boolean pathing, R
 		json.addProperty("doppler", doppler);
 		json.addProperty("voice", voice);
 		json.addProperty("hrtf", hrtf);
+		json.addProperty("own_voice", ownVoice);
 		return json;
 	}
 

@@ -258,7 +258,7 @@ public final class SoundShaper {
 				targets.add(new Target(c.earshot$source(), c.earshot$state(), position, null));
 			}
 		});
-		for (VoicePlayer.Voice v : voice.update(players, voiceVolume)) targets.add(new Target(v.source, v.state, v.position, v));
+		for (VoicePlayer.Voice v : voice.update(players, voiceVolume, sends)) targets.add(new Target(v.source, v.state, v.position, v));
 		int count = targets.size();
 		if (count == 0) {
 			snapshot = List.of();
