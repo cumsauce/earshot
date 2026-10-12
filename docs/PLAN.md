@@ -201,6 +201,10 @@ The gametest checks a looping beacon hum in three states:
 - **Debug overlay** (`/earshot overlay` or its key), top left, English only like F3: quality and what tracing costs, the room's decay per band and how enclosed it is, which reverbs play, voice, and the six nearest sounds with their band gains and whether they come round a corner, have their own space's reverb or their own early echoes. While building it, the overlay showed a glass room with rock's decays: the room hadn't settled from the stone hall just removed. The gametest now checks the hall's removal reaches the world copy, and that the glass room settles with its lows dying first (its panes soak them up).
 - **Voice sink version** (desocketed/yakvc#193): Yak VC publishes the newest sink version it takes under `yakvc:voice_sink_version`. Earshot offers that version directly, keeping the 3 s poll fallback for a Yak VC without the key.
 
+## Towards the state of the art (2026-10-12)
+
+- **Echoes** (alpha.9): long-range image sources off big walls along each axis, out to 128 blocks. A wall counts only if it is solid 2 blocks round where the axis meets it, so a tree trunk or a pillar gives none. Between two facing walls, the images go up to 4th order. Only echoes later than 50 ms are added; sooner ones are reverb, and first ones within the trace's reach are left to the trace. Each echo's energy is the walls' mirrored shares over the path's inverse square. They join the early reflections in the impulse response, which now runs long enough to hold the last echo: before, open ground's 0.1 s decay cut every echo off.
+
 ## Approaches considered
 
 | Option | What it is | Verdict |

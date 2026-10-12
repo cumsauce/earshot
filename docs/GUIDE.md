@@ -13,6 +13,8 @@ only how you hear it:
   a sound in another space (a cave you stand outside, the next room) rings with that space's reverb, coming from its
   direction.
 - **Air absorption, underwater muffling and Doppler.**
+- **Echoes:** cliffs, ravine sides and a cave's far end answer back, up to 128 blocks away, and between two facing
+  walls the echo bounces back and forth, fainter each time.
 - **Thunder arrives late**, as sound takes to come from the bolt: about three seconds a kilometre after the flash.
 - **The Nether rings like the cavern it is**: under a dimension's ceiling, Earshot traces rays twice as far.
 - **Proximity voice chat**, if you use [Yak VC](https://github.com/desocketed/yakvc): voices get all of the above too.

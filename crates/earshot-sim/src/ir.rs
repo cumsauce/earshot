@@ -47,7 +47,12 @@ pub fn impulse_response(
     seed: u64,
 ) -> Vec<f32> {
     let rate = sample_rate as f32;
-    let length = (room.decay[1].min(max_seconds).max(0.1) * rate) as usize;
+    // Long enough for the room's decay, and for the last echo to be heard.
+    let last_echo = early
+        .iter()
+        .map(|r| r.delay + FADE + 0.02)
+        .fold(0.0, f32::max);
+    let length = (room.decay[1].max(last_echo).min(max_seconds).max(0.1) * rate) as usize;
     let mut out = vec![0.0f32; length * IR_CHANNELS];
 
     // The diffuse tail: three bands of decorrelated noise per channel, each
@@ -235,6 +240,24 @@ mod tests {
             high_fall > 4.0 * low_fall,
             "low fell {low_fall}×, high {high_fall}×"
         );
+    }
+
+    #[test]
+    fn a_late_echo_makes_the_response_long_enough_to_hold_it() {
+        // Open ground decays in a tenth of a second, but a cliff answers later.
+        let echo = Reflection {
+            direction: Vec3::new(1.0, 0.0, 0.0),
+            delay: 0.4,
+            energy: 0.01,
+        };
+        let ir = impulse_response(&room([0.1; 3], 4.0, 0.2), &[echo], 48_000, 1.5, 4);
+        let at = (0.4 * 48_000.0) as usize * IR_CHANNELS;
+        assert!(
+            ir.len() > at + IR_CHANNELS,
+            "cut at {} samples",
+            ir.len() / IR_CHANNELS
+        );
+        assert!(ir[at + 2] < 0.0, "the echo is there, from +x");
     }
 
     #[test]

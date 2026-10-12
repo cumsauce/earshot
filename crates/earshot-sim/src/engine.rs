@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use earshot_world::{Vec3, World};
 
 use crate::{
-    Field, Heard, Quality, Reflection, Room, Stats, hear, impulse_response, measure,
+    Field, Heard, Quality, Reflection, Room, Stats, echoes, hear, impulse_response, measure,
     measure_threads, measure_with_early,
 };
 
@@ -366,14 +366,18 @@ impl RoomTrace {
             .max(quality.room_rays.min(MIN_ROOM_RAYS));
         let (measured, early) = {
             let world = shared.world.read().unwrap_or_else(PoisonError::into_inner);
-            measure_with_early(
+            let (measured, mut early) = measure_with_early(
                 &world,
                 listener,
                 rays,
                 quality.room_bounces,
                 quality.room_reach,
                 self.seed,
-            )
+            );
+            // Echoes off walls farther than the trace reaches, and back and
+            // forth between facing ones.
+            early.extend(echoes(&world, listener, quality.room_reach));
+            (measured, early)
         };
         // Spread over threads, it takes their time together.
         let share = start.elapsed().as_secs_f32() * measure_threads(rays) as f32
