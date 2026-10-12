@@ -40,7 +40,7 @@ Earshot can't run with Sound Physics Remastered, which does the same job; Fabric
 
 ## Settings
 
-Options → Music & Sounds → **Acoustics…**. Changes apply when you leave the screen and are saved in
+Options → Music & Sounds → **Acoustics…**, or Earshot's config button in Mod Menu. Changes apply when you leave the screen and are saved in
 `config/earshot/earshot.json`.
 
 | Setting | What it does |
@@ -129,5 +129,5 @@ unless you set them to something else.
 
 ## Not yet
 
-Earshot is an alpha. Planned next: your own voice in Yak VC echoing off the room, a choice of bundled HRTF datasets,
-and a Mod Menu entry.
+Earshot is an alpha. Planned next: your own voice in Yak VC echoing off the room, and a choice of bundled HRTF
+datasets.
