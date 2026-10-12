@@ -189,6 +189,20 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 				throw new AssertionError("a silent voice kept its source: " + shaper.voice().status(), e);
 			}
 
+			// A speaker who is a player in the world talks the way their head faces.
+			UUID self = context.computeOnClient(mc -> mc.player.getUUID());
+			try (FakeSpeaker ignored = FakeSpeaker.start(self, inside)) {
+				try {
+					context.waitFor(mc -> shaper.voice().status().stream()
+							.anyMatch(v -> v.speaker().equals(self) && v.playing() && v.directional()), 5 * 20);
+				} catch (RuntimeException | AssertionError e) {
+					throw new AssertionError("the voice doesn't face its speaker's way: " + shaper.voice().status(), e);
+				}
+				if (shaper.voice().status().stream().anyMatch(v -> v.speaker().equals(speaker) && v.directional())) {
+					throw new AssertionError("a speaker not in the world can't face a way");
+				}
+			}
+
 			// With Own Voice Echo on, Earshot offers the version 2 sink, and the player's own voice plays into the
 			// room's reverb only.
 			EarshotConfig withoutOwnVoice = EarshotClient.config();

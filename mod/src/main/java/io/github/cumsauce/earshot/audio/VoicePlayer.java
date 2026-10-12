@@ -40,6 +40,20 @@ public final class VoicePlayer {
 	private static final int SELF = 1 << 2;
 	/** How much of the player's own voice goes to the room's reverb; none of it is played dry. */
 	private static final float OWN_VOICE_SEND = 0.5f;
+	/**
+	 * Speech carries best ahead of the mouth: behind and to the sides a voice is a little quieter and much duller.
+	 * Within {@value #CONE_INNER} degrees of where the speaker faces it is full; past {@value #CONE_OUTER}, at
+	 * {@value #BEHIND_GAIN} and its highs at {@value #BEHIND_HIGHS} more (about -4 dB and -12 dB, as measured for
+	 * human speech around 2 to 4 kHz).
+	 */
+	private static final float CONE_INNER = 90;
+	private static final float CONE_OUTER = 270;
+	private static final float BEHIND_GAIN = 0.63f;
+	private static final float BEHIND_HIGHS = 0.25f;
+
+	/** Where a player's eyes are and which way their head faces, for placing and pointing their voice. */
+	public record Head(Vec3 eye, Vec3 facing) {}
+
 	/** After offering the version 2 sink, Yak VC must have asked it for a frame within this long, or it refused it. */
 	private static final long REFUSAL_NANOS = 3_000_000_000L;
 	/** A speaker silent this long has its source let go; their next frame makes another. */
@@ -80,6 +94,8 @@ public final class VoicePlayer {
 		float volume = -1;
 		/** The player's own voice, which only feeds the room's reverb. */
 		boolean own;
+		/** Whether the voice points the way its speaker faces (else it carries the same all round). */
+		boolean directional;
 		/** As shaped in the last update. */
 		@Nullable Vec3 heardFrom;
 		float[] gains = {1, 1, 1};
@@ -99,12 +115,12 @@ public final class VoicePlayer {
 	 * @param heardFrom where the voice seems to come from, or null when centred
 	 */
 	public record Status(UUID speaker, boolean playing, @Nullable Vec3 position, @Nullable Vec3 heardFrom,
-			float[] gains, double queuedSeconds, boolean own) {
+			float[] gains, double queuedSeconds, boolean own, boolean directional) {
 		@Override
 		public String toString() {
 			return "Status[speaker=" + speaker + ", playing=" + playing + ", position=" + position + ", heardFrom="
 					+ heardFrom + ", gains=" + java.util.Arrays.toString(gains) + ", queuedSeconds=" + queuedSeconds
-					+ ", own=" + own + "]";
+					+ ", own=" + own + ", directional=" + directional + "]";
 		}
 	}
 
@@ -216,7 +232,7 @@ public final class VoicePlayer {
 	 * @param players the eye of every player in the world, by UUID
 	 * @param volume  the game's Voice/Speech volume, with Master: Yak VC's frames come without it
 	 */
-	synchronized List<Voice> update(Map<UUID, Vec3> players, float volume, int[] sends) {
+	synchronized List<Voice> update(Map<UUID, Head> players, float volume, int[] sends) {
 		if (!offered) {
 			if (!voices.isEmpty()) stopAll();
 			return List.of();
@@ -247,8 +263,9 @@ public final class VoicePlayer {
 				continue;
 			}
 			double[] at = stream.heardFrom();
-			Vec3 eye = players.get(stream.speaker());
-			place(voice, eye != null ? eye : new Vec3(at[0], at[1], at[2]), stream.range());
+			Head head = players.get(stream.speaker());
+			place(voice, head != null ? head.eye() : new Vec3(at[0], at[1], at[2]), stream.range());
+			point(voice, head == null ? null : head.facing());
 			positioned.add(voice);
 		}
 		voices.values().removeIf(voice -> {
@@ -265,7 +282,7 @@ public final class VoicePlayer {
 		for (Voice voice : voices.values()) {
 			boolean playing = AL10.alGetSourcei(voice.source, AL10.AL_SOURCE_STATE) == AL10.AL_PLAYING;
 			out.add(new Status(voice.speaker, playing, voice.position, voice.centred ? null : voice.heardFrom,
-					voice.gains.clone(), voice.queuedSeconds, voice.own));
+					voice.gains.clone(), voice.queuedSeconds, voice.own, voice.directional));
 		}
 		status = List.copyOf(out);
 	}
@@ -309,6 +326,23 @@ public final class VoicePlayer {
 		voice.position = eye;
 	}
 
+	/** Points a voice the way its speaker faces, or all round when that isn't known. */
+	private static void point(Voice voice, @Nullable Vec3 facing) {
+		if (facing == null) {
+			if (voice.directional) AL10.alSource3f(voice.source, AL10.AL_DIRECTION, 0, 0, 0);
+			voice.directional = false;
+			return;
+		}
+		if (!voice.directional) {
+			AL10.alSourcef(voice.source, AL10.AL_CONE_INNER_ANGLE, CONE_INNER);
+			AL10.alSourcef(voice.source, AL10.AL_CONE_OUTER_ANGLE, CONE_OUTER);
+			AL10.alSourcef(voice.source, AL10.AL_CONE_OUTER_GAIN, BEHIND_GAIN);
+			AL10.alSourcef(voice.source, EXTEfx.AL_CONE_OUTER_GAINHF, BEHIND_HIGHS);
+			voice.directional = true;
+		}
+		AL10.alSource3f(voice.source, AL10.AL_DIRECTION, (float) facing.x, (float) facing.y, (float) facing.z);
+	}
+
 	/**
 	 * Sends the player's own voice to the room's reverb ({@code sends}, by send index) and plays none of it dry: the
 	 * player hears their voice already, and the room answering it.
@@ -337,6 +371,7 @@ public final class VoicePlayer {
 		voice.position = null;
 		if (voice.centred) return;
 		voice.centred = true;
+		point(voice, null);
 		AL10.alSourcei(voice.source, AL10.AL_SOURCE_RELATIVE, AL10.AL_TRUE);
 		AL10.alSource3f(voice.source, AL10.AL_POSITION, 0, 0, 0);
 		AL10.alSourcei(voice.source, AL10.AL_DISTANCE_MODEL, AL10.AL_NONE);
