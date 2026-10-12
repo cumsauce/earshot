@@ -87,8 +87,9 @@ hands the voices over on its own. Each speaker then sounds from where they stand
 reverb and HRTF as the game's sounds: a friend shouting from inside a cave sounds like it. Group voice and calls stay
 centred and dry, as in Yak VC. The game's Voice/Speech volume applies.
 
-This needs a Yak VC with voice sink support ([desocketed/yakvc#177](https://github.com/desocketed/yakvc/pull/177)).
-Older versions keep playing voice through their own speakers, as if Earshot weren't there.
+This needs a Yak VC with the voice sink, which is in Yak VC's `main` since 2026-10-12 (desocketed/yakvc#177, and
+#186 for Own Voice Echo) and will be in its next release. Older versions keep playing voice through their own
+speakers, as if Earshot weren't there.
 
 `/earshot voice` shows who is playing through Earshot.
 
