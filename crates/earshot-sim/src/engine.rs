@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use earshot_world::{Vec3, World};
 
-use crate::{Field, Heard, hear};
+use crate::{Field, Heard, Room, hear, measure};
 
 /// How far the pathing field reaches each way from the listener, in blocks.
 pub const FIELD_HALF: i32 = 24;
@@ -16,6 +16,14 @@ const REBUILD_DISTANCE: f64 = 0.5;
 const REBUILD_AFTER_CHANGES: Duration = Duration::from_millis(200);
 /// How often the worker looks.
 const WORKER_TICK: Duration = Duration::from_millis(25);
+/// How often the room around the listener is measured, and with what trace.
+const ROOM_EVERY: Duration = Duration::from_millis(200);
+pub const ROOM_RAYS: u32 = 1024;
+pub const ROOM_BOUNCES: u32 = 12;
+pub const ROOM_REACH: f64 = 64.0;
+/// Each measurement moves the room this much of the way to what it measured:
+/// about half a second to cross a doorway, and no flicker from ray noise.
+const ROOM_SMOOTHING: f32 = 0.35;
 
 /// The acoustics engine: the mirrored world, the listener, and a worker
 /// thread that keeps the pathing field around the listener current. Every
@@ -33,6 +41,7 @@ struct Shared {
     world_version: AtomicU64,
     listener: Mutex<Option<Vec3>>,
     field: RwLock<Option<Arc<Built>>>,
+    room: RwLock<Option<Room>>,
     stop: AtomicBool,
 }
 
@@ -93,6 +102,15 @@ impl Engine {
             .unwrap_or_else(PoisonError::into_inner) = Some(listener);
     }
 
+    /// The room around the listener, smoothed, once it has been measured.
+    pub fn room(&self) -> Option<Room> {
+        *self
+            .shared
+            .room
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// The current pathing field, if one has been built.
     pub fn field(&self) -> Option<Field> {
         self.built().map(|built| built.field.clone())
@@ -130,6 +148,8 @@ impl Drop for Engine {
 /// Rebuilds the field when the listener has moved, or the world has changed
 /// and the field is old enough.
 fn worker(shared: &Shared) {
+    let mut room_at: Option<Instant> = None;
+    let mut seed = 0u64;
     while !shared.stop.load(Ordering::Relaxed) {
         let listener = *shared
             .listener
@@ -160,7 +180,37 @@ fn worker(shared: &Shared) {
                     }));
             }
         }
+        if let Some(listener) = listener
+            && room_at.is_none_or(|at| at.elapsed() >= ROOM_EVERY)
+        {
+            room_at = Some(Instant::now());
+            seed += 1;
+            let measured = {
+                let world = shared.world.read().unwrap_or_else(PoisonError::into_inner);
+                measure(&world, listener, ROOM_RAYS, ROOM_BOUNCES, ROOM_REACH, seed)
+            };
+            let mut room = shared.room.write().unwrap_or_else(PoisonError::into_inner);
+            *room = Some(match *room {
+                Some(old) => blend(&old, &measured, ROOM_SMOOTHING),
+                None => measured,
+            });
+        }
         std::thread::sleep(WORKER_TICK);
+    }
+}
+
+/// `t` of the way from `from` to `to`; decays blend geometrically, since the
+/// ear hears their ratios.
+fn blend(from: &Room, to: &Room, t: f32) -> Room {
+    let lerp = |a: f32, b: f32| a + (b - a) * t;
+    let geo = |a: f32, b: f32| (a.ln() + (b.ln() - a.ln()) * t).exp();
+    let lerp64 = |a: f64, b: f64| a + (b - a) * f64::from(t);
+    Room {
+        decay: [0, 1, 2].map(|band| geo(from.decay[band], to.decay[band])),
+        mean_free_path: lerp64(from.mean_free_path, to.mean_free_path),
+        enclosure: lerp(from.enclosure, to.enclosure),
+        first_reflection: lerp64(from.first_reflection, to.first_reflection),
+        scattering: lerp(from.scattering, to.scattering),
     }
 }
 
@@ -199,6 +249,29 @@ mod tests {
             assert!(Instant::now() < deadline, "the field never saw the walls");
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn the_room_is_measured_and_settles() {
+        let engine = Engine::start();
+        engine.world_mut(|world| {
+            for a in -1..=8 {
+                for b in -1..=8 {
+                    for wall in [-1, 8] {
+                        world.set_block(wall, a, b, Material::Rock);
+                        world.set_block(a, wall, b, Material::Rock);
+                        world.set_block(a, b, wall, Material::Rock);
+                    }
+                }
+            }
+        });
+        engine.set_listener(Vec3::new(4.0, 4.0, 4.0));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while engine.room().is_none_or(|room| room.enclosure < 0.99) {
+            assert!(Instant::now() < deadline, "no room: {:?}", engine.room());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(engine.room().unwrap().decay[1] > 1.0);
     }
 
     #[test]

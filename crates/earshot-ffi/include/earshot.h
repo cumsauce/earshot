@@ -12,8 +12,9 @@
  * from the one it was built against. Bump on any incompatible change.
  * 2: the engine, its world mirror, transmission and path traces.
  * 3: `earshot_set_listener` and `earshot_hear`.
+ * 4: `earshot_room`.
  */
-#define EARSHOT_ABI_VERSION 3
+#define EARSHOT_ABI_VERSION 4
 
 #define EARSHOT_OK 0
 
@@ -43,6 +44,16 @@
  * it seems to come from as `x, y, z`, and how far it travels.
  */
 #define EARSHOT_HEARD_DOUBLES 7
+
+/**
+ * Doubles from `earshot_room`: the room (decay low, mid and high in
+ * seconds, mean free path, enclosure, first reflection distance,
+ * scattering), then the 14 EAX reverb parameters for it (density,
+ * diffusion, gain, gain HF, gain LF, decay time, decay HF ratio, decay LF
+ * ratio, reflections gain, reflections delay, late reverb gain, late reverb
+ * delay, echo time, echo depth).
+ */
+#define EARSHOT_ROOM_DOUBLES 21
 
 /**
  * Opaque engine handle.
@@ -169,6 +180,18 @@ int32_t earshot_hear(struct EarshotEngine *engine,
                      const double *sources,
                      size_t count,
                      double *out);
+
+/**
+ * Writes the room around the listener and the EAX reverb for it into `out`
+ * ([`EARSHOT_ROOM_DOUBLES`] doubles). The engine measures it a few times a
+ * second once it knows where the listener is, smoothed; before then it is
+ * open air.
+ *
+ * # Safety
+ * `engine` must be live; `out` must be writable for `EARSHOT_ROOM_DOUBLES`
+ * doubles.
+ */
+int32_t earshot_room(struct EarshotEngine *engine, double *out);
 
 /**
  * Traces `rays` paths from `origin`, evenly spread, with up to `bounces`

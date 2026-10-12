@@ -38,6 +38,7 @@ import net.minecraft.world.phys.Vec3;
  * <li>blocks map to sensible materials, once the world's tags are in;
  * <li>the world mirror copies a superflat world, follows block changes, and a wall built into it muffles;
  * <li>a playing sound is muffled in a closed box, comes round through a doorway, and is clear in the open (M2);
+ * <li>the reverb is nearly dry on open ground and rings in a stone hall (M3);
  * <li>{@code /earshot rays} draws traced paths (screenshot {@code rays-in-a-glass-room}).
  * </ul>
  *
@@ -121,6 +122,17 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 					"in the open");
 			context.runOnClient(mc -> mc.getSoundManager().stop());
 
+			// M3: the reverb follows the room. Out on the superflat it is nearly dry; shut in a stone hall it rings.
+			double[] outside = awaitRoom(context, shaper, r -> r[4] < 0.7 && r[1] < 0.6, "on open ground");
+			singleplayer.getServer().runCommand("fill -10 -61 -10 10 -50 10 stone hollow");
+			double[] hall = awaitRoom(context, shaper, r -> r[4] > 0.98 && r[1] > 2, "in a stone hall");
+			if (!(hall[NativeBridge.EAX_FIRST + 2] > 3 * outside[NativeBridge.EAX_FIRST + 2])) {
+				throw new AssertionError("the hall's reverb isn't louder: " + Arrays.toString(hall) + " vs "
+						+ Arrays.toString(outside));
+			}
+			singleplayer.getServer().runCommand("fill -10 -61 -10 10 -50 10 air");
+			singleplayer.getServer().runCommand("fill -10 -61 -10 10 -61 10 grass_block");
+
 			// The rays drawn by /earshot rays, in a glass room: daylight gets in, and glass reflects.
 			singleplayer.getServer().runCommand("time set noon");
 			singleplayer.getServer().runCommand("fill -6 -61 -4 6 -53 12 glass hollow");
@@ -142,6 +154,20 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 					+ find(shaper, at).map(SoundShaper.Snapshot::toString).orElse("not playing"), e);
 		}
 		return find(shaper, at).orElseThrow();
+	}
+
+	/** Waits up to 10 s for the room the reverb uses to be {@code wanted}, and returns it. */
+	private static double[] awaitRoom(ClientGameTestContext context, SoundShaper shaper, Predicate<double[]> wanted,
+			String what) {
+		try {
+			context.waitFor(mc -> {
+				double[] room = shaper.room();
+				return room.length > 0 && wanted.test(room);
+			}, 10 * 20);
+		} catch (RuntimeException | AssertionError e) {
+			throw new AssertionError("the room " + what + ": " + Arrays.toString(shaper.room()), e);
+		}
+		return shaper.room();
 	}
 
 	private static Optional<SoundShaper.Snapshot> find(SoundShaper shaper, Vec3 at) {

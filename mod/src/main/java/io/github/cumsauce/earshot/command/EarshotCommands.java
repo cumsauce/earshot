@@ -22,6 +22,7 @@ import net.minecraft.world.phys.Vec3;
  * between;
  * <li>{@code /earshot sources} lists the playing sounds and how each is heard: its gains and, when it comes round
  * a corner, where from;
+ * <li>{@code /earshot room} describes the room around you as the reverb hears it;
  * <li>{@code /earshot stats} says how much of the world is mirrored.
  * </ul>
  */
@@ -50,6 +51,7 @@ public final class EarshotCommands {
 														IntegerArgumentType.getInteger(c, "bounces"))))))
 						.then(ClientCommands.literal("occlusion").executes(c -> occlusion(bridge, engine, c.getSource())))
 						.then(ClientCommands.literal("sources").executes(c -> sources(shaper, c.getSource())))
+						.then(ClientCommands.literal("room").executes(c -> room(shaper, c.getSource())))
 						.then(ClientCommands.literal("stats").executes(c -> stats(bridge, engine, mirror, c.getSource())))));
 	}
 
@@ -131,6 +133,22 @@ public final class EarshotCommands {
 							round ? String.format(Locale.ROOT, ", round from %.0f %.0f %.0f", s.heardFrom().x,
 									s.heardFrom().y, s.heardFrom().z) : "")));
 				});
+		return 1;
+	}
+
+	private static int room(SoundShaper shaper, FabricClientCommandSource source) {
+		double[] room = shaper.room();
+		if (room.length == 0) {
+			source.sendError(Component.literal("No room measured yet"));
+			return 0;
+		}
+		int eax = NativeBridge.EAX_FIRST;
+		source.sendFeedback(Component.literal(String.format(Locale.ROOT,
+				"Decay %.2f / %.2f / %.2f s (low / mid / high), mean free path %.1f blocks, %.0f %% enclosed", room[0],
+				room[1], room[2], room[3], room[4] * 100)));
+		source.sendFeedback(Component.literal(String.format(Locale.ROOT,
+				"Reverb: gain %.2f, reflections %.2f after %.0f ms, late %.2f after %.0f ms, echo %.2f", room[eax + 2],
+				room[eax + 8], room[eax + 9] * 1000, room[eax + 10], room[eax + 11] * 1000, room[eax + 13])));
 		return 1;
 	}
 

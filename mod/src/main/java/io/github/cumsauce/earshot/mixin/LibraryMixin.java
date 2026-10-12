@@ -1,6 +1,8 @@
 package io.github.cumsauce.earshot.mixin;
 
 import com.mojang.blaze3d.audio.Library;
+import io.github.cumsauce.earshot.EarshotClient;
+import io.github.cumsauce.earshot.audio.SoundShaper;
 import io.github.cumsauce.earshot.openal.ContextAttributes;
 import io.github.cumsauce.earshot.openal.OpenAlProbe;
 import java.nio.IntBuffer;
@@ -11,12 +13,21 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-/** Asks for the auxiliary sends reverb needs when the game opens its context, then probes what it got. */
+/**
+ * Asks for the auxiliary sends reverb needs when the game opens its context, probes what it got, and has Earshot
+ * forget its reverb when the context goes.
+ */
 @Mixin(Library.class)
 abstract class LibraryMixin {
 	@Inject(method = "createAttributes", at = @At("RETURN"), cancellable = true)
 	private void earshot$moreSends(MemoryStack stack, boolean hrtf, CallbackInfoReturnable<IntBuffer> cir) {
 		cir.setReturnValue(ContextAttributes.withAuxiliarySends(stack, cir.getReturnValue()));
+	}
+
+	@Inject(method = "cleanup", at = @At("HEAD"))
+	private void earshot$forgetContext(CallbackInfo ci) {
+		SoundShaper shaper = EarshotClient.shaper();
+		if (shaper != null) shaper.contextClosing();
 	}
 
 	@Inject(method = "init", at = @At("TAIL"))

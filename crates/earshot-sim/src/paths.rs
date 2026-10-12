@@ -1,4 +1,4 @@
-use earshot_world::{Vec3, World, cast};
+use earshot_world::{Material, Vec3, World, cast};
 
 use crate::Rng;
 
@@ -18,6 +18,10 @@ pub struct Segment {
     pub energy: f32,
     /// Nothing within reach: the leg went off into open air.
     pub escaped: bool,
+    /// What it ended on; air when it escaped.
+    pub material: Material,
+    /// Which leg of its path it is: 0 leaves the listener.
+    pub bounce: u32,
 }
 
 /// What a path trace found.
@@ -81,6 +85,8 @@ pub fn trace_paths(
                     to: from + dir * reach,
                     energy,
                     escaped: true,
+                    material: Material::Air,
+                    bounce: leg,
                 });
                 break;
             };
@@ -89,6 +95,8 @@ pub fn trace_paths(
                 to: hit.point,
                 energy,
                 escaped: false,
+                material: hit.material,
+                bounce: leg,
             });
             hit_lengths += hit.distance;
             hits += 1;
