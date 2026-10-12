@@ -1,5 +1,9 @@
 {
 	"earshot.sound_options.acoustics": "Acoustics...",
+	"key.category.earshot.keys": "Earshot",
+	"key.earshot.bypass": "Bypass (A/B)",
+	"earshot.bypass.on": "Earshot bypassed: sounds as the game plays them",
+	"earshot.bypass.off": "Earshot on",
 	"earshot.settings.title": "Acoustics",
 	"earshot.settings.unavailable": "Earshot's native engine didn't start, so there is nothing to set. The game log says why.",
 	"earshot.settings.status.auto": "Auto picks %s here (%s cores).",

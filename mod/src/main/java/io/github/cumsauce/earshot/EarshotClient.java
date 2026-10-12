@@ -3,6 +3,7 @@ package io.github.cumsauce.earshot;
 import io.github.cumsauce.earshot.audio.SoundShaper;
 import io.github.cumsauce.earshot.command.EarshotCommands;
 import io.github.cumsauce.earshot.config.EarshotConfig;
+import io.github.cumsauce.earshot.ui.BypassKey;
 import io.github.cumsauce.earshot.ui.SoundOptionsButton;
 import io.github.cumsauce.earshot.natives.NativeBridge;
 import io.github.cumsauce.earshot.natives.NativeLoader;
@@ -25,6 +26,7 @@ public final class EarshotClient implements ClientModInitializer {
 	private static @Nullable WorldMirror mirror;
 	private static @Nullable SoundShaper shaper;
 	private static volatile EarshotConfig config = EarshotConfig.DEFAULT;
+	private static volatile boolean bypassed;
 
 	/** {@code config/earshot/}: settings and extracted natives. */
 	public static Path configDir() {
@@ -48,17 +50,37 @@ public final class EarshotClient implements ClientModInitializer {
 	public static void apply(EarshotConfig next) {
 		EarshotConfig previous = config;
 		config = next;
+		bypassed = false;
 		next.save(configDir().resolve("earshot.json"));
+		use(next);
+		if (!next.hrtf().equals(previous.hrtf())) {
+			net.minecraft.client.Minecraft.getInstance().getSoundManager().reload();
+		}
+	}
+
+	/** Whether the bypass key has Earshot leaving sounds alone for now. */
+	public static boolean bypassed() {
+		return bypassed;
+	}
+
+	/**
+	 * Bypasses Earshot for A/B listening, as the Off preset would, or ends the bypass. Not saved: the settings stay
+	 * as they are, and changing them ends the bypass.
+	 */
+	public static void setBypassed(boolean bypass) {
+		bypassed = bypass;
+		use(bypass ? config.withPreset(EarshotConfig.Preset.OFF) : config);
+	}
+
+	/** Hands {@code settings} to the engine and the shaper. */
+	private static void use(EarshotConfig settings) {
 		NativeBridge bridge = EarshotClient.bridge;
 		MemorySegment engine = EarshotClient.engine;
 		SoundShaper shaper = EarshotClient.shaper;
 		if (bridge == null || engine == null || shaper == null) return;
-		bridge.setQuality(engine, next.quality());
-		shaper.configure(next);
-		shaper.voice().configure(next.voice(), next.ownVoice());
-		if (!next.hrtf().equals(previous.hrtf())) {
-			net.minecraft.client.Minecraft.getInstance().getSoundManager().reload();
-		}
+		bridge.setQuality(engine, settings.quality());
+		shaper.configure(settings);
+		shaper.voice().configure(settings.voice(), settings.ownVoice());
 	}
 
 	/** The loaded native library's ABI version, or -1 if it didn't load. */
@@ -90,6 +112,7 @@ public final class EarshotClient implements ClientModInitializer {
 	public void onInitializeClient() {
 		config = EarshotConfig.load(configDir().resolve("earshot.json"));
 		SoundOptionsButton.register();
+		BypassKey.register();
 		NativeBridge bridge;
 		try {
 			bridge = new NativeBridge(NativeLoader.load(configDir()));

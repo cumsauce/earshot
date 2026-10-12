@@ -56,6 +56,9 @@ Options → Music & Sounds → **Acoustics…**, or Earshot's config button in M
 | Own Voice Echo | Off by default. Your own voice in Yak VC echoes off the room around you (only the echo, never your voice itself). For headphones, and needs a Yak VC that sends your own voice; with an older one Earshot notices and leaves it off. |
 | HRTF | Which head-related transfer function Directional Audio uses. Changing it restarts the sound engine. |
 
+To hear the difference, bind **Bypass (A/B)** under Options → Controls → Key Binds → Earshot. Each press switches
+Earshot off and on again; your settings stay as they are.
+
 ### Quality
 
 | Quality | Room trace | Occlusion rays per sound | Round corners within |
