@@ -35,7 +35,16 @@ pub struct Route {
     /// How far that direction turns from the straight line to the source, in
     /// radians: 0 when the way is straight.
     pub bend: f64,
+    /// How big the narrowest opening on the way is, in square blocks, across
+    /// the way the sound goes through it: a door is 2, an arch 9 or so, and
+    /// anything over [`MAX_APERTURE`] is open.
+    pub aperture: f32,
 }
+
+/// Openings are measured up to this size, in square blocks.
+pub const MAX_APERTURE: f32 = 64.0;
+/// And this far across from where the way passes, in blocks.
+const APERTURE_REACH: i32 = 6;
 
 impl Field {
     /// How far the field reaches each way from the listener's block.
@@ -152,8 +161,10 @@ impl Field {
         }
         let length = f64::from(self.dist[self.index(cell)]) / PER_BLOCK
             + (source - self.centre(cell)).length();
-        // Walk back towards the listener until the listener can see the way.
+        // Walk back towards the listener until the listener can see the way,
+        // noting the narrowest opening the way squeezes through.
         let mut opening = self.centre(cell);
+        let mut narrowest = MAX_APERTURE;
         while !self.visible(world, opening) {
             let next = NEIGHBOURS
                 .iter()
@@ -163,6 +174,8 @@ impl Field {
             if self.dist[self.index(next)] >= self.dist[self.index(cell)] {
                 break;
             }
+            let step = self.centre(next) - self.centre(cell);
+            narrowest = narrowest.min(aperture(world, self.origin(next), step));
             cell = next;
             opening = self.centre(cell);
         }
@@ -173,13 +186,24 @@ impl Field {
                 length,
                 heard_from: source,
                 bend: 0.0,
+                aperture: MAX_APERTURE,
             });
         }
         Some(Route {
             length,
             heard_from: self.listener + towards * length,
             bend: towards.dot(straight).clamp(-1.0, 1.0).acos(),
+            aperture: narrowest,
         })
+    }
+
+    /// The world block of local cell `local`.
+    fn origin(&self, local: [i32; 3]) -> [i32; 3] {
+        [
+            local[0] + self.min[0],
+            local[1] + self.min[1],
+            local[2] + self.min[2],
+        ]
     }
 
     /// Whether nothing solid lies between the listener and `point`.
@@ -223,6 +247,48 @@ impl Field {
             f64::from(self.min[2] + local[2]) + 0.5,
         )
     }
+}
+
+/// The size of the opening at block `at`, in square blocks: the open blocks
+/// joined to it (through faces) across the plane facing `through`, the way
+/// the sound passes, out to [`APERTURE_REACH`], at most [`MAX_APERTURE`].
+fn aperture(world: &World, at: [i32; 3], through: Vec3) -> f32 {
+    let d = [through.x.abs(), through.y.abs(), through.z.abs()];
+    let axis = if d[0] >= d[1] && d[0] >= d[2] {
+        0
+    } else if d[1] >= d[2] {
+        1
+    } else {
+        2
+    };
+    let (u, v) = ((axis + 1) % 3, (axis + 2) % 3);
+    let open = |a: i32, b: i32| {
+        let mut cell = at;
+        cell[u] += a;
+        cell[v] += b;
+        !world.block(cell[0], cell[1], cell[2]).is_solid()
+    };
+    if !open(0, 0) {
+        return MAX_APERTURE;
+    }
+    let mut seen = std::collections::HashSet::from([(0i32, 0i32)]);
+    let mut queue = std::collections::VecDeque::from([(0i32, 0i32)]);
+    while let Some((a, b)) = queue.pop_front() {
+        if seen.len() as f32 >= MAX_APERTURE {
+            break;
+        }
+        for (na, nb) in [(a + 1, b), (a - 1, b), (a, b + 1), (a, b - 1)] {
+            if na.abs() <= APERTURE_REACH
+                && nb.abs() <= APERTURE_REACH
+                && !seen.contains(&(na, nb))
+                && open(na, nb)
+            {
+                seen.insert((na, nb));
+                queue.push_back((na, nb));
+            }
+        }
+    }
+    (seen.len() as f32).min(MAX_APERTURE)
 }
 
 fn block_of(point: Vec3) -> [i32; 3] {
@@ -276,6 +342,32 @@ mod tests {
     use earshot_world::Material;
 
     use super::*;
+
+    #[test]
+    fn a_door_is_a_small_opening_and_a_gap_a_wide_one() {
+        // A wall at x = 4 across y, z in -8..8, with a 1 × 2 door at z = 0.
+        let mut world = World::new();
+        for y in -8..8 {
+            for z in -8..8 {
+                world.set_block(4, y, z, earshot_world::Material::Rock);
+            }
+        }
+        world.set_block(4, 0, 0, earshot_world::Material::Air);
+        world.set_block(4, 1, 0, earshot_world::Material::Air);
+        assert_eq!(aperture(&world, [4, 0, 0], Vec3::new(1.0, 0.0, 0.0)), 2.0);
+        // Knock out a 3 × 3 arch round it (the door's blocks among them).
+        for y in -1..=1 {
+            for z in -1..=1 {
+                world.set_block(4, y, z, earshot_world::Material::Air);
+            }
+        }
+        assert_eq!(aperture(&world, [4, 0, 0], Vec3::new(1.0, 0.0, 0.0)), 9.0);
+        // With no wall at all, it's open.
+        assert_eq!(
+            aperture(&World::new(), [4, 0, 0], Vec3::new(1.0, 0.0, 0.0)),
+            MAX_APERTURE
+        );
+    }
 
     /// Rock ground at y = -1, and a rock wall on it at x = 5 from z = -10
     /// to 10 and y = 0 to 9 (too high to go over), with a doorway two high at

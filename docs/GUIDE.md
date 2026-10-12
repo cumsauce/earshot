@@ -12,7 +12,7 @@ only how you hear it:
   wooden room barely at all, an open field not at all. Where the game's OpenAL can do it, the reverb is a convolution
   with an impulse response made from the room, with early echoes from where the walls actually are. On High and Ultra,
   a sound in another space (a cave you stand outside, the next room) rings with that space's reverb, coming from its
-  direction.
+  direction, as much of it as the opening lets through: a door lets out a little, a wide arch nearly all.
 - **Air absorption, underwater muffling and Doppler.**
 - **Echoes:** cliffs, ravine sides and a cave's far end answer back, up to 128 blocks away, and between two facing
   walls the echo bounces back and forth, fainter each time.

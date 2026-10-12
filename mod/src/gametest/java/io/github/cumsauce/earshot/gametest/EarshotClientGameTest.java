@@ -150,8 +150,8 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 			singleplayer.getServer().runCommand("fill 8 -60 -3 8 -59 -3 air");
 			// Round through it, far louder than through the stone (whose mid band keeps under 0.005), from the
 			// doorway's side; out in the open, diffraction round the hut still costs some 10 dB.
-			awaitSound(context, shaper, inside, s -> s.gains()[1] > 0.03f && s.heardFrom().z < 0.3,
-					"round through a doorway on the far side");
+			awaitSound(context, shaper, inside, s -> s.gains()[1] > 0.03f && s.heardFrom().z < 0.3 && s.aperture() <= 3,
+					"round through a doorway on the far side, a 1 x 2 opening");
 			singleplayer.getServer().runCommand("fill 6 -61 -3 11 -55 4 air");
 			awaitSound(context, shaper, inside, s -> s.gains()[0] > 0.95f && s.heardFrom().distanceTo(inside) < 0.3
 					&& !s.elsewhere(), "in the open");

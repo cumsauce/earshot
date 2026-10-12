@@ -215,6 +215,8 @@ The gametest checks a looping beacon hum in three states:
 
 - **Per-source reverb** (alpha.14, Ultra with convolution; FFI ABI 12 `earshot_impulse_response_for`): the two loudest sounds each get a convolution reverb of their own, in place of the listener's. It's made from the room measured round the sound (1024 rays × 8 bounces) and its first reflections off its own walls, timed after its direct sound and coming from where they bounce. The next four keep their EAX early reflections. A sound's response is made again once it has moved 2 blocks, on the loader thread, crossfaded like the listener's (`ConvolutionReverb` now takes any maker). Own reverbs nobody uses are released at the end of the update, after every source's sends have moved off them; OpenAL won't delete a slot still in use, and a failed release is logged. The listener's convolution now also loads in the open, since responses carry echoes.
 
+- **Portals** (alpha.15, FFI ABI 13: `earshot_hear` adds the opening's size): the route notes the narrowest opening the sound squeezes through, walking back from the sound until the listener can see the way. At each step it flood-fills the open blocks across the step's direction (6 blocks each way, at most 64). Another space's reverb then reaches the listener in proportion to that area: all of it from 16 square blocks up (a 4 × 4 arch), a 1 × 2 door about -9 dB. The direct sound already loses what diffraction round the opening costs. The gametest checks the hut's 1 × 2 doorway measures 2; the debug overlay shows each sound's opening.
+
 ## Approaches considered
 
 | Option | What it is | Verdict |

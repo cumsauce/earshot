@@ -121,12 +121,12 @@ public final class SoundShaper {
 	 * gets the reverb of another space than the listener's.
 	 */
 	public record Snapshot(Vec3 position, Vec3 heardFrom, float[] gains, boolean voice, boolean elsewhere,
-			boolean early, boolean ownReverb) {
+			boolean early, boolean ownReverb, float aperture) {
 		@Override
 		public String toString() {
 			return "Snapshot[position=" + position + ", heardFrom=" + heardFrom + ", gains="
 					+ java.util.Arrays.toString(gains) + ", voice=" + voice + ", elsewhere=" + elsewhere + ", early="
-					+ early + ", ownReverb=" + ownReverb + "]";
+					+ early + ", ownReverb=" + ownReverb + ", aperture=" + aperture + "]";
 		}
 	}
 
@@ -364,7 +364,8 @@ public final class SoundShaper {
 			}
 			if (efx) {
 				filter(target.source(), state, gains);
-				send(target.source(), state, gains, ownSends[i] != null ? ownSends[i] : sends, spaceSlot);
+				send(target.source(), state, gains, ownSends[i] != null ? ownSends[i] : sends, spaceSlot,
+						portalShare((float) heard[at + 7]));
 				sendEarly(target.source(), state, earlySlots[i]);
 			}
 			AL10.alSource3f(target.source(), AL10.AL_POSITION, (float) heardFrom.x, (float) heardFrom.y,
@@ -381,7 +382,7 @@ public final class SoundShaper {
 				target.voice().gains = gains;
 			}
 			shots.add(new Snapshot(position, heardFrom, gains, target.voice() != null, spaceSlot != 0,
-					earlySlots[i] != 0, ownSends[i] != null));
+					earlySlots[i] != 0, ownSends[i] != null, (float) heard[at + 7]));
 		}
 		snapshot = List.copyOf(shots);
 		voice.report();
@@ -519,7 +520,18 @@ public final class SoundShaper {
 	 * Sends a source to the reverb slots. What reaches the listener's space excites its reverb, so the send follows
 	 * the direct gains, but softened (square root): a muffled sound behind a wall still fills the room a little.
 	 */
-	private static void send(int source, SourceState state, float[] gains, int[] slots, int spaceSlot) {
+	/**
+	 * How much of another space's reverb gets through an opening of {@code aperture} square blocks: in proportion to
+	 * its area, all of it from {@value #OPEN_PORTAL} up (a 4 × 4 arch), a door's 2 about -9 dB.
+	 */
+	static float portalShare(float aperture) {
+		return Math.clamp(aperture / OPEN_PORTAL, 0.02f, 1f);
+	}
+
+	private static final float OPEN_PORTAL = 16;
+
+	private static void send(int source, SourceState state, float[] gains, int[] slots, int spaceSlot,
+			float portalShare) {
 		if (state.sendFilter == 0) {
 			state.sendFilter = EXTEfx.alGenFilters();
 			EXTEfx.alFilteri(state.sendFilter, EXTEfx.AL_FILTER_TYPE, EXTEfx.AL_FILTER_LOWPASS);
@@ -539,8 +551,9 @@ public final class SoundShaper {
 				state.spaceFilter = EXTEfx.alGenFilters();
 				EXTEfx.alFilteri(state.spaceFilter, EXTEfx.AL_FILTER_TYPE, EXTEfx.AL_FILTER_LOWPASS);
 			}
+			// Through the opening the sound comes by, as much of that space's reverb as the opening's size lets out.
 			float direct = Math.clamp(gains[0], 0f, 1f);
-			EXTEfx.alFilterf(state.spaceFilter, EXTEfx.AL_LOWPASS_GAIN, direct);
+			EXTEfx.alFilterf(state.spaceFilter, EXTEfx.AL_LOWPASS_GAIN, direct * portalShare);
 			EXTEfx.alFilterf(state.spaceFilter, EXTEfx.AL_LOWPASS_GAINHF,
 					direct > 0 ? Math.clamp(gains[2] / direct, 0f, 1f) : 0f);
 			AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, spaceSlot, SpaceReverb.SEND, state.spaceFilter);

@@ -37,7 +37,8 @@ use crate::guard::{FfiError, array_arg, guard, out_arg, slice_arg, slice_mut_arg
 /// 10: `earshot_early`.
 /// 11: `earshot_set_quality` takes the room rays' reach.
 /// 12: `earshot_impulse_response_for`.
-pub const EARSHOT_ABI_VERSION: u32 = 12;
+/// 13: `earshot_hear` adds the opening's size.
+pub const EARSHOT_ABI_VERSION: u32 = 13;
 
 pub const EARSHOT_OK: i32 = 0;
 /// A null pointer, unknown material or out-of-range value.
@@ -52,8 +53,10 @@ pub const EARSHOT_ERR_PANIC: i32 = -3;
 pub const EARSHOT_SEGMENT_DOUBLES: usize = 8;
 
 /// Doubles per source from `earshot_hear`: the low, mid and high gains, where
-/// it seems to come from as `x, y, z`, and how far it travels.
-pub const EARSHOT_HEARD_DOUBLES: usize = 7;
+/// it seems to come from as `x, y, z`, how far it travels, and how big the
+/// opening it comes round through is, in square blocks (64 when straight or
+/// wide open).
+pub const EARSHOT_HEARD_DOUBLES: usize = 8;
 
 /// Doubles from `earshot_room`: the room (decay low, mid and high in
 /// seconds, mean free path, enclosure, first reflection distance,
@@ -392,6 +395,7 @@ pub unsafe extern "C" fn earshot_hear(
                 .collect();
             let mut heard = vec![
                 Heard {
+                    aperture: earshot_sim::MAX_APERTURE,
                     gains: [1.0; BANDS],
                     heard_from: Vec3::ZERO,
                     path_length: 0.0,
@@ -407,7 +411,16 @@ pub unsafe extern "C" fn earshot_hear(
             {
                 let [low, mid, high] = heard.gains.map(f64::from);
                 let at = heard.heard_from;
-                *out = [low, mid, high, at.x, at.y, at.z, heard.path_length];
+                *out = [
+                    low,
+                    mid,
+                    high,
+                    at.x,
+                    at.y,
+                    at.z,
+                    heard.path_length,
+                    f64::from(heard.aperture),
+                ];
             }
             Ok(())
         })
