@@ -14,7 +14,7 @@
 
 mod guard;
 
-use earshot_sim::{Engine, Heard, trace_paths};
+use earshot_sim::{Engine, Heard, Room, eax_reverb, trace_paths};
 use earshot_world::{BANDS, Material, SECTION_BLOCKS, SectionPos, Vec3, World};
 
 use crate::guard::{FfiError, array_arg, guard, out_arg, slice_arg, slice_mut_arg};
@@ -23,7 +23,8 @@ use crate::guard::{FfiError, array_arg, guard, out_arg, slice_arg, slice_mut_arg
 /// from the one it was built against. Bump on any incompatible change.
 /// 2: the engine, its world mirror, transmission and path traces.
 /// 3: `earshot_set_listener` and `earshot_hear`.
-pub const EARSHOT_ABI_VERSION: u32 = 3;
+/// 4: `earshot_room`.
+pub const EARSHOT_ABI_VERSION: u32 = 4;
 
 pub const EARSHOT_OK: i32 = 0;
 /// A null pointer, unknown material or out-of-range value.
@@ -40,6 +41,14 @@ pub const EARSHOT_SEGMENT_DOUBLES: usize = 8;
 /// Doubles per source from `earshot_hear`: the low, mid and high gains, where
 /// it seems to come from as `x, y, z`, and how far it travels.
 pub const EARSHOT_HEARD_DOUBLES: usize = 7;
+
+/// Doubles from `earshot_room`: the room (decay low, mid and high in
+/// seconds, mean free path, enclosure, first reflection distance,
+/// scattering), then the 14 EAX reverb parameters for it (density,
+/// diffusion, gain, gain HF, gain LF, decay time, decay HF ratio, decay LF
+/// ratio, reflections gain, reflections delay, late reverb gain, late reverb
+/// delay, echo time, echo depth).
+pub const EARSHOT_ROOM_DOUBLES: usize = 21;
 
 /// Opaque engine handle.
 #[derive(Debug)]
@@ -366,6 +375,41 @@ pub unsafe extern "C" fn earshot_hear(
     }
 }
 
+/// Writes the room around the listener and the EAX reverb for it into `out`
+/// ([`EARSHOT_ROOM_DOUBLES`] doubles). The engine measures it a few times a
+/// second once it knows where the listener is, smoothed; before then it is
+/// open air.
+///
+/// # Safety
+/// `engine` must be live; `out` must be writable for `EARSHOT_ROOM_DOUBLES`
+/// doubles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earshot_room(engine: *mut EarshotEngine, out: *mut f64) -> i32 {
+    // SAFETY: the caller guarantees `engine` is live.
+    unsafe {
+        with_engine(engine, |e| {
+            // SAFETY: the caller guarantees `out` is writable for
+            // `EARSHOT_ROOM_DOUBLES` doubles.
+            let out = slice_mut_arg(out, EARSHOT_ROOM_DOUBLES, "out")?;
+            let room = e.engine.room().unwrap_or(Room::OPEN_AIR);
+            let [low, mid, high] = room.decay.map(f64::from);
+            out[..7].copy_from_slice(&[
+                low,
+                mid,
+                high,
+                room.mean_free_path,
+                f64::from(room.enclosure),
+                room.first_reflection,
+                f64::from(room.scattering),
+            ]);
+            for (out, value) in out[7..].iter_mut().zip(eax_reverb(&room).to_array()) {
+                *out = f64::from(value);
+            }
+            Ok(())
+        })
+    }
+}
+
 /// Traces `rays` paths from `origin`, evenly spread, with up to `bounces`
 /// reflections and at most `reach` blocks per leg. Writes the first `cap`
 /// legs to `out`, [`EARSHOT_SEGMENT_DOUBLES`] doubles each, and how many it
@@ -602,6 +646,19 @@ mod tests {
         let open = &out[EARSHOT_HEARD_DOUBLES..];
         assert_eq!(open[..3], [1.0, 1.0, 1.0]);
         assert_eq!(open[3..6], [0.5, 0.5, 8.5]);
+        // SAFETY: `engine` is live, then never used again.
+        unsafe { earshot_destroy(engine) };
+    }
+
+    #[test]
+    fn the_room_starts_as_open_air() {
+        let engine = engine();
+        let mut out = [f64::NAN; EARSHOT_ROOM_DOUBLES];
+        // SAFETY: `engine` is live and `out` is writable for its length.
+        let code = unsafe { earshot_room(engine, out.as_mut_ptr()) };
+        assert_eq!(code, EARSHOT_OK);
+        assert!(out.iter().all(|v| v.is_finite()), "{out:?}");
+        assert_eq!(out[4], 0.0, "not enclosed");
         // SAFETY: `engine` is live, then never used again.
         unsafe { earshot_destroy(engine) };
     }

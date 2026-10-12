@@ -125,6 +125,25 @@ The gametest checks a looping beacon hum in three states:
 - with a doorway cut in the box's far side: heard from the doorway's side;
 - in the open: clear, from where it is.
 
+## M3 results so far (2026-10-11): parametric reverb
+
+**Measuring the room.** The engine's worker thread traces 1024 rays × 12 bounces from the listener every 200 ms (a few ms each).
+- Every reflection costs its surface's absorption per band, and every escape counts as a fully absorbing reflection (the open sky).
+- Eyring's formula over the traced mean free path `l` and mean absorption `a`, `T60 = 6 ln 10 · l / (c · −ln(1 − a))`, gives the decay per band. Unit tests match closed-form Eyring within 20 % in every band for wood, cloth and soil boxes.
+- The result is smoothed (35 % per measurement, decays geometrically) so a doorway is crossed in about half a second.
+
+**Driving EAX reverb.** `eax_reverb` turns the room into EFX's EAX reverb parameters.
+- Decay time and the HF and LF ratios come straight from the per-band decays.
+- Gain is 0.32 × enclosure², so open ground is nearly dry.
+- Early reflections come after `2 · first-reflection distance / c`, louder the nearer the walls. The late reverb comes after one mean free path.
+- Big enclosed spaces echo.
+
+**In the game.**
+- One EAX reverb slot lives in Minecraft's context, updated every tick. Underwater it uses EFX's underwater preset.
+- Each positional sound sends to it through a low-pass of the square root of its direct gains.
+- A room rolloff of 0.5 makes far sounds relatively more reverberant: the direct-to-reverberant cue to distance.
+- The gametest sees the open superflat nearly dry, and a 21×12×21 stone hall with a mid decay over 2 s and more than three times the reverb level.
+
 ## Approaches considered
 
 | Option | What it is | Verdict |

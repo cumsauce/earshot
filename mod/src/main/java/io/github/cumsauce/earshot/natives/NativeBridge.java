@@ -26,13 +26,20 @@ import java.nio.charset.StandardCharsets;
  */
 public final class NativeBridge {
 	/** Must equal {@code EARSHOT_ABI_VERSION} in {@code earshot.h}. */
-	public static final int ABI_VERSION = 3;
+	public static final int ABI_VERSION = 4;
 	/** Blocks in a section, in Minecraft's order. */
 	public static final int SECTION_BLOCKS = 4096;
 	/** Doubles per traced leg: from x, y, z, to x, y, z, energy, escaped (1 or 0). */
 	public static final int SEGMENT_DOUBLES = 8;
 	/** Doubles per source from {@link #hear}: low, mid and high gains, where it seems to come from, how far it travels. */
 	public static final int HEARD_DOUBLES = 7;
+	/**
+	 * Doubles from {@link #room}: decay low, mid and high (seconds), mean free path, enclosure, first reflection
+	 * distance, scattering, then the 14 EAX reverb parameters from {@link #EAX_FIRST} on.
+	 */
+	public static final int ROOM_DOUBLES = 21;
+	/** Where the EAX reverb parameters start in {@link #room}'s doubles. */
+	public static final int EAX_FIRST = 7;
 
 	// size_t is 64 bits on every platform Minecraft runs on.
 	private static final ValueLayout.OfLong SIZE_T = JAVA_LONG;
@@ -50,6 +57,7 @@ public final class NativeBridge {
 	private final MethodHandle tracePaths;
 	private final MethodHandle setListener;
 	private final MethodHandle hear;
+	private final MethodHandle room;
 	private final MethodHandle lastError;
 
 	public NativeBridge(SymbolLookup library) {
@@ -79,6 +87,8 @@ public final class NativeBridge {
 				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS), critical);
 		hear = linker.downcallHandle(find(library, "earshot_hear"),
 				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, SIZE_T, ADDRESS), critical);
+		room = linker.downcallHandle(find(library, "earshot_room"), FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS),
+				critical);
 		lastError = linker.downcallHandle(find(library, "earshot_last_error"),
 				FunctionDescriptor.of(SIZE_T, ADDRESS, SIZE_T));
 	}
@@ -197,6 +207,12 @@ public final class NativeBridge {
 		}
 		check((int) invoke(hear, engine, MemorySegment.ofArray(listener), MemorySegment.ofArray(sources),
 				(long) count, MemorySegment.ofArray(out)));
+	}
+
+	/** The room around the listener and the EAX reverb for it, into {@code out} ({@value #ROOM_DOUBLES} doubles). */
+	public void room(MemorySegment engine, double[] out) {
+		if (out.length < ROOM_DOUBLES) throw new IllegalArgumentException("room needs " + ROOM_DOUBLES + " doubles");
+		check((int) invoke(room, engine, MemorySegment.ofArray(out)));
 	}
 
 	/** Throws with this thread's {@code earshot_last_error} message unless {@code code} is 0. */
