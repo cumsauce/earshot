@@ -15,7 +15,9 @@ import org.lwjgl.system.MemoryStack;
  * <li>{@value #VOICE_SOURCES} sources for Yak VC's voices beyond what the game takes. The game sizes its source pools
  * from the context's mono sources and takes all of them up to {@value #GAME_SOURCES} (255 for sounds, 8 for streams),
  * so asking for that many more leaves those free;
- * <li>the HRTF dataset picked in the settings, when the game asks for HRTF (Directional Audio) and OpenAL lists it.
+ * <li>the HRTF dataset picked in the settings, when the game asks for HRTF (Directional Audio) and OpenAL lists it;
+ * with none picked, OpenAL Soft's built-in one, which it would otherwise give up for the first data set it finds (the
+ * ones Earshot unpacks, {@link HrtfFiles}).
  * </ul>
  */
 public final class ContextAttributes {
@@ -48,9 +50,16 @@ public final class ContextAttributes {
 		return out.put(0).flip();
 	}
 
-	/** The index of the HRTF dataset {@code name} on {@code device}, or -1 if it isn't listed (or name is empty). */
+	/** OpenAL Soft's own HRTF, as it lists it. */
+	public static final String BUILT_IN_HRTF = "Built-In HRTF";
+
+	/**
+	 * The index of the HRTF dataset {@code name} on {@code device} ({@value #BUILT_IN_HRTF} for an empty name), or -1
+	 * if it isn't listed.
+	 */
 	private static int hrtfIndex(long device, String name) {
-		if (name.isEmpty() || device == 0 || !ALC10.alcIsExtensionPresent(device, "ALC_SOFT_HRTF")) return -1;
+		if (device == 0 || !ALC10.alcIsExtensionPresent(device, "ALC_SOFT_HRTF")) return -1;
+		if (name.isEmpty()) name = BUILT_IN_HRTF;
 		int count = ALC10.alcGetInteger(device, SOFTHRTF.ALC_NUM_HRTF_SPECIFIERS_SOFT);
 		for (int i = 0; i < count; i++) {
 			if (name.equals(SOFTHRTF.alcGetStringiSOFT(device, SOFTHRTF.ALC_HRTF_SPECIFIER_SOFT, i))) return i;

@@ -117,6 +117,11 @@ public record EarshotConfig(Preset preset, boolean occlusion, boolean pathing, R
 				ownVoice, realisticFalloff);
 	}
 
+	public EarshotConfig withHrtf(String hrtf) {
+		return new EarshotConfig(preset, occlusion, pathing, reverb, airAbsorption, underwater, doppler, voice, hrtf,
+				ownVoice, realisticFalloff);
+	}
+
 	public EarshotConfig withOwnVoice(boolean ownVoice) {
 		return new EarshotConfig(preset, occlusion, pathing, reverb, airAbsorption, underwater, doppler, voice, hrtf,
 				ownVoice, realisticFalloff);

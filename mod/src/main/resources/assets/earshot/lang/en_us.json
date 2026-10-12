@@ -59,6 +59,6 @@
 	"earshot.settings.realistic_falloff": "Realistic Falloff",
 	"earshot.settings.realistic_falloff.tooltip": "Sounds fade as they do in real air, halving every doubling of distance past two blocks, instead of the game's straight line to silence. Nearby sounds stand out more; far ones carry but stay quiet.",
 	"earshot.settings.hrtf": "HRTF",
-	"earshot.settings.hrtf.default": "Default",
-	"earshot.settings.hrtf.tooltip": "The head-related transfer function used when Directional Audio is on. OpenAL Soft lists its built-in one and any .mhr files it finds. Changing it restarts the sound engine."
+	"earshot.settings.hrtf.default": "Built-In",
+	"earshot.settings.hrtf.tooltip": "The head-related transfer function used when Directional Audio is on: OpenAL Soft's built-in one, or a dummy head measured for the SADIE II database (University of York), the Neumann KU100 or the KEMAR. Try each with headphones: the one that places sounds best for you is right for your ears. Changing it restarts the sound engine."
 }

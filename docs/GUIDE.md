@@ -61,7 +61,7 @@ picked and what tracing costs right now; under Reverb, which reverb is playing. 
 | Voice Chat | Plays Yak VC's voice through Earshot. Off gives it back to Yak VC's own speakers. |
 | Own Voice Echo | Off by default. Your own voice in Yak VC echoes off the room around you (only the echo, never your voice itself). For headphones, and needs a Yak VC that sends your own voice; with an older one Earshot notices and leaves it off. |
 | Directional Audio | The game's own switch for HRTF, shown here too. |
-| HRTF | Which head-related transfer function Directional Audio uses. Changing it restarts the sound engine. |
+| HRTF | Which head-related transfer function Directional Audio uses: OpenAL Soft's Built-In one (the default), or one of two dummy heads from the SADIE II database, the Neumann KU100 and the KEMAR. Try each with headphones; the one that places sounds best for you suits your ears. Changing it restarts the sound engine. |
 
 To hear the difference, bind **Bypass (A/B)** under Options → Controls → Key Binds → Earshot. Each press switches
 Earshot off and on again; your settings stay as they are.
@@ -142,4 +142,8 @@ unless you set them to something else.
 
 ## Not yet
 
-Earshot is an alpha. Planned next: a choice of bundled HRTF datasets.
+Earshot is an alpha.
+
+Earshot puts the two SADIE II HRTFs (`SADIE II KU100.mhr`, `SADIE II KEMAR.mhr`) in the top of your game folder at
+startup, because that is where the game's OpenAL looks for them. They're about 750 KB each. Deleting them is harmless:
+they come back next time, and the built-in HRTF is always there.

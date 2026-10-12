@@ -1,0 +1,26 @@
+SADIE II KU100.mhr and SADIE II KEMAR.mhr
+
+These HRTF data sets are derived from the SADIE II database:
+
+  SADIE II Database. Copyright University of York, 2018.
+  Recorded and developed at The Audio Lab, Department of Electronic Engineering,
+  University of York, UK, by Cal Armstrong, Lewis Thresh and Gavin Kearney.
+  https://www.york.ac.uk/sadie-project/database.html
+  https://zenodo.org/records/12092466
+
+  C. Armstrong, L. Thresh, D. Murphy and G. Kearney, "A Perceptual Evaluation of
+  Individual and Non-Individual HRTFs: A Case Study of the SADIE II Database",
+  Applied Sciences 8(11), 2029, 2018. https://doi.org/10.3390/app8112029
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+these files except in compliance with the License. You may obtain a copy of the
+License at http://www.apache.org/licenses/LICENSE-2.0 (also in LICENSE-APACHE in
+Earshot's source). Unless required by applicable law or agreed to in writing,
+they are distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+KIND, either express or implied.
+
+Changes made by Earshot: subjects D1 (Neumann KU100) and D2 (KEMAR), 48 kHz
+HRIRs (D1_48K_24bit_256tap_FIR_SOFA.sofa, D2_48K_24bit_256tap_FIR_SOFA.sofa),
+converted to OpenAL Soft's MHR format with OpenAL Soft 1.25.2's makemhr at its
+defaults: diffuse-field equalized, minimum-phase reconstructed, truncated to 64
+points, with per-direction delays.
