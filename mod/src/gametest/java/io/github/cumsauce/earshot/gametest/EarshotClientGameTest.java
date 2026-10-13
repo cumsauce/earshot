@@ -133,6 +133,10 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 					SoundInstance.createUnseededRandom(), true, 0, SoundInstance.Attenuation.LINEAR, inside.x, inside.y,
 					inside.z, false)));
 			awaitSound(context, shaper, inside, s -> s.gains()[0] < 0.1f && s.elsewhere(), "in a closed box");
+			// Spaces are measured off the sound thread: give the measurement a moment to come in.
+			for (int wait = 0; wait < 40 && shaper.spaceRooms().stream().noneMatch(room -> room[4] > 0.9); wait++) {
+				context.waitTick();
+			}
 			if (shaper.spaceRooms().stream().noneMatch(room -> room[4] > 0.9)) {
 				throw new AssertionError("the box's room isn't enclosed: "
 						+ shaper.spaceRooms().stream().map(Arrays::toString).toList());
