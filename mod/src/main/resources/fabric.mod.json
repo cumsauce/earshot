@@ -5,6 +5,7 @@
 	"name": "Earshot",
 	"description": "Physically based acoustics for the game's own sounds: occlusion, sound around corners, raytraced reverb and HRTF. Client only.",
 	"license": "MIT OR Apache-2.0",
+	"icon": "assets/earshot/icon.png",
 	"contact": {
 		"homepage": "https://github.com/cumsauce/earshot",
 		"sources": "https://github.com/cumsauce/earshot",

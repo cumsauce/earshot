@@ -62,38 +62,54 @@ impl World {
     }
 
     /// Replaces a whole section with `blocks`, material ids in section
-    /// order.
-    pub fn set_section(&mut self, pos: SectionPos, blocks: &[u8; SECTION_BLOCKS]) {
+    /// order. Whether anything changed.
+    pub fn set_section(&mut self, pos: SectionPos, blocks: &[u8; SECTION_BLOCKS]) -> bool {
+        if self
+            .sections
+            .get(&pos)
+            .is_some_and(|s| *s.blocks == *blocks)
+        {
+            return false;
+        }
         let section = Section {
             blocks: Box::new(*blocks),
         };
         if section.is_empty() {
-            self.sections.remove(&pos);
+            self.sections.remove(&pos).is_some()
         } else {
             self.sections.insert(pos, section);
+            true
         }
     }
 
-    pub fn remove_section(&mut self, pos: SectionPos) {
-        self.sections.remove(&pos);
+    /// Whether there was a section there.
+    pub fn remove_section(&mut self, pos: SectionPos) -> bool {
+        self.sections.remove(&pos).is_some()
     }
 
-    /// Changes one block, as when the game sets it.
-    pub fn set_block(&mut self, x: i32, y: i32, z: i32, material: Material) {
+    /// Changes one block, as when the game sets it. Whether its material
+    /// changed: a block changing state (water flowing, a crop growing) often
+    /// keeps it.
+    pub fn set_block(&mut self, x: i32, y: i32, z: i32, material: Material) -> bool {
         let pos = SectionPos::of_block(x, y, z);
         match self.sections.get_mut(&pos) {
             Some(section) => {
+                if section.blocks[index(x, y, z)] == material.id() {
+                    return false;
+                }
                 section.blocks[index(x, y, z)] = material.id();
                 if material == Material::Air && section.is_empty() {
                     self.sections.remove(&pos);
                 }
+                true
             }
             None if material != Material::Air => {
                 let mut blocks = Box::new([Material::Air.id(); SECTION_BLOCKS]);
                 blocks[index(x, y, z)] = material.id();
                 self.sections.insert(pos, Section { blocks });
+                true
             }
-            None => {}
+            None => false,
         }
     }
 
@@ -107,9 +123,12 @@ impl World {
         self.sections.get(&pos)
     }
 
-    /// Forgets every section, as when the player changes dimension.
-    pub fn clear(&mut self) {
+    /// Forgets every section, as when the player changes dimension. Whether
+    /// there were any.
+    pub fn clear(&mut self) -> bool {
+        let had = !self.sections.is_empty();
         self.sections.clear();
+        had
     }
 
     /// How many sections hold anything but air.
@@ -158,6 +177,22 @@ mod tests {
         assert_eq!(world.block(-1, 65, 17), Material::Air);
         assert!(world.section(SectionPos::new(-1, 4, 1)).is_some());
         assert_eq!(world.sections(), 1);
+    }
+
+    #[test]
+    fn only_real_changes_count() {
+        let mut world = World::new();
+        assert!(world.set_block(1, 2, 3, Material::Rock));
+        assert!(!world.set_block(1, 2, 3, Material::Rock));
+        assert!(!world.set_block(9, 9, 9, Material::Air));
+        let mut blocks = [0u8; SECTION_BLOCKS];
+        blocks[index(1, 2, 3)] = Material::Rock.id();
+        assert!(!world.set_section(SectionPos::new(0, 0, 0), &blocks));
+        blocks[0] = Material::Wood.id();
+        assert!(world.set_section(SectionPos::new(0, 0, 0), &blocks));
+        assert!(world.remove_section(SectionPos::new(0, 0, 0)));
+        assert!(!world.remove_section(SectionPos::new(0, 0, 0)));
+        assert!(!world.clear());
     }
 
     #[test]

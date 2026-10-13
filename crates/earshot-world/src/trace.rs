@@ -97,10 +97,7 @@ pub fn walk(
 /// length) meets within `max` blocks.
 pub fn cast(world: &World, origin: Vec3, dir: Vec3, max: f64) -> Option<Hit> {
     let mut hit = None;
-    walk(world, origin, dir, max, |step| {
-        if !step.material.is_solid() {
-            return ControlFlow::Continue(());
-        }
+    walk_solid(world, origin, dir, max, |step| {
         let [x, y, z] = step.normal.map(f64::from);
         hit = Some(Hit {
             block: step.block,
@@ -127,8 +124,8 @@ pub fn transmission(world: &World, from: Vec3, to: Vec3) -> Bands {
         return passing;
     }
     let ends = [floor(from), floor(to)];
-    walk(world, from, delta * (1.0 / distance), distance, |step| {
-        if !step.material.is_solid() || ends.contains(&step.block) {
+    walk_solid(world, from, delta * (1.0 / distance), distance, |step| {
+        if ends.contains(&step.block) {
             return ControlFlow::Continue(());
         }
         let length = (step.exit - step.enter) as f32;
@@ -142,6 +139,124 @@ pub fn transmission(world: &World, from: Vec3, to: Vec3) -> Bands {
         ControlFlow::Continue(())
     });
     passing
+}
+
+/// [`walk`], visiting only the solid blocks, and crossing a section with
+/// nothing in it (absent from the world: all air) in one go rather than block
+/// by block. Outdoors and in big rooms most of a ray is in such sections.
+/// The jump makes the same additions the block-by-block walk would, so it
+/// lands exactly where that would.
+fn walk_solid(
+    world: &World,
+    origin: Vec3,
+    dir: Vec3,
+    max: f64,
+    mut visit: impl FnMut(&Step) -> ControlFlow<()>,
+) {
+    let finite = [origin.x, origin.y, origin.z, dir.x, dir.y, dir.z, max];
+    if !finite.iter().all(|v| v.is_finite()) {
+        return;
+    }
+    let mut block = [
+        origin.x.floor() as i32,
+        origin.y.floor() as i32,
+        origin.z.floor() as i32,
+    ];
+    let mut step = [0i32; 3];
+    let mut t_delta = [f64::INFINITY; 3];
+    let mut t_max = [f64::INFINITY; 3];
+    for axis in 0..3 {
+        let (d, o, b) = (dir.axis(axis), origin.axis(axis), f64::from(block[axis]));
+        if d > 0.0 {
+            step[axis] = 1;
+            t_delta[axis] = 1.0 / d;
+            t_max[axis] = (b + 1.0 - o) / d;
+        } else if d < 0.0 {
+            step[axis] = -1;
+            t_delta[axis] = -1.0 / d;
+            t_max[axis] = (o - b) / -d;
+        }
+    }
+
+    let mut current: Option<SectionPos> = None;
+    let mut section: Option<&Section> = None;
+    let mut enter = 0.0;
+    let mut normal = [0; 3];
+    loop {
+        let pos = SectionPos::of_block(block[0], block[1], block[2]);
+        if current != Some(pos) {
+            current = Some(pos);
+            section = world.section(pos);
+        }
+        let Some(section) = section else {
+            // Nothing here: on to where the ray leaves the section, the
+            // first of the crossings that leave it along each axis.
+            let mut leave = f64::INFINITY;
+            let mut across = 3;
+            for axis in 0..3 {
+                if step[axis] == 0 {
+                    continue;
+                }
+                let inside = if step[axis] > 0 {
+                    15 - (block[axis] & 15)
+                } else {
+                    block[axis] & 15
+                };
+                let mut t = t_max[axis];
+                for _ in 0..inside {
+                    t += t_delta[axis];
+                }
+                if t < leave {
+                    leave = t;
+                    across = axis;
+                }
+            }
+            if leave >= max {
+                return;
+            }
+            // Every crossing before it stays in the section; then out.
+            for axis in 0..3 {
+                while t_max[axis] < leave {
+                    block[axis] += step[axis];
+                    t_max[axis] += t_delta[axis];
+                }
+            }
+            enter = t_max[across];
+            block[across] += step[across];
+            t_max[across] += t_delta[across];
+            normal = [0; 3];
+            normal[across] = -step[across];
+            continue;
+        };
+        let axis = if t_max[0] < t_max[1] {
+            if t_max[0] < t_max[2] { 0 } else { 2 }
+        } else if t_max[1] < t_max[2] {
+            1
+        } else {
+            2
+        };
+        let material = section.get(block[0], block[1], block[2]);
+        if material.is_solid() {
+            let here = Step {
+                block,
+                material,
+                enter,
+                exit: t_max[axis].min(max),
+                normal,
+            };
+            if visit(&here).is_break() {
+                return;
+            }
+        }
+        if t_max[axis] >= max {
+            return;
+        }
+        enter = t_max[axis];
+        block[axis] += step[axis];
+        t_max[axis] += t_delta[axis];
+        normal = [0; 3];
+        normal[axis] = -step[axis];
+    }
 }
 
 fn floor(point: Vec3) -> [i32; 3] {
@@ -226,6 +341,63 @@ mod tests {
                     assert_eq!(floor(middle), step.block, "{step:?}");
                 }
             }
+        }
+    }
+
+    /// The old way: every block, solid or not.
+    fn cast_by_walking(world: &World, origin: Vec3, dir: Vec3, max: f64) -> Option<Hit> {
+        let mut hit = None;
+        walk(world, origin, dir, max, |step| {
+            if !step.material.is_solid() {
+                return ControlFlow::Continue(());
+            }
+            let [x, y, z] = step.normal.map(f64::from);
+            hit = Some(Hit {
+                block: step.block,
+                material: step.material,
+                distance: step.enter,
+                point: origin + dir * step.enter,
+                normal: Vec3::new(x, y, z),
+            });
+            ControlFlow::Break(())
+        });
+        hit
+    }
+
+    #[test]
+    fn skipping_empty_sections_finds_the_same_hits() {
+        let mut world = World::new();
+        let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+        // Scattered blocks, leaving most sections empty, some in clusters.
+        for _ in 0..400 {
+            let at = [rng.signed(), rng.signed(), rng.signed()].map(|v| (v * 60.0) as i32);
+            for _ in 0..(rng.next() * 8.0) as usize {
+                let jitter = [rng.signed(), rng.signed(), rng.signed()].map(|v| (v * 2.0) as i32);
+                world.set_block(
+                    at[0] + jitter[0],
+                    at[1] + jitter[1],
+                    at[2] + jitter[2],
+                    Material::Rock,
+                );
+            }
+        }
+        for _ in 0..20_000 {
+            let origin = Vec3::new(rng.signed(), rng.signed(), rng.signed()) * 50.0;
+            let mut dir = Vec3::new(rng.signed(), rng.signed(), rng.signed());
+            // Some along axes and planes, where ties are.
+            if rng.next() < 0.2 {
+                dir = Vec3::new(dir.x, 0.0, if rng.next() < 0.5 { 0.0 } else { dir.z });
+            }
+            if dir.length() < 1e-6 {
+                continue;
+            }
+            let dir = dir.normalized();
+            let max = rng.next() * 120.0;
+            assert_eq!(
+                cast(&world, origin, dir, max),
+                cast_by_walking(&world, origin, dir, max),
+                "{origin:?} {dir:?} {max}"
+            );
         }
     }
 

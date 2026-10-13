@@ -1,4 +1,4 @@
-use earshot_world::{Vec3, World, cast};
+use earshot_world::{SectionPos, Vec3, World, cast};
 
 /// Path lengths are kept in tenths of a block.
 const PER_BLOCK: f64 = 10.0;
@@ -58,12 +58,27 @@ impl Field {
         let centre = block_of(listener);
         let min = centre.map(|c| c - half);
         let cells = (size * size * size) as usize;
-        let mut open = vec![false; cells];
+        // Flooded in a grid one cell bigger all round, its rim shut, so no
+        // step needs a bounds check.
+        let padded = size + 2;
+        let mut open = vec![false; (padded * padded * padded) as usize];
         for x in 0..size {
             for y in 0..size {
-                for z in 0..size {
-                    let block = world.block(min[0] + x, min[1] + y, min[2] + z);
-                    open[((x * size + y) * size + z) as usize] = !block.is_solid();
+                let (wx, wy) = (min[0] + x, min[1] + y);
+                let row = (((x + 1) * padded + y + 1) * padded + 1) as usize;
+                let mut z = 0;
+                while z < size {
+                    // A section at a time along the row: one lookup per 16.
+                    let wz = min[2] + z;
+                    let run = (16 - (wz & 15)).min(size - z);
+                    if let Some(section) = world.section(SectionPos::of_block(wx, wy, wz)) {
+                        for i in 0..run {
+                            open[row + (z + i) as usize] = !section.get(wx, wy, wz + i).is_solid();
+                        }
+                    } else {
+                        open[row + z as usize..row + (z + run) as usize].fill(true);
+                    }
+                    z += run;
                 }
             }
         }
@@ -73,63 +88,16 @@ impl Field {
             size,
             dist: vec![UNREACHED; cells],
         };
-        field.flood(&open, [half; 3]);
+        let flooded = flood(&open, padded, [half + 1; 3]);
+        for x in 0..size {
+            for y in 0..size {
+                let from = (((x + 1) * padded + y + 1) * padded + 1) as usize;
+                let to = ((x * size + y) * size) as usize;
+                field.dist[to..to + size as usize]
+                    .copy_from_slice(&flooded[from..from + size as usize]);
+            }
+        }
         field
-    }
-
-    /// Dial's algorithm: Dijkstra with a ring of buckets, one per distance
-    /// modulo the largest step.
-    fn flood(&mut self, open: &[bool], start: [i32; 3]) {
-        let mut buckets: Vec<Vec<u32>> = vec![Vec::new(); usize::from(CORNER) + 1];
-        let start_index = self.index(start);
-        self.dist[start_index] = 0;
-        buckets[0].push(start_index as u32);
-        let mut queued = 1usize;
-        let mut d = 0u32;
-        while queued > 0 {
-            let bucket = (d % u32::from(CORNER + 1)) as usize;
-            while let Some(cell) = buckets[bucket].pop() {
-                queued -= 1;
-                let cell = cell as usize;
-                if u32::from(self.dist[cell]) != d {
-                    continue;
-                }
-                let at = self.coords(cell);
-                for (step, cost) in NEIGHBOURS {
-                    let next = [at[0] + step[0], at[1] + step[1], at[2] + step[2]];
-                    if !self.contains(next) || !self.passable(open, at, step) {
-                        continue;
-                    }
-                    let next_index = self.index(next);
-                    let nd = d + u32::from(cost);
-                    if nd < u32::from(self.dist[next_index]) && nd < u32::from(UNREACHED) {
-                        self.dist[next_index] = nd as u16;
-                        buckets[(nd % u32::from(CORNER + 1)) as usize].push(next_index as u32);
-                        queued += 1;
-                    }
-                }
-            }
-            d += 1;
-        }
-    }
-
-    /// Whether sound can step from `at` by `step`: into an open block, and
-    /// through open blocks on the way when it goes diagonally.
-    fn passable(&self, open: &[bool], at: [i32; 3], step: [i32; 3]) -> bool {
-        let to = [at[0] + step[0], at[1] + step[1], at[2] + step[2]];
-        if !open[self.index(to)] {
-            return false;
-        }
-        for axis in 0..3 {
-            if step[axis] != 0 && step.iter().filter(|&&s| s != 0).count() > 1 {
-                let mut side = at;
-                side[axis] += step[axis];
-                if !open[self.index(side)] {
-                    return false;
-                }
-            }
-        }
-        true
     }
 
     pub fn listener(&self) -> Vec3 {
@@ -230,15 +198,6 @@ impl Field {
         ((x * self.size + y) * self.size + z) as usize
     }
 
-    fn coords(&self, index: usize) -> [i32; 3] {
-        let index = index as i32;
-        [
-            index / (self.size * self.size),
-            index / self.size % self.size,
-            index % self.size,
-        ]
-    }
-
     /// The middle of local block `local`, in world coordinates.
     fn centre(&self, local: [i32; 3]) -> Vec3 {
         Vec3::new(
@@ -299,6 +258,70 @@ fn block_of(point: Vec3) -> [i32; 3] {
     ]
 }
 
+/// Dial's algorithm: Dijkstra with a ring of buckets, one per distance
+/// modulo the largest step, over a `padded`³ grid whose rim is shut. A
+/// diagonal step needs the blocks it passes beside open too: it never cuts a
+/// corner past a solid block.
+fn flood(open: &[bool], padded: i32, start: [i32; 3]) -> Vec<u16> {
+    let stride = |[x, y, z]: [i32; 3]| ((x * padded + y) * padded + z) as isize;
+    // Each neighbour: its offset, its cost, and the offsets of the face
+    // neighbours it passes beside (none for a face step).
+    let steps: Vec<(isize, u16, [isize; 3], usize)> = NEIGHBOURS
+        .iter()
+        .map(|&(step, cost)| {
+            let axes = step.iter().filter(|&&s| s != 0).count();
+            let mut sides = [0; 3];
+            let mut beside = 0;
+            if axes > 1 {
+                for axis in (0..3).filter(|&axis| step[axis] != 0) {
+                    let mut side = [0; 3];
+                    side[axis] = step[axis];
+                    sides[beside] = stride(side);
+                    beside += 1;
+                }
+            }
+            (stride(step), cost, sides, beside)
+        })
+        .collect();
+    let mut dist = vec![UNREACHED; open.len()];
+    let mut buckets: Vec<Vec<u32>> = vec![Vec::new(); usize::from(CORNER) + 1];
+    let first = stride(start) as usize;
+    dist[first] = 0;
+    buckets[0].push(first as u32);
+    let mut queued = 1usize;
+    let mut d = 0u32;
+    while queued > 0 {
+        let bucket = (d % u32::from(CORNER + 1)) as usize;
+        while let Some(cell) = buckets[bucket].pop() {
+            queued -= 1;
+            let cell = cell as usize;
+            if u32::from(dist[cell]) != d {
+                continue;
+            }
+            for (offset, cost, sides, beside) in &steps {
+                let next = cell.wrapping_add_signed(*offset);
+                let nd = d + u32::from(*cost);
+                // Cheapest test first: most neighbours are already nearer.
+                if nd >= u32::from(dist[next]) || nd >= u32::from(UNREACHED) {
+                    continue;
+                }
+                if !open[next]
+                    || !sides[..*beside]
+                        .iter()
+                        .all(|&side| open[cell.wrapping_add_signed(side)])
+                {
+                    continue;
+                }
+                dist[next] = nd as u16;
+                buckets[(nd % u32::from(CORNER + 1)) as usize].push(next as u32);
+                queued += 1;
+            }
+        }
+        d += 1;
+    }
+    dist
+}
+
 const FACES: [[i32; 3]; 6] = [
     [1, 0, 0],
     [-1, 0, 0],
@@ -342,6 +365,83 @@ mod tests {
     use earshot_world::Material;
 
     use super::*;
+
+    /// Plain Dijkstra over the 26 neighbours with every check spelt out,
+    /// to hold the fast flood to.
+    fn reference(world: &World, listener: Vec3, half: i32) -> Vec<u16> {
+        use std::cmp::Reverse;
+        use std::collections::BinaryHeap;
+        let size = 2 * half + 1;
+        let min = block_of(listener).map(|c| c - half);
+        let inside = |p: [i32; 3]| p.iter().all(|&c| (0..size).contains(&c));
+        let open = |p: [i32; 3]| {
+            inside(p)
+                && !world
+                    .block(min[0] + p[0], min[1] + p[1], min[2] + p[2])
+                    .is_solid()
+        };
+        let index = |[x, y, z]: [i32; 3]| ((x * size + y) * size + z) as usize;
+        let mut dist = vec![UNREACHED; (size * size * size) as usize];
+        let mut heap = BinaryHeap::new();
+        dist[index([half; 3])] = 0;
+        heap.push(Reverse((0u32, [half; 3])));
+        while let Some(Reverse((d, at))) = heap.pop() {
+            if u32::from(dist[index(at)]) != d {
+                continue;
+            }
+            for (step, cost) in NEIGHBOURS {
+                let to = [at[0] + step[0], at[1] + step[1], at[2] + step[2]];
+                let diagonal = step.iter().filter(|&&s| s != 0).count() > 1;
+                let beside_open = !diagonal
+                    || (0..3).filter(|&a| step[a] != 0).all(|a| {
+                        let mut side = at;
+                        side[a] += step[a];
+                        open(side)
+                    });
+                let nd = d + u32::from(cost);
+                if open(to) && beside_open && nd < u32::from(dist[index(to)]) {
+                    dist[index(to)] = nd as u16;
+                    heap.push(Reverse((nd, to)));
+                }
+            }
+        }
+        dist
+    }
+
+    #[test]
+    fn the_flood_matches_plain_dijkstra() {
+        let mut world = World::new();
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        // Walls, pillars and rubble across several sections.
+        for _ in 0..3000 {
+            let [x, y, z] = [next(), next(), next()].map(|v| (v % 40) as i32 - 20);
+            world.set_block(x, y, z, Material::Rock);
+        }
+        for y in -20..20 {
+            for z in -20..20 {
+                if (y, z) != (0, 3) && (y, z) != (1, 3) {
+                    world.set_block(6, y, z, Material::Rock);
+                }
+            }
+        }
+        for listener in [Vec3::new(0.5, 0.5, 0.5), Vec3::new(-7.2, 3.9, 11.1)] {
+            world.set_block(
+                listener.x.floor() as i32,
+                listener.y.floor() as i32,
+                listener.z.floor() as i32,
+                Material::Air,
+            );
+            let field = Field::build(&world, listener, 12);
+            assert_eq!(field.dist, reference(&world, listener, 12));
+            assert!(field.dist.iter().filter(|&&d| d != UNREACHED).count() > 1000);
+        }
+    }
 
     #[test]
     fn a_door_is_a_small_opening_and_a_gap_a_wide_one() {
