@@ -21,12 +21,11 @@ pub const IR_CHANNELS: usize = 4;
 /// The late field's directional channels against W: a diffuse field puts two
 /// thirds of W's energy (with FuMa's 1/√2 on W) in each of X, Y and Z.
 const DIFFUSE_XYZ: f32 = 0.816;
-/// The most energy a response may carry, relative to the sound sent to it.
-/// Every sound in earshot sends to the one convolution, and OpenAL Soft's
-/// convolution comes out far louder than the response's energy says (a
-/// recorded busy scene: some 30 dB over dry, where the EAX reverb added
-/// nothing), so it is held here, as before alpha.22.
-pub const MAX_ENERGY: f32 = 0.08;
+/// The most energy a response may carry, relative to the sound sent to it:
+/// a room's reverb is never louder than the sound itself a block away.
+/// (It was held to 0.08 while the responses were uploaded as 16-bit data by
+/// mistake, which made every one a loud burst of noise whatever its level.)
+pub const MAX_ENERGY: f32 = 1.0;
 /// Fades the end in the last this many seconds, so a cut tail doesn't click.
 const FADE: f32 = 0.05;
 /// Crossovers between the low, mid and high bands, in hertz.
