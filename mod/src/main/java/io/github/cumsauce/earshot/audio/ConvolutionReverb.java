@@ -27,7 +27,8 @@ public final class ConvolutionReverb {
 	/** {@code AL_SOFT_convolution_effect}, in-progress in OpenAL Soft and so not in LWJGL. */
 	private static final int AL_EFFECT_CONVOLUTION_SOFT = 0xA000;
 	private static final int AL_CONVOLUTION_ORIENTATION_SOFT = 0x100F;
-	private static final int AL_FORMAT_BFORMAT3D_FLOAT32 = 0x20032;
+	/** AL_EXT_BFORMAT's float format. (0x20032 is its 16-bit one, which reads each float as two loud integers.) */
+	private static final int AL_FORMAT_BFORMAT3D_FLOAT32 = 0x20033;
 	private static final int SAMPLE_RATE = 48_000;
 	/** The longest response: longer ones double the cost (docs/PLAN.md, M0). */
 	private static final float MAX_SECONDS = 1.5f;

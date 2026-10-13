@@ -41,7 +41,7 @@ public final class OpenAlBench {
 	private static final int AL_EFFECT_CONVOLUTION_SOFT = 0xA000;
 	private static final String CONVOLUTION_EXTENSION = "AL_SOFTX_convolution_effect";
 	private static final int AL_FORMAT_MONO_FLOAT32 = 0x10010;
-	private static final int AL_FORMAT_BFORMAT3D_FLOAT32 = 0x20032;
+	private static final int AL_FORMAT_BFORMAT3D_FLOAT32 = 0x20033;
 
 	private record Config(String name, int sources, boolean hrtf, boolean filters, int eaxSlots, int convolutionSlots,
 			double irSeconds) {}
