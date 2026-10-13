@@ -520,6 +520,7 @@ fn blend(from: &Room, to: &Room, t: f32) -> Room {
         enclosure: lerp(from.enclosure, to.enclosure),
         first_reflection: lerp64(from.first_reflection, to.first_reflection),
         scattering: lerp(from.scattering, to.scattering),
+        volume: lerp64(from.volume, to.volume),
     }
 }
 

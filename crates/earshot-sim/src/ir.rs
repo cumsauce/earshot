@@ -21,6 +21,12 @@ pub const IR_CHANNELS: usize = 4;
 /// The late field's directional channels against W: a diffuse field puts two
 /// thirds of W's energy (with FuMa's 1/√2 on W) in each of X, Y and Z.
 const DIFFUSE_XYZ: f32 = 0.816;
+/// The most energy a response may carry, relative to the sound sent to it.
+/// Every sound in earshot sends to the one convolution, and OpenAL Soft's
+/// convolution comes out far louder than the response's energy says (a
+/// recorded busy scene: some 30 dB over dry, where the EAX reverb added
+/// nothing), so it is held here, as before alpha.22.
+pub const MAX_ENERGY: f32 = 0.08;
 /// Fades the end in the last this many seconds, so a cut tail doesn't click.
 const FADE: f32 = 0.05;
 /// Crossovers between the low, mid and high bands, in hertz.
@@ -97,10 +103,14 @@ pub fn impulse_response(
         out[at + 3] += a * d.y as f32;
     }
 
-    // The response carries the room's own energy, uncapped: a hard little room
-    // is louder than the sound in it, as a bathroom is. (It was capped while
-    // the early reflections summed in amplitude and blew up the bass; see
-    // `merge`.)
+    // Energy in W is half the field's (FuMa's 1/√2).
+    let energy = 2.0 * out.iter().step_by(IR_CHANNELS).map(|s| s * s).sum::<f32>();
+    if energy > MAX_ENERGY {
+        let scale = (MAX_ENERGY / energy).sqrt();
+        for sample in &mut out {
+            *sample *= scale;
+        }
+    }
 
     let fade = ((FADE * rate) as usize).min(length);
     for i in length - fade..length {
@@ -156,21 +166,28 @@ fn merge(early: &[Reflection]) -> Vec<Reflection> {
         .collect()
 }
 
-/// The reverberant energy relative to the direct sound at one block: the
-/// diffuse field's `16π / R`, with the room constant `R = S·a / (1 - a)`.
-/// The surface comes from the mean free path (a roughly cubic space of side
-/// 1.5 × the mean free path), and the result is scaled by how enclosed the
-/// listener is, since the open sky returns nothing.
+/// The reverberant energy relative to the direct sound at one block. The
+/// diffuse field holds the power going in for as long as it lingers: the
+/// mean free path over the share each reflection takes (escapes included)
+/// is how far sound goes before it's gone, so the energy is 4π·(that) / V
+/// against the direct sound's at a block. In a closed room this is Sabine's
+/// 16π/R; in the open, where V is huge (the rays escape), next to nothing,
+/// however near the ground is. With no volume measured, a roughly cubic space
+/// of side 1.5 × the mean free path, scaled by how enclosed it is.
 pub fn late_energy(room: &Room) -> f32 {
     if room.mean_free_path <= 0.0 {
         return 0.0;
     }
-    let side = 1.5 * room.mean_free_path;
-    let surface = 6.0 * side * side;
     // Absorption back from the mid band's decay (Eyring, inverted).
     let t60 = f64::from(room.decay[1].max(0.05));
     let a = 1.0 - (-13.815_510_557_964_274 * room.mean_free_path / (SPEED_OF_SOUND * t60)).exp();
     let a = a.clamp(1e-3, 0.999);
+    if room.volume > 0.0 {
+        let lingers = room.mean_free_path / a;
+        return (4.0 * std::f64::consts::PI * lingers / room.volume).clamp(0.0, 4.0) as f32;
+    }
+    let side = 1.5 * room.mean_free_path;
+    let surface = 6.0 * side * side;
     let r = surface * a / (1.0 - a);
     let energy = (16.0 * std::f64::consts::PI / r).clamp(0.0, 4.0) as f32;
     energy * room.enclosure * room.enclosure
@@ -233,6 +250,7 @@ mod merge_tests {
             enclosure: 1.0,
             first_reflection: 1.0,
             scattering: 0.5,
+            volume: 0.0,
         };
         // 4000 rays' shares of one reflection off a wall a block away.
         let early: Vec<Reflection> = (0..4000)
@@ -262,6 +280,7 @@ mod tests {
             enclosure,
             first_reflection: mean_free_path / 2.0,
             scattering: 0.3,
+            volume: 0.0,
         }
     }
 
@@ -337,13 +356,11 @@ mod tests {
             let ir = impulse_response(&r, &[], 48_000, 1.5, 1);
             // Energy in W is half the field's (FuMa's 1/√2).
             let energy = 2.0 * ir.iter().step_by(IR_CHANNELS).map(|s| s * s).sum::<f32>();
-            let wanted = late_energy(&r);
+            let wanted = late_energy(&r).min(MAX_ENERGY);
             assert!(
                 (energy / wanted - 1.0).abs() < 0.25,
                 "{energy} vs {wanted} for t60 {t60}, mfp {mfp}"
             );
-            // A hard little room is louder than the sound in it, but bounded.
-            assert!(energy < 4.5, "{energy}");
         }
     }
 

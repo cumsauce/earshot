@@ -159,9 +159,9 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 			// the box stood).
 			singleplayer.getServer().runCommand("fill 6 -61 -3 11 -61 4 grass_block");
 			context.runOnClient(mc -> EarshotClient.apply(settings.withPreset(EarshotConfig.Preset.ULTRA)));
-			// With convolution, the loudest gets a whole reverb of its own instead, its early reflections in it.
-			awaitSound(context, shaper, inside, report.convolutionEffect() ? SoundShaper.Snapshot::ownReverb
-					: SoundShaper.Snapshot::early, "on Ultra, off the ground");
+			// With convolution (asked for; Auto takes EAX), the loudest gets a whole reverb of its own instead, its
+			// early reflections in it.
+			awaitSound(context, shaper, inside, s -> s.early() || s.ownReverb(), "on Ultra, off the ground");
 			context.runOnClient(mc -> EarshotClient.apply(settings));
 			awaitSound(context, shaper, inside, s -> !s.early() && !s.ownReverb(), "back off Ultra");
 			context.runOnClient(mc -> mc.getSoundManager().stop());
@@ -240,8 +240,10 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 				throw new AssertionError("the hall's reverb isn't louder: " + Arrays.toString(hall) + " vs "
 						+ Arrays.toString(outside));
 			}
-			// Where OpenAL Soft has the convolution effect, the hall's impulse response loads and plays.
+			// Where OpenAL Soft has the convolution effect, asked for, the hall's impulse response loads and plays.
 			if (report.convolutionEffect()) {
+				context.runOnClient(mc -> EarshotClient.apply(
+						EarshotClient.config().withReverb(EarshotConfig.Reverb.CONVOLUTION)));
 				int before = context.computeOnClient(mc -> shaper.convolution().loads());
 				try {
 					context.waitFor(mc -> shaper.mode() == SoundShaper.ReverbMode.CONVOLUTION
@@ -250,6 +252,8 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 					throw new AssertionError("no convolution reverb: mode " + shaper.mode() + ", loads "
 							+ shaper.convolution().loads(), e);
 				}
+				context.runOnClient(mc -> EarshotClient.apply(
+						EarshotClient.config().withReverb(EarshotConfig.Reverb.AUTO)));
 			}
 			singleplayer.getServer().runCommand("fill -10 -61 -10 10 -50 10 air");
 			singleplayer.getServer().runCommand("fill -10 -61 -10 10 -61 10 grass_block");

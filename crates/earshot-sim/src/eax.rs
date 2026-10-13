@@ -87,6 +87,7 @@ mod tests {
             enclosure,
             first_reflection: mean_free_path / 2.0,
             scattering: 0.3,
+            volume: 0.0,
         }
     }
 

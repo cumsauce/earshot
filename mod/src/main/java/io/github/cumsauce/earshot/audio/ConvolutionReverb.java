@@ -21,6 +21,9 @@ import org.lwjgl.openal.EXTEfx;
  * where the walls are.
  */
 public final class ConvolutionReverb {
+	/** The response's level: convolution sums every sound's send, so it is held at half. */
+	private static final float LEVEL = 0.5f;
+
 	/** {@code AL_SOFT_convolution_effect}, in-progress in OpenAL Soft and so not in LWJGL. */
 	private static final int AL_EFFECT_CONVOLUTION_SOFT = 0xA000;
 	private static final int AL_CONVOLUTION_ORIENTATION_SOFT = 0x100F;
@@ -243,8 +246,9 @@ public final class ConvolutionReverb {
 	/** One step of the crossfade to the incoming slot; at the end the old slot lets its effect and response go. */
 	private void crossfade() {
 		fade = Math.min(1f, fade + FADE_STEP);
-		EXTEfx.alAuxiliaryEffectSlotf(slots[incoming], EXTEfx.AL_EFFECTSLOT_GAIN, fade);
-		if (active >= 0) EXTEfx.alAuxiliaryEffectSlotf(slots[active], EXTEfx.AL_EFFECTSLOT_GAIN, 1f - fade);
+		// Every sound sends into the same response, so their sum is held well under full scale.
+		EXTEfx.alAuxiliaryEffectSlotf(slots[incoming], EXTEfx.AL_EFFECTSLOT_GAIN, LEVEL * fade);
+		if (active >= 0) EXTEfx.alAuxiliaryEffectSlotf(slots[active], EXTEfx.AL_EFFECTSLOT_GAIN, LEVEL * (1f - fade));
 		if (fade < 1f) return;
 		if (active >= 0) {
 			EXTEfx.alAuxiliaryEffectSloti(slots[active], EXTEfx.AL_EFFECTSLOT_EFFECT, EXTEfx.AL_EFFECT_NULL);

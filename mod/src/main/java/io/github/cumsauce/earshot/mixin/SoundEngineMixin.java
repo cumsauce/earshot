@@ -29,8 +29,6 @@ abstract class SoundEngineMixin {
 	@Shadow
 	private boolean loaded;
 
-	@Shadow
-	public abstract void playDelayed(SoundInstance sound, int delay);
 
 	@Inject(method = "play", at = @At("HEAD"), cancellable = true)
 	private void earshot$thunderLater(SoundInstance sound, CallbackInfoReturnable<SoundEngine.PlayResult> cir) {
@@ -42,8 +40,27 @@ abstract class SoundEngineMixin {
 		int ticks = thunder ? Thunder.holdTicks(sound, camera.position())
 				: io.github.cumsauce.earshot.audio.Propagation.holdTicks(sound, camera.position());
 		if (ticks <= 0) return;
-		playDelayed(sound, ticks);
+		io.github.cumsauce.earshot.audio.Propagation.hold(sound, ticks);
 		cir.setReturnValue(SoundEngine.PlayResult.NOT_STARTED);
+	}
+
+	/** Lets out the held sounds now due, before the game's own tick walks its queues. */
+	@Inject(method = "tick", at = @At("HEAD"))
+	private void earshot$letOut(boolean paused, CallbackInfo ci) {
+		if (!loaded || paused) return;
+		for (SoundInstance sound : io.github.cumsauce.earshot.audio.Propagation.due()) {
+			((SoundEngine) (Object) this).play(sound);
+		}
+	}
+
+	@Inject(method = "stop(Lnet/minecraft/client/resources/sounds/SoundInstance;)V", at = @At("HEAD"))
+	private void earshot$cancel(SoundInstance sound, CallbackInfo ci) {
+		io.github.cumsauce.earshot.audio.Propagation.cancel(sound);
+	}
+
+	@Inject(method = {"stopAll", "destroy"}, at = @At("HEAD"))
+	private void earshot$forgetHeld(CallbackInfo ci) {
+		io.github.cumsauce.earshot.audio.Propagation.clear();
 	}
 
 	@Inject(method = "tick", at = @At("TAIL"))
