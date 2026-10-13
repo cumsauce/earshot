@@ -109,10 +109,18 @@ public final class SoundShaper {
 	private volatile boolean earlyReflections;
 	/** Whether the game's sounds fall off as 1/distance rather than linearly. */
 	private volatile boolean realisticFalloff;
-	/** Realistic falloff: full volume within this many blocks, then 1/distance. */
-	private static final float REFERENCE_DISTANCE = 2;
-	/** And it fades to silence over the last quarter of the game's range, where the game would stop the sound. */
-	private static final float FADE_SHARE = 0.25f;
+	/**
+	 * Realistic falloff: full volume within this many blocks, then 1/distance, 6 dB quieter each doubling, as in open
+	 * air (air absorption and occlusion take more on top).
+	 */
+	private static final float REFERENCE_DISTANCE = 3;
+	/**
+	 * Sounds carry this many times the game's range (16 blocks for most), as real ones do; in a world this game hosts,
+	 * the server sends them that far too ({@code SoundEventMixin}).
+	 */
+	public static final float REACH = 4;
+	/** And fade to silence over the last 15 % of that, rather than stopping dead. */
+	private static final float FADE_SHARE = 0.15f;
 	/** The listener's velocity, estimated on the client thread. */
 	private final SourceState.Motion listenerMotion = new SourceState.Motion();
 
@@ -458,9 +466,9 @@ public final class SoundShaper {
 					realistic ? AL11.AL_INVERSE_DISTANCE_CLAMPED : AL11.AL_LINEAR_DISTANCE);
 			AL10.alSourcef(source, AL10.AL_REFERENCE_DISTANCE, realistic ? REFERENCE_DISTANCE : 0);
 			AL10.alSourcef(source, AL10.AL_ROLLOFF_FACTOR, 1);
-			AL10.alSourcef(source, AL10.AL_MAX_DISTANCE, range);
+			AL10.alSourcef(source, AL10.AL_MAX_DISTANCE, realistic ? range * REACH : range);
 		}
-		return realistic ? fade(range, distance) : 1;
+		return realistic ? fade(range * REACH, distance) : 1;
 	}
 
 	/** 1 until the last {@value #FADE_SHARE} of {@code range}, then down to 0 at it. */

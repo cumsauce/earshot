@@ -32,7 +32,7 @@ import java.util.Locale;
 public record EarshotConfig(Preset preset, boolean occlusion, boolean pathing, Reverb reverb, boolean airAbsorption,
 		boolean underwater, boolean doppler, boolean voice, String hrtf, boolean ownVoice, boolean realisticFalloff) {
 	public static final EarshotConfig DEFAULT = new EarshotConfig(Preset.AUTO, true, true, Reverb.AUTO, true, true, true,
-			true, "", false, false);
+			true, "", false, true);
 
 	/** How much the engine traces. */
 	public enum Preset {
@@ -162,7 +162,8 @@ public record EarshotConfig(Preset preset, boolean occlusion, boolean pathing, R
 				flag(json, "voice", d.voice),
 				text(json, "hrtf", d.hrtf),
 				flag(json, "own_voice", d.ownVoice),
-				flag(json, "realistic_falloff", d.realisticFalloff));
+				// A new key: settings saved before falloff carried far get it on.
+				flag(json, "realistic_distance", d.realisticFalloff));
 	}
 
 	JsonObject toJson() {
@@ -177,7 +178,7 @@ public record EarshotConfig(Preset preset, boolean occlusion, boolean pathing, R
 		json.addProperty("voice", voice);
 		json.addProperty("hrtf", hrtf);
 		json.addProperty("own_voice", ownVoice);
-		json.addProperty("realistic_falloff", realisticFalloff);
+		json.addProperty("realistic_distance", realisticFalloff);
 		return json;
 	}
 

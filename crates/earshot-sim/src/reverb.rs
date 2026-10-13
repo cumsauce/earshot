@@ -8,7 +8,13 @@ pub const SPEED_OF_SOUND: f64 = 343.0;
 const SIXTY_DB: f64 = 13.815_510_557_964_274;
 /// The shortest and longest decays reported, in seconds (EAX reverb's range).
 const MIN_DECAY: f64 = 0.1;
-const MAX_DECAY: f64 = 20.0;
+/// About a cathedral's: past it a space is heard as echoes, not a longer
+/// tail.
+const MAX_DECAY: f64 = 8.0;
+/// The air's own absorption of energy, per metre (Np/m), per band: about 1,
+/// 5 and 25 dB a kilometre at 250 Hz, 1 kHz and 4 kHz (ISO 9613-1, 20 °C,
+/// 50 % humidity). In a big space it shortens the highs' decay.
+const AIR: [f64; BANDS] = [0.000_25, 0.001_15, 0.005_8];
 
 /// What a listener's surroundings do to sound, from a path trace: the input
 /// to the reverb (docs/PLAN.md, M3).
@@ -176,9 +182,13 @@ impl Tally {
             return (Room::OPEN_AIR, self.early);
         }
         let mean_free_path = self.free_path / f64::from(self.hits);
+        let mut band = 0;
         let decay = self.absorbed.map(|a| {
             let mean = (a / f64::from(self.events)).clamp(1e-4, 1.0 - 1e-9);
-            let t60 = SIXTY_DB * mean_free_path / (SPEED_OF_SOUND * -(1.0 - mean).ln());
+            // Eyring's, with the air's absorption over each free path.
+            let loss = -(1.0 - mean).ln() + 4.0 * AIR[band] * mean_free_path;
+            band += 1;
+            let t60 = SIXTY_DB * mean_free_path / (SPEED_OF_SOUND * loss);
             t60.clamp(MIN_DECAY, MAX_DECAY) as f32
         });
         let room = Room {
@@ -217,19 +227,26 @@ mod tests {
         world
     }
 
-    /// Eyring's decay for a box of side `size` with absorption `a`.
-    fn eyring(size: f64, a: f64) -> f64 {
+    /// Eyring's decay for a box of side `size` with absorption `a`, and the
+    /// air's `air` (Np/m) over its mean free path 4V/S.
+    fn eyring(size: f64, a: f64, air: f64) -> f64 {
         let (volume, surface) = (size.powi(3), 6.0 * size * size);
-        SIXTY_DB * 4.0 * volume / (SPEED_OF_SOUND * surface * -(1.0 - a).ln())
+        let path = 4.0 * volume / surface;
+        SIXTY_DB * path / (SPEED_OF_SOUND * (-(1.0 - a).ln() + 4.0 * air * path))
     }
 
     #[test]
+    #[allow(clippy::needless_range_loop)]
     fn shoebox_decay_matches_eyring() {
         for material in [Material::Wood, Material::Cloth, Material::Soil] {
             let world = closed_box(material, 12);
             let room = measure(&world, Vec3::new(6.0, 6.0, 6.0), 2048, 24, 64.0, 1);
             for band in 0..BANDS {
-                let expected = eyring(12.0, f64::from(material.acoustics().absorption[band]));
+                let expected = eyring(
+                    12.0,
+                    f64::from(material.acoustics().absorption[band]),
+                    AIR[band],
+                );
                 let measured = f64::from(room.decay[band]);
                 let error = (measured - expected).abs() / expected;
                 assert!(

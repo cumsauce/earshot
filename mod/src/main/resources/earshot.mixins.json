@@ -6,7 +6,8 @@
 		"ChannelMixin",
 		"ClientLevelMixin",
 		"LibraryMixin",
-		"SoundEngineMixin"
+		"SoundEngineMixin",
+		"SoundEventMixin"
 	],
 	"injectors": {
 		"defaultRequire": 1

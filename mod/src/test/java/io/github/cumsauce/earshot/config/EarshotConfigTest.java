@@ -3,6 +3,7 @@ package io.github.cumsauce.earshot.config;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.google.gson.JsonParser;
 import java.nio.file.Files;
@@ -22,7 +23,7 @@ class EarshotConfigTest {
 		assertEquals(EarshotConfig.DEFAULT.occlusion(), config.occlusion());
 		assertEquals(EarshotConfig.DEFAULT.hrtf(), config.hrtf());
 		assertFalse(config.ownVoice(), "own voice is off unless asked for");
-		assertFalse(config.realisticFalloff(), "the game's falloff unless asked for");
+		assertTrue(config.realisticFalloff(), "realistic falloff unless turned off");
 	}
 
 	@Test
