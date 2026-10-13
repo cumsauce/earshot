@@ -53,10 +53,11 @@ public final class SoundShaper {
 	/** Underwater, everything sounds like this, low to high. */
 	private static final float[] UNDERWATER = {0.7f, 0.2f, 0.05f};
 	/**
-	 * How fast the reverb send falls with distance, against the direct sound's 1: far sounds are more reverberant
-	 * than near ones, which is how the ear judges distance.
+	 * How fast the reverb send falls with distance, against the direct sound's 1: not at all. A room's diffuse field
+	 * is the same everywhere in it, however far the sound is, while the direct sound falls away; so far sounds are more
+	 * reverberant than near ones, which is how the ear judges distance.
 	 */
-	private static final float ROOM_ROLLOFF = 0.5f;
+	private static final float ROOM_ROLLOFF = 0f;
 	/** The EAX reverb parameters in the order the native room gives them. */
 	static final int[] EAX_PARAMETERS = {EXTEfx.AL_EAXREVERB_DENSITY, EXTEfx.AL_EAXREVERB_DIFFUSION,
 			EXTEfx.AL_EAXREVERB_GAIN, EXTEfx.AL_EAXREVERB_GAINHF, EXTEfx.AL_EAXREVERB_GAINLF,
