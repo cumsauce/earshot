@@ -8,6 +8,9 @@ const REACH: i32 = 16;
 /// A leg of a reflection's way must let at least this much of the mid band
 /// through to count.
 const CLEAR: f32 = 0.5;
+/// Reflections sooner than this after the direct sound, seconds, fuse with it
+/// and are left to the room's reverb.
+const FUSE: f32 = 0.005;
 /// Steps a point this far off a wall face, to test the block either side.
 const NUDGE: f64 = 0.01;
 
@@ -46,7 +49,11 @@ impl Early {
 /// `(1 - absorption) * (1 - scattering)`, times the inverse-square loss of
 /// the longer way against the direct one.
 pub fn early_reflections(world: &World, listener: Vec3, source: Vec3) -> Early {
-    let taps = early_taps(world, listener, source);
+    let mut taps = early_taps(world, listener, source);
+    // One copy of the sound a millisecond or two behind it (the ground under a
+    // sound and its listener) only combs it, as a single delay line; the ear
+    // fuses it with the direct sound, and the room's reverb has it.
+    taps.retain(|t| t.delay >= FUSE);
     if taps.is_empty() {
         return Early::NONE;
     }
@@ -241,23 +248,26 @@ mod tests {
     #[test]
     fn a_floor_gives_one_reflection_from_below_a_little_later() {
         let world = floor(Material::Rock);
-        let (listener, source) = (Vec3::new(0.5, 1.5, 0.5), Vec3::new(8.5, 1.5, 0.5));
+        let (listener, source) = (Vec3::new(0.5, 5.5, 0.5), Vec3::new(8.5, 5.5, 0.5));
         let early = early_reflections(&world, listener, source);
         assert_eq!(early.count, 1, "{early:?}");
-        // Image at y = -1.5: the way is sqrt(8² + 3²) = 8.54 against 8.
-        let expected = ((8.0f64.powi(2) + 9.0).sqrt() - 8.0) / SPEED_OF_SOUND;
+        // Image at y = -5.5: the way is sqrt(8² + 11²) = 13.6 against 8.
+        let expected = ((8.0f64.powi(2) + 121.0).sqrt() - 8.0) / SPEED_OF_SOUND;
         assert!(
             (f64::from(early.delay) - expected).abs() < 1e-4,
             "{early:?}"
         );
         assert!(early.direction.y < -0.1, "from below: {early:?}");
-        // Rough rock scatters 60 % of it: what stays specular is about a third.
-        assert!(early.energy > 0.25 && early.energy < 1.0, "{early:?}");
+        // Rough rock scatters 60 % of it, and the longer way loses some more.
+        assert!(early.energy > 0.08 && early.energy < 0.4, "{early:?}");
+        // Close above the ground, it comes too soon to be told apart.
+        let low = early_reflections(&world, Vec3::new(0.5, 1.5, 0.5), Vec3::new(8.5, 1.5, 0.5));
+        assert_eq!(low, Early::NONE);
     }
 
     #[test]
     fn soft_walls_reflect_less_and_open_air_not_at_all() {
-        let (listener, source) = (Vec3::new(0.5, 1.5, 0.5), Vec3::new(8.5, 1.5, 0.5));
+        let (listener, source) = (Vec3::new(0.5, 5.5, 0.5), Vec3::new(8.5, 5.5, 0.5));
         let rock = early_reflections(&floor(Material::Rock), listener, source);
         let cloth = early_reflections(&floor(Material::Cloth), listener, source);
         assert!(cloth.energy < 0.7 * rock.energy, "{cloth:?} vs {rock:?}");
