@@ -45,7 +45,7 @@ import net.minecraft.world.phys.Vec3;
  * <li>the world mirror copies a superflat world, follows block changes, and a wall built into it muffles;
  * <li>a playing sound is muffled in a closed box, comes round through a doorway, and is clear in the open (M2);
  * at High quality, shut in the box it gets the box's own reverb, and in the open it doesn't (M5); on Ultra it gets
- * early reflections of its own off the ground (M6);
+ * early reflections of its own off a wall beside it (M6);
  * <li>Yak VC's voice, through Earshot's voice sink, is shaped the same way and played as it comes (M4);
  * <li>the reverb is nearly dry on open ground and rings in a stone hall (M3);
  * <li>with the Off preset, Earshot leaves sounds as the game plays them (M5);
@@ -155,15 +155,17 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 			singleplayer.getServer().runCommand("fill 6 -61 -3 11 -55 4 air");
 			awaitSound(context, shaper, inside, s -> s.gains()[0] > 0.95f && s.heardFrom().distanceTo(inside) < 0.3
 					&& !s.elsewhere(), "in the open");
-			// On Ultra, the loudest sounds get early reflections of their own: here, off the ground (put back where
-			// the box stood).
+			// On Ultra, the loudest sounds get early reflections of their own: here, off a wall beside it, 3.5 blocks
+			// away (the ground's, a couple of ms behind the sound, fuse with it and are left to the reverb).
 			singleplayer.getServer().runCommand("fill 6 -61 -3 11 -61 4 grass_block");
+			singleplayer.getServer().runCommand("fill -2 -60 4 11 -55 4 stone");
 			context.runOnClient(mc -> EarshotClient.apply(settings.withPreset(EarshotConfig.Preset.ULTRA)));
 			// With convolution (asked for; Auto takes EAX), the loudest gets a whole reverb of its own instead, its
 			// early reflections in it.
-			awaitSound(context, shaper, inside, s -> s.early() || s.ownReverb(), "on Ultra, off the ground");
+			awaitSound(context, shaper, inside, s -> s.early() || s.ownReverb(), "on Ultra, off a wall");
 			context.runOnClient(mc -> EarshotClient.apply(settings));
 			awaitSound(context, shaper, inside, s -> !s.early() && !s.ownReverb(), "back off Ultra");
+			singleplayer.getServer().runCommand("fill -2 -60 4 11 -55 4 air");
 			context.runOnClient(mc -> mc.getSoundManager().stop());
 
 			// M4: a voice handed to Earshot's voice sink, as Yak VC would, is shaped like any other sound: muffled in
