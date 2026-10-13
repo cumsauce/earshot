@@ -30,6 +30,11 @@ const ROOM_TIME_CONSTANT: f32 = 0.46;
 /// never below this many.
 const MIN_RAY_SCALE: f32 = 1.0 / 16.0;
 const MIN_ROOM_RAYS: u32 = 64;
+/// Once the listener has stayed within this many blocks, with the world
+/// unchanged, for [`SETTLED`] measurements in a row, the room has converged
+/// on what's there: it isn't traced again until something moves or changes.
+const STILL: f64 = 0.1;
+const SETTLED: u32 = 16;
 
 /// The acoustics engine: the mirrored world, the listener, and a worker
 /// thread that keeps the pathing field around the listener current. Every
@@ -90,6 +95,22 @@ impl Engine {
         );
         self.shared.world_version.fetch_add(1, Ordering::Release);
         result
+    }
+
+    /// Changes the world if `change` says it did: the field and the room are
+    /// only measured again for a real change.
+    pub fn world_change(&self, change: impl FnOnce(&mut World) -> bool) -> bool {
+        let changed = change(
+            &mut self
+                .shared
+                .world
+                .write()
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+        if changed {
+            self.shared.world_version.fetch_add(1, Ordering::Release);
+        }
+        changed
     }
 
     /// Reads the world.
@@ -368,6 +389,10 @@ struct RoomTrace {
     scale: f32,
     /// The measurement's share of one core, smoothed.
     cost: Option<f32>,
+    /// Where the last measurement was made, and of which world.
+    last: Option<(Vec3, u64)>,
+    /// Measurements in a row made there, of that world.
+    still: u32,
 }
 
 impl Default for RoomTrace {
@@ -377,6 +402,8 @@ impl Default for RoomTrace {
             seed: 0,
             scale: 1.0,
             cost: None,
+            last: None,
+            still: 0,
         }
     }
 }
@@ -390,6 +417,24 @@ impl RoomTrace {
     /// towards it, then fits the next measurement's rays to the budget.
     fn measure(&mut self, shared: &Shared, listener: Vec3, quality: Quality) {
         let start = Instant::now();
+        let version = shared.world_version.load(Ordering::Acquire);
+        let same = self
+            .last
+            .is_some_and(|(at, world)| world == version && (at - listener).length() < STILL);
+        self.still = if same { self.still + 1 } else { 0 };
+        if !same {
+            self.last = Some((listener, version));
+        }
+        if self.still >= SETTLED {
+            // Settled: nothing new to hear, and nothing spent.
+            self.at = Some(start);
+            shared
+                .stats
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .room_cost = 0.0;
+            return;
+        }
         let every = match self.at {
             Some(at) => start.duration_since(at).max(quality.room_every),
             None => quality.room_every,
@@ -434,6 +479,8 @@ impl RoomTrace {
 
     /// No room is measured at this quality: there is none, and no reverb.
     fn forget(&mut self, shared: &Shared) {
+        self.last = None;
+        self.still = 0;
         if self.at.take().is_none() {
             return;
         }

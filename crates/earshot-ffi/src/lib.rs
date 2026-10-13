@@ -99,8 +99,8 @@ pub struct EarshotEngine {
 }
 
 impl EarshotEngine {
-    fn world_mut(&self, change: impl FnOnce(&mut World)) {
-        self.engine.world_mut(change);
+    fn world_mut(&self, change: impl FnOnce(&mut World) -> bool) {
+        self.engine.world_change(change);
     }
 
     fn world<T>(&self, read: impl FnOnce(&World) -> T) -> T {
