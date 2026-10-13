@@ -40,6 +40,16 @@ final class SpaceReverb {
 	private final MemorySegment engine;
 	private final @Nullable Space[] spaces = new Space[SPACES];
 	private long seed;
+	/**
+	 * Measures spaces off the sound thread, which also feeds the game's streams: a trace takes about a millisecond.
+	 * Results are applied on the sound thread at the end of the next update.
+	 */
+	private final java.util.concurrent.ExecutorService measurer = java.util.concurrent.Executors
+			.newSingleThreadExecutor(task -> {
+				Thread thread = new Thread(task, "earshot-space");
+				thread.setDaemon(true);
+				return thread;
+			});
 
 	/** One space and its reverb. */
 	private static final class Space {
@@ -49,6 +59,11 @@ final class SpaceReverb {
 		long measuredAt;
 		long usedAt;
 		final double[] room = new double[NativeBridge.ROOM_DOUBLES];
+		/** A measurement made off the sound thread, not yet applied; and whether one is under way. */
+		volatile double @Nullable [] measured;
+		volatile boolean measuring;
+		/** Whether its reverb has been set from a measurement yet: until then its slot is silent. */
+		boolean ready;
 		/** The sums of where this update's sounds are and where they are heard from, and how many there are. */
 		Vec3 positions = Vec3.ZERO;
 		Vec3 heardFrom = Vec3.ZERO;
@@ -70,7 +85,7 @@ final class SpaceReverb {
 	List<double[]> rooms() {
 		List<double[]> rooms = new ArrayList<>();
 		for (Space space : spaces) {
-			if (space != null) rooms.add(space.room.clone());
+			if (space != null && space.ready) rooms.add(space.room.clone());
 		}
 		return rooms;
 	}
@@ -126,6 +141,7 @@ final class SpaceReverb {
 				spaces[i] = null;
 				continue;
 			}
+			apply(space);
 			if (space.sounds == 0) continue;
 			if (now - space.measuredAt > REMEASURE_NANOS) {
 				space.centre = space.positions.scale(1.0 / space.sounds);
@@ -147,6 +163,8 @@ final class SpaceReverb {
 			int effect = EXTEfx.alGenEffects();
 			EXTEfx.alEffecti(effect, EXTEfx.AL_EFFECT_TYPE, EXTEfx.AL_EFFECT_EAXREVERB);
 			int slot = EXTEfx.alGenAuxiliaryEffectSlots();
+			// Silent until its room is measured, rather than a generic reverb for a moment.
+			EXTEfx.alAuxiliaryEffectSlotf(slot, EXTEfx.AL_EFFECTSLOT_GAIN, 0f);
 			Space space = new Space(effect, slot, position);
 			measure(space, now);
 			spaces[i] = space;
@@ -155,14 +173,40 @@ final class SpaceReverb {
 		return null;
 	}
 
+	/** Starts measuring {@code space} again, off the sound thread, unless it's being measured already. */
 	private void measure(Space space, long now) {
-		bridge.roomAt(engine, new double[] {space.centre.x, space.centre.y, space.centre.z}, RAYS, BOUNCES, ++seed,
-				space.room);
 		space.measuredAt = now;
+		if (space.measuring) return;
+		space.measuring = true;
+		double[] at = {space.centre.x, space.centre.y, space.centre.z};
+		long forSeed = ++seed;
+		measurer.execute(() -> {
+			try {
+				double[] room = new double[NativeBridge.ROOM_DOUBLES];
+				bridge.roomAt(engine, at, RAYS, BOUNCES, forSeed, room);
+				space.measured = room;
+			} catch (RuntimeException e) {
+				io.github.cumsauce.earshot.EarshotClient.LOGGER.warn("Measuring a space failed", e);
+			} finally {
+				space.measuring = false;
+			}
+		});
+	}
+
+	/** Sets a space's reverb from its latest measurement, if a new one has come in. On the sound thread. */
+	private static void apply(Space space) {
+		double[] room = space.measured;
+		if (room == null) return;
+		space.measured = null;
+		System.arraycopy(room, 0, space.room, 0, room.length);
 		for (int i = 0; i < SoundShaper.EAX_PARAMETERS.length; i++) {
-			EXTEfx.alEffectf(space.effect, SoundShaper.EAX_PARAMETERS[i], (float) space.room[NativeBridge.EAX_FIRST + i]);
+			EXTEfx.alEffectf(space.effect, SoundShaper.EAX_PARAMETERS[i], (float) room[NativeBridge.EAX_FIRST + i]);
 		}
 		EXTEfx.alAuxiliaryEffectSloti(space.slot, EXTEfx.AL_EFFECTSLOT_EFFECT, space.effect);
+		if (!space.ready) {
+			EXTEfx.alAuxiliaryEffectSlotf(space.slot, EXTEfx.AL_EFFECTSLOT_GAIN, 1f);
+			space.ready = true;
+		}
 	}
 
 	private static void free(Space space) {
