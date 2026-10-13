@@ -198,3 +198,22 @@ jobs:
           flags=(--generate-notes)
           if [[ $version == *-* ]]; then flags+=(--prerelease); fi
           gh release create "$GITHUB_REF_NAME" "${flags[@]}" "dist/earshot-$version.jar"
+      # The same jar on Modrinth, when the repository has a MODRINTH_TOKEN secret (a Modrinth
+      # personal access token with the "Create versions" scope).
+      - name: Modrinth release
+        env:
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+        if: env.MODRINTH_TOKEN != ''
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          case $version in *alpha*) type=alpha;; *beta*) type=beta;; *) type=release;; esac
+          jq -n --arg v "$version" --arg t "$type" '{
+            name: ("Earshot " + $v), version_number: $v, version_type: $t,
+            project_id: "GnuooDgr", loaders: ["fabric"], game_versions: ["26.3"],
+            featured: false, file_parts: ["jar"], primary_file: "jar",
+            changelog: ("See https://github.com/" + env.GITHUB_REPOSITORY + "/releases/tag/" + env.GITHUB_REF_NAME),
+            dependencies: [{project_id: "P7dR8mSH", dependency_type: "required"}]
+          }' > data.json
+          curl --fail-with-body -sS -X POST https://api.modrinth.com/v2/version \
+            -H "Authorization: $MODRINTH_TOKEN" -H "User-Agent: cumsauce/earshot CI" \
+            -F "data=<data.json;type=application/json" -F "jar=@dist/earshot-$version.jar"
