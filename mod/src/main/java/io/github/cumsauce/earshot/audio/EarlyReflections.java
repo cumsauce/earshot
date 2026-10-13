@@ -63,7 +63,7 @@ final class EarlyReflections {
 			float[] pan = {(float) from.dot(right), (float) from.dot(up), (float) from.dot(forward)};
 			int effect = effects[i];
 			EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_REFLECTIONS_GAIN,
-					(float) Math.clamp(Math.sqrt(early[at]), 0, EXTEfx.AL_EAXREVERB_MAX_REFLECTIONS_GAIN));
+					(float) Math.clamp(Math.sqrt(early[at]), 0, 1));
 			EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_REFLECTIONS_DELAY,
 					(float) Math.clamp(early[at + 1], 0, EXTEfx.AL_EAXREVERB_MAX_REFLECTIONS_DELAY));
 			EXTEfx.alEffectfv(effect, EXTEfx.AL_EAXREVERB_REFLECTIONS_PAN, pan);
@@ -85,11 +85,12 @@ final class EarlyReflections {
 		}
 	}
 
-	/** An EAX reverb with reflections only: discrete, no late reverb. */
+	/** An EAX reverb with reflections only, no late reverb. Never louder than the sound itself. */
 	private void make(int i) {
 		int effect = EXTEfx.alGenEffects();
 		EXTEfx.alEffecti(effect, EXTEfx.AL_EFFECT_TYPE, EXTEfx.AL_EFFECT_EAXREVERB);
-		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_DIFFUSION, 0f);
+		// Diffuse: a real wall's echo is smeared a little, and discrete taps would comb.
+		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_DIFFUSION, 1f);
 		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_GAIN, 1f);
 		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_DECAY_TIME, EXTEfx.AL_EAXREVERB_MIN_DECAY_TIME);
 		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_LATE_REVERB_GAIN, 0f);
