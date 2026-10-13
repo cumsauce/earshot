@@ -32,6 +32,11 @@ pub struct Room {
     pub first_reflection: f64,
     /// Mean scattering of the surfaces hit.
     pub scattering: f32,
+    /// The volume of the space, m³, from how far the rays go before they
+    /// first hit something, V = (4π/3)·mean(r³), counting a ray that escapes
+    /// as reaching the trace's reach: huge out in the open, however near the
+    /// ground is. 0 when unknown.
+    pub volume: f64,
 }
 
 impl Room {
@@ -42,6 +47,7 @@ impl Room {
         enclosure: 0.0,
         first_reflection: 0.0,
         scattering: 0.0,
+        volume: 1e9,
     };
 }
 
@@ -129,17 +135,22 @@ struct Tally {
     firsts: u32,
     free_path: f64,
     first: f64,
+    /// Sum of the first legs' lengths cubed, escapes at full reach.
+    cubes: f64,
     scattering: f64,
 }
 
 impl Tally {
     fn add(&mut self, segment: &Segment, rays: u32) {
         self.events += 1;
+        let length = (segment.to - segment.from).length();
+        if segment.bounce == 0 {
+            self.cubes += length.powi(3);
+        }
         if segment.escaped {
             self.absorbed.iter_mut().for_each(|a| *a += 1.0);
             return;
         }
-        let length = (segment.to - segment.from).length();
         self.free_path += length;
         self.hits += 1;
         let acoustics = segment.material.acoustics();
@@ -173,6 +184,7 @@ impl Tally {
         self.firsts += other.firsts;
         self.free_path += other.free_path;
         self.first += other.first;
+        self.cubes += other.cubes;
         self.scattering += other.scattering;
         self
     }
@@ -201,6 +213,7 @@ impl Tally {
                 0.0
             },
             scattering: (self.scattering / f64::from(self.hits)) as f32,
+            volume: 4.0 / 3.0 * std::f64::consts::PI * self.cubes / f64::from(rays.max(1)),
         };
         (room, self.early)
     }
