@@ -264,7 +264,8 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 			double[] beyondGlass = {0.5, -59.5, 14.5};
 			context.waitFor(mc -> bridge.transmission(engine, LISTENER, beyondGlass)[0] < 0.5f, 5 * 20);
 			// Glass rings, but its panes soak up the lows: the lows die first.
-			awaitRoom(context, shaper, r -> r[4] > 0.98 && r[0] < r[1] && r[1] < r[2], "in glass");
+			// Glass keeps its mids longer than its lows; in a room this big the air, not the glass, takes the highs.
+			awaitRoom(context, shaper, r -> r[4] > 0.98 && r[0] < r[1] && r[2] < r[1], "in glass");
 			context.runOnClient(mc -> mc.player.connection.sendCommand("earshot rays 256 6"));
 			context.runOnClient(mc -> mc.player.connection.sendCommand("earshot overlay"));
 			context.waitTicks(2);
