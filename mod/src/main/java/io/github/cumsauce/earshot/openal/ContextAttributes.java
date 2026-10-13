@@ -38,13 +38,18 @@ public final class ContextAttributes {
 	public static IntBuffer withEarshotAttributes(MemoryStack stack, IntBuffer attributes, long device, boolean hrtf,
 			String hrtfName) {
 		int hrtfId = hrtf ? hrtfIndex(device, hrtfName) : -1;
-		IntBuffer out = stack.mallocInt(attributes.remaining() + 6);
+		IntBuffer out = stack.mallocInt(attributes.remaining() + 8);
 		for (int i = attributes.position(); i + 1 < attributes.limit() && attributes.get(i) != 0; i += 2) {
 			int key = attributes.get(i);
-			if (key == EXTEfx.ALC_MAX_AUXILIARY_SENDS || key == ALC11.ALC_MONO_SOURCES) continue;
+			if (key == EXTEfx.ALC_MAX_AUXILIARY_SENDS || key == ALC11.ALC_MONO_SOURCES
+					|| key == org.lwjgl.openal.SOFTOutputLimiter.ALC_OUTPUT_LIMITER_SOFT) {
+				continue;
+			}
 			if (key == SOFTHRTF.ALC_HRTF_ID_SOFT && hrtfId >= 0) continue;
 			out.put(key).put(attributes.get(i + 1));
 		}
+		// OpenAL Soft's output limiter: many sounds and their reverbs together never clip the speakers.
+		out.put(org.lwjgl.openal.SOFTOutputLimiter.ALC_OUTPUT_LIMITER_SOFT).put(ALC10.ALC_TRUE);
 		out.put(EXTEfx.ALC_MAX_AUXILIARY_SENDS).put(SENDS).put(ALC11.ALC_MONO_SOURCES).put(GAME_SOURCES + VOICE_SOURCES);
 		if (hrtfId >= 0) out.put(SOFTHRTF.ALC_HRTF_ID_SOFT).put(hrtfId);
 		return out.put(0).flip();
