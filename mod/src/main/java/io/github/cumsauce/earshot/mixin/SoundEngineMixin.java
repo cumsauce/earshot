@@ -16,7 +16,10 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-/** Shapes the playing sounds once a tick, after the game has updated them, and holds thunder back by distance. */
+/**
+ * Shapes the playing sounds once a tick, after the game has updated them, and holds sounds back by how long they take
+ * to arrive: thunder always, other one-shots with realistic distance.
+ */
 @Mixin(SoundEngine.class)
 abstract class SoundEngineMixin {
 	@Shadow
@@ -31,10 +34,13 @@ abstract class SoundEngineMixin {
 
 	@Inject(method = "play", at = @At("HEAD"), cancellable = true)
 	private void earshot$thunderLater(SoundInstance sound, CallbackInfoReturnable<SoundEngine.PlayResult> cir) {
-		if (!EarshotClient.shaping() || !Thunder.isThunder(sound)) return;
+		if (!EarshotClient.shaping()) return;
+		boolean thunder = Thunder.isThunder(sound);
+		if (!thunder && !EarshotClient.config().realisticFalloff()) return;
 		Camera camera = Minecraft.getInstance().gameRenderer.mainCamera();
 		if (!camera.isInitialized()) return;
-		int ticks = Thunder.holdTicks(sound, camera.position());
+		int ticks = thunder ? Thunder.holdTicks(sound, camera.position())
+				: io.github.cumsauce.earshot.audio.Propagation.holdTicks(sound, camera.position());
 		if (ticks <= 0) return;
 		playDelayed(sound, ticks);
 		cir.setReturnValue(SoundEngine.PlayResult.NOT_STARTED);

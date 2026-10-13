@@ -366,7 +366,8 @@ public final class SoundShaper {
 			boolean elsewhere = spacesOn && straight > 3
 					&& (heard[at + 6] > straight + SpaceReverb.ROUND || heard[at + 1] < SpaceReverb.WALLED);
 			int spaceSlot = elsewhere ? spaces.slotFor(position, heardFrom, now) : 0;
-			if (target.voice() == null) {
+			// A sound that doesn't fade with distance (a placed bed) sets its own level: only walls and rooms shape it.
+			if (target.voice() == null && target.range() > 0) {
 				float fade = falloff(target.source(), state, target.range(), (float) straight);
 				for (int band = 0; band < gains.length; band++) gains[band] *= fade;
 			}

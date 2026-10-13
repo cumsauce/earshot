@@ -11,10 +11,16 @@ public interface ShapedChannel {
 	/** Where the game puts the sound, or null before it says. */
 	@Nullable Vec3 earshot$position();
 
-	/** A sound out in the world that fades with distance; music and menu sounds aren't. */
+	/**
+	 * A sound out in the world, not at the listener's head; music and menu sounds aren't. Walls and rooms shape it,
+	 * whether or not it fades with distance (a placed bed, such as Foley's water, sets its own level).
+	 */
 	boolean earshot$positional();
 
-	/** How far the game lets the sound carry, in blocks: where its linear falloff reaches silence. */
+	/**
+	 * How far the game lets the sound carry, in blocks: where its linear falloff reaches silence; 0 for a sound that
+	 * doesn't fade with distance.
+	 */
 	float earshot$range();
 
 	/** Earshot's own state for the source. */

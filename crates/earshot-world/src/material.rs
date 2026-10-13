@@ -52,26 +52,28 @@ pub struct Acoustics {
 /// material, in [`Material::ALL`] order. Absorption follows published
 /// coefficients for similar surfaces (rock and concrete, wood panelling,
 /// glass, heavy fabric, soil, snow) at about 250 Hz, 1 kHz and 4 kHz.
-/// Transmission is softer than a real metre of rock, so a wall muffles rather
-/// than silences: sound still mostly arrives through openings, which pathing
-/// finds. Tunable defaults.
+/// Transmission loss is a real wall's of that material (field values: a
+/// masonry wall some 45 dB at 1 kHz, a timber one under 30, glazing under 30,
+/// rising with frequency as the mass law has it), rather than a solid metre's,
+/// which would stop nearly everything: a sound behind a wall is faint and dull,
+/// and mostly comes through the doorway, which pathing finds.
 const TABLE: [(&str, Bands, f32, Bands); Material::ALL.len()] = [
     ("air", [0.0, 0.0, 0.0], 0.0, [0.0, 0.0, 0.0]),
     // Scattering is at block scale: worked and natural stone (cobble, cliffs, stepped terrain) is rough and
     // breaks a reflection up, so its echoes come back diffuse rather than mirror-clean.
     // Natural and worked stone is rough and porous, not sealed concrete: about rough rock and unglazed brick's
     // coefficients, so a bare stone room rings for a few seconds, as caves do, not ten.
-    ("rock", [0.05, 0.07, 0.10], 0.6, [18.0, 25.0, 35.0]),
-    ("wood", [0.15, 0.10, 0.08], 0.35, [10.0, 15.0, 22.0]),
-    ("glass", [0.18, 0.06, 0.04], 0.05, [6.0, 12.0, 20.0]),
+    ("rock", [0.05, 0.07, 0.10], 0.6, [35.0, 45.0, 55.0]),
+    ("wood", [0.15, 0.10, 0.08], 0.35, [20.0, 28.0, 35.0]),
+    ("glass", [0.18, 0.06, 0.04], 0.05, [22.0, 28.0, 30.0]),
     ("cloth", [0.15, 0.55, 0.70], 0.5, [4.0, 8.0, 15.0]),
     ("leaves", [0.10, 0.30, 0.50], 0.8, [1.0, 2.0, 4.0]),
-    ("soil", [0.15, 0.40, 0.55], 0.65, [15.0, 22.0, 30.0]),
-    ("sand", [0.20, 0.45, 0.60], 0.6, [12.0, 18.0, 26.0]),
-    ("metal", [0.08, 0.05, 0.04], 0.1, [20.0, 28.0, 36.0]),
+    ("soil", [0.15, 0.40, 0.55], 0.65, [30.0, 40.0, 50.0]),
+    ("sand", [0.20, 0.45, 0.60], 0.6, [25.0, 35.0, 45.0]),
+    ("metal", [0.08, 0.05, 0.04], 0.1, [30.0, 40.0, 50.0]),
     ("water", [0.01, 0.01, 0.02], 0.05, [3.0, 5.0, 9.0]),
-    ("lava", [0.05, 0.05, 0.05], 0.1, [15.0, 20.0, 25.0]),
-    ("ice", [0.02, 0.02, 0.03], 0.05, [8.0, 14.0, 22.0]),
+    ("lava", [0.05, 0.05, 0.05], 0.1, [30.0, 40.0, 50.0]),
+    ("ice", [0.02, 0.02, 0.03], 0.05, [25.0, 35.0, 45.0]),
     ("snow", [0.45, 0.70, 0.85], 0.6, [6.0, 12.0, 20.0]),
 ];
 
@@ -150,7 +152,7 @@ mod tests {
         }
         // 18 dB through a block of rock at low frequencies.
         let rock = Material::Rock.acoustics().transmission[0];
-        assert!((rock - 0.015_85).abs() < 1e-4, "{rock}");
+        assert!((rock - 0.000_316).abs() < 1e-5, "{rock}");
     }
 
     #[test]
