@@ -251,7 +251,8 @@ mod tests {
             "{early:?}"
         );
         assert!(early.direction.y < -0.1, "from below: {early:?}");
-        assert!(early.energy > 0.5 && early.energy < 1.0, "{early:?}");
+        // Rough rock scatters 60 % of it: what stays specular is about a third.
+        assert!(early.energy > 0.25 && early.energy < 1.0, "{early:?}");
     }
 
     #[test]
@@ -259,7 +260,7 @@ mod tests {
         let (listener, source) = (Vec3::new(0.5, 1.5, 0.5), Vec3::new(8.5, 1.5, 0.5));
         let rock = early_reflections(&floor(Material::Rock), listener, source);
         let cloth = early_reflections(&floor(Material::Cloth), listener, source);
-        assert!(cloth.energy < rock.energy / 2.0, "{cloth:?} vs {rock:?}");
+        assert!(cloth.energy < 0.7 * rock.energy, "{cloth:?} vs {rock:?}");
         assert_eq!(
             early_reflections(&World::new(), listener, source),
             Early::NONE

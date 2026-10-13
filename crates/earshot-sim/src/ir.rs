@@ -26,7 +26,7 @@ const DIFFUSE_XYZ: f32 = 0.816;
 /// all). The diffuse-field level is right for a sound a block away, but a
 /// small reverberant room comes out at twice the input's energy, and every
 /// sound sends to the same reverb, so the convolution clipped.
-pub const MAX_ENERGY: f32 = 0.16;
+pub const MAX_ENERGY: f32 = 0.08;
 /// Fades the end in the last this many seconds, so a cut tail doesn't click.
 const FADE: f32 = 0.05;
 /// Crossovers between the low, mid and high bands, in hertz.
