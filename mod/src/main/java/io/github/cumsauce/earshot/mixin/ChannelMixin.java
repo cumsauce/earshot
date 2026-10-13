@@ -75,12 +75,12 @@ abstract class ChannelMixin implements ShapedChannel {
 
 	@Override
 	public boolean earshot$positional() {
-		return !earshot$relative && earshot$attenuated;
+		return !earshot$relative;
 	}
 
 	@Override
 	public float earshot$range() {
-		return earshot$range;
+		return earshot$attenuated ? earshot$range : 0;
 	}
 
 	@Override
