@@ -59,7 +59,9 @@ const TABLE: [(&str, Bands, f32, Bands); Material::ALL.len()] = [
     ("air", [0.0, 0.0, 0.0], 0.0, [0.0, 0.0, 0.0]),
     // Scattering is at block scale: worked and natural stone (cobble, cliffs, stepped terrain) is rough and
     // breaks a reflection up, so its echoes come back diffuse rather than mirror-clean.
-    ("rock", [0.02, 0.03, 0.05], 0.6, [18.0, 25.0, 35.0]),
+    // Natural and worked stone is rough and porous, not sealed concrete: about rough rock and unglazed brick's
+    // coefficients, so a bare stone room rings for a few seconds, as caves do, not ten.
+    ("rock", [0.05, 0.07, 0.10], 0.6, [18.0, 25.0, 35.0]),
     ("wood", [0.15, 0.10, 0.08], 0.35, [10.0, 15.0, 22.0]),
     ("glass", [0.18, 0.06, 0.04], 0.05, [6.0, 12.0, 20.0]),
     ("cloth", [0.15, 0.55, 0.70], 0.5, [4.0, 8.0, 15.0]),

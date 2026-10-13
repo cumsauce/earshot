@@ -57,7 +57,7 @@
 	"earshot.settings.own_voice": "Own Voice Echo",
 	"earshot.settings.own_voice.tooltip": "Your own voice in Yak VC echoes off the room around you: a cave answers you. Only the echo, never your voice itself. For headphones; needs a Yak VC that sends your own voice.",
 	"earshot.settings.realistic_falloff": "Realistic Falloff",
-	"earshot.settings.realistic_falloff.tooltip": "Sounds fade as they do in real air, halving every doubling of distance past two blocks, instead of the game's straight line to silence. Nearby sounds stand out more; far ones carry but stay quiet.",
+	"earshot.settings.realistic_falloff.tooltip": "Sounds fade as they do in real air, halving every doubling of distance past three blocks, and carry four times as far as the game's 16 blocks before fading out, losing their highs on the way. Far sounds stay quiet but audible. In your own worlds the game sends them that far; on a server, only what it sends.",
 	"earshot.settings.hrtf_test": "Find Your HRTF...",
 	"earshot.hrtf_test.title": "Find Your HRTF",
 	"earshot.hrtf_test.how.1": "Put on headphones and play each one.",

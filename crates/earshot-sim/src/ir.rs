@@ -47,6 +47,11 @@ pub fn impulse_response(
     seed: u64,
 ) -> Vec<f32> {
     let rate = sample_rate as f32;
+    // A response is cut at `max_seconds`: a room that rings longer has its
+    // tail steepened to be 40 dB down by then, rather than stopping loud.
+    let mut room = *room;
+    room.decay = room.decay.map(|t60| t60.min(1.5 * max_seconds));
+    let room = &room;
     // Long enough for the room's decay, and for the last echo to be heard.
     let last_echo = early
         .iter()
@@ -84,7 +89,7 @@ pub fn impulse_response(
     }
 
     // The early reflections, as taps from their directions.
-    for reflection in early {
+    for reflection in &merge(early) {
         let i = (reflection.delay * rate) as usize;
         if i >= length {
             continue;
@@ -115,6 +120,50 @@ pub fn impulse_response(
         }
     }
     out
+}
+
+/// Within this long, reflections from about the same direction are one.
+const MERGE_SECONDS: f32 = 0.001;
+
+/// The early reflections as the reflections they are, not one per ray: the
+/// rays that hit the same wall each carry a share of one reflection's
+/// energy, and arrive together. Added as taps one by one, they would sum in
+/// amplitude, not energy: at low frequencies, where they're in phase, a
+/// thousand taps from one wall gave the response some 30 dB of bass. So each
+/// reflection's share is summed by energy, per millisecond and direction
+/// (which way along the axis it mostly comes from), into one tap at their
+/// energy-weighted time, from their energy-weighted direction.
+fn merge(early: &[Reflection]) -> Vec<Reflection> {
+    let mut merged: std::collections::HashMap<(u32, u8), (f32, Vec3, f32)> =
+        std::collections::HashMap::new();
+    for r in early {
+        if !(r.energy > 0.0 && r.delay.is_finite() && r.delay >= 0.0) {
+            continue;
+        }
+        let d = r.direction;
+        let axis = [d.x.abs(), d.y.abs(), d.z.abs()];
+        let main: u8 = if axis[0] >= axis[1] && axis[0] >= axis[2] {
+            0
+        } else if axis[1] >= axis[2] {
+            1
+        } else {
+            2
+        };
+        let sign = u8::from([d.x, d.y, d.z][usize::from(main)] < 0.0);
+        let key = ((r.delay / MERGE_SECONDS) as u32, main * 2 + sign);
+        let entry = merged.entry(key).or_insert((0.0, Vec3::ZERO, 0.0));
+        entry.0 += r.energy;
+        entry.1 = entry.1 + d * f64::from(r.energy);
+        entry.2 += r.delay * r.energy;
+    }
+    merged
+        .into_iter()
+        .map(|(_, (energy, direction, delay))| Reflection {
+            direction: direction.normalized(),
+            delay: delay / energy,
+            energy,
+        })
+        .collect()
 }
 
 /// The reverberant energy relative to the direct sound at one block: the
@@ -180,6 +229,36 @@ fn low_pass(stages: &mut [f32; 2], coefficient: f32, x: f32) -> f32 {
         value = *stage;
     }
     value
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    #[test]
+    fn many_rays_off_one_wall_dont_boost_the_bass() {
+        let room = Room {
+            decay: [2.0, 2.0, 1.0],
+            mean_free_path: 6.0,
+            enclosure: 1.0,
+            first_reflection: 1.0,
+            scattering: 0.5,
+        };
+        // 4000 rays' shares of one reflection off a wall a block away.
+        let early: Vec<Reflection> = (0..4000)
+            .map(|i| Reflection {
+                direction: Vec3::new(1.0, 0.001 * (i % 7) as f64, 0.0).normalized(),
+                delay: 0.0058 + 0.000_000_1 * (i % 13) as f32,
+                energy: 0.2 / 4000.0,
+            })
+            .collect();
+        let ir = impulse_response(&room, &early, 48_000, 1.5, 1);
+        let w: Vec<f32> = ir.iter().step_by(IR_CHANNELS).copied().collect();
+        let energy: f32 = w.iter().map(|s| s * s).sum();
+        // The response's gain at 0 Hz against its overall (energy) gain.
+        let dc: f32 = w.iter().sum::<f32>().abs();
+        assert!(dc < 4.0 * energy.sqrt(), "bass {dc} vs {}", energy.sqrt());
+    }
 }
 
 #[cfg(test)]
