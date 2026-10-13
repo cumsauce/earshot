@@ -21,12 +21,6 @@ pub const IR_CHANNELS: usize = 4;
 /// The late field's directional channels against W: a diffuse field puts two
 /// thirds of W's energy (with FuMa's 1/√2 on W) in each of X, Y and Z.
 const DIFFUSE_XYZ: f32 = 0.816;
-/// The most energy a response may carry, relative to the sound sent to it:
-/// what the EAX reverb gives a shut-in room (its 0.32 gain, about -8 dB in
-/// all). The diffuse-field level is right for a sound a block away, but a
-/// small reverberant room comes out at twice the input's energy, and every
-/// sound sends to the same reverb, so the convolution clipped.
-pub const MAX_ENERGY: f32 = 0.08;
 /// Fades the end in the last this many seconds, so a cut tail doesn't click.
 const FADE: f32 = 0.05;
 /// Crossovers between the low, mid and high bands, in hertz.
@@ -103,14 +97,10 @@ pub fn impulse_response(
         out[at + 3] += a * d.y as f32;
     }
 
-    // Energy in W is half the field's (FuMa's 1/sqrt 2).
-    let energy = 2.0 * out.iter().step_by(IR_CHANNELS).map(|s| s * s).sum::<f32>();
-    if energy > MAX_ENERGY {
-        let scale = (MAX_ENERGY / energy).sqrt();
-        for sample in &mut out {
-            *sample *= scale;
-        }
-    }
+    // The response carries the room's own energy, uncapped: a hard little room
+    // is louder than the sound in it, as a bathroom is. (It was capped while
+    // the early reflections summed in amplitude and blew up the bass; see
+    // `merge`.)
 
     let fade = ((FADE * rate) as usize).min(length);
     for i in length - fade..length {
@@ -340,21 +330,20 @@ mod tests {
     }
 
     #[test]
-    fn no_response_is_louder_than_the_eax_reverb() {
-        // A small hard room is the worst: its diffuse field is twice the
-        // input's energy before the cap.
-        for (t60, mfp) in [(3.0, 5.0), (0.6, 3.0), (3.0, 20.0)] {
-            let early = [Reflection {
-                direction: Vec3::new(1.0, 0.0, 0.0),
-                delay: 0.005,
-                energy: 0.5,
-            }];
-            let ir = impulse_response(&room([t60; 3], mfp, 1.0), &early, 48_000, 1.5, 1);
+    fn the_tail_carries_the_rooms_diffuse_energy() {
+        // Short enough to fit the response whole, so none is cut off.
+        for (t60, mfp) in [(0.6, 3.0), (0.8, 8.0), (1.0, 20.0)] {
+            let r = room([t60; 3], mfp, 1.0);
+            let ir = impulse_response(&r, &[], 48_000, 1.5, 1);
+            // Energy in W is half the field's (FuMa's 1/√2).
             let energy = 2.0 * ir.iter().step_by(IR_CHANNELS).map(|s| s * s).sum::<f32>();
+            let wanted = late_energy(&r);
             assert!(
-                energy <= MAX_ENERGY * 1.01,
-                "{energy} for t60 {t60}, mfp {mfp}"
+                (energy / wanted - 1.0).abs() < 0.25,
+                "{energy} vs {wanted} for t60 {t60}, mfp {mfp}"
             );
+            // A hard little room is louder than the sound in it, but bounded.
+            assert!(energy < 4.5, "{energy}");
         }
     }
 
