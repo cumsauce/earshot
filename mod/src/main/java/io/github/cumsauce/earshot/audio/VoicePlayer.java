@@ -245,7 +245,10 @@ public final class VoicePlayer {
 			Voice voice = voices.get(stream.speaker());
 			if (voice == null) {
 				voice = start(stream.speaker());
-				if (voice == null) break;
+				// OpenAL refused for good: everything's gone back to Yak VC.
+				if (failed) return List.of();
+				// Out of sources for now: this one waits, the others carry on (stopping early would cut them off).
+				if (voice == null) continue;
 				voices.put(stream.speaker(), voice);
 			}
 			heard.add(stream.speaker());
