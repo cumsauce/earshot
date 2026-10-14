@@ -81,9 +81,10 @@ fn apply_queued(shared: &Shared, world: &mut World) -> bool {
     changed
 }
 
-/// Applies any queued changes, waiting for the lock: for the readers and the
-/// worker, never the game's thread.
-fn catch_up(shared: &Shared) {
+/// Applies any queued changes. The worker `wait`s for the lock; a reader
+/// (the sound thread) only takes it if it's free, else reads the world as it
+/// was a moment ago rather than wait out a measurement.
+fn catch_up(shared: &Shared, wait: bool) {
     if shared
         .queued
         .lock()
@@ -92,7 +93,15 @@ fn catch_up(shared: &Shared) {
     {
         return;
     }
-    let mut world = shared.world.write().unwrap_or_else(PoisonError::into_inner);
+    let mut world = if wait {
+        shared.world.write().unwrap_or_else(PoisonError::into_inner)
+    } else {
+        match shared.world.try_write() {
+            Ok(world) => world,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return,
+        }
+    };
     if apply_queued(shared, &mut world) {
         shared.world_version.fetch_add(1, Ordering::Release);
     }
@@ -174,7 +183,18 @@ impl Engine {
 
     /// Reads the world, with every change made so far.
     pub fn world<T>(&self, read: impl FnOnce(&World) -> T) -> T {
-        catch_up(&self.shared);
+        catch_up(&self.shared, true);
+        self.world_as_is(read)
+    }
+
+    /// Reads the world without waiting: changes queued while the worker is
+    /// reading it land a moment later. For the sound thread's every tick.
+    fn world_now<T>(&self, read: impl FnOnce(&World) -> T) -> T {
+        catch_up(&self.shared, false);
+        self.world_as_is(read)
+    }
+
+    fn world_as_is<T>(&self, read: impl FnOnce(&World) -> T) -> T {
         read(
             &self
                 .shared
@@ -304,7 +324,7 @@ impl Engine {
         let rays = self.quality().occlusion_rays;
         // How sound gets round corners depends on how shut in the listener is.
         let enclosure = self.room().map_or(0.0, |room| room.enclosure);
-        self.world(|world| {
+        self.world_now(|world| {
             for (source, heard) in sources.iter().zip(out) {
                 *heard = hear(world, field, listener, *source, rays, enclosure);
             }
@@ -335,7 +355,7 @@ fn worker(shared: &Shared) {
     let mut room = RoomTrace::default();
     let mut next_build = Instant::now();
     while !shared.stop.load(Ordering::Relaxed) {
-        catch_up(shared);
+        catch_up(shared, true);
         let quality = *shared
             .quality
             .read()
