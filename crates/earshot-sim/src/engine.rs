@@ -48,6 +48,8 @@ pub struct Engine {
 #[derive(Debug, Default)]
 struct Shared {
     world: RwLock<World>,
+    /// Changes made while the world was being read, applied once it isn't.
+    queued: Mutex<Vec<Change>>,
     /// Bumped on every change to the world.
     world_version: AtomicU64,
     listener: Mutex<Option<Vec3>>,
@@ -58,6 +60,42 @@ struct Shared {
     /// The early reflections from the latest measurement.
     early: RwLock<Vec<Reflection>>,
     stop: AtomicBool,
+}
+
+/// A change to the world, waiting for the lock.
+struct Change(Box<dyn FnOnce(&mut World) -> bool + Send>);
+
+impl std::fmt::Debug for Change {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Change")
+    }
+}
+
+/// Applies the queued changes to `world`, in order; whether any changed it.
+fn apply_queued(shared: &Shared, world: &mut World) -> bool {
+    let queued = std::mem::take(&mut *shared.queued.lock().unwrap_or_else(PoisonError::into_inner));
+    let mut changed = false;
+    for change in queued {
+        changed |= (change.0)(world);
+    }
+    changed
+}
+
+/// Applies any queued changes, waiting for the lock: for the readers and the
+/// worker, never the game's thread.
+fn catch_up(shared: &Shared) {
+    if shared
+        .queued
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .is_empty()
+    {
+        return;
+    }
+    let mut world = shared.world.write().unwrap_or_else(PoisonError::into_inner);
+    if apply_queued(shared, &mut world) {
+        shared.world_version.fetch_add(1, Ordering::Release);
+    }
 }
 
 /// A field and what it was built from.
@@ -113,8 +151,30 @@ impl Engine {
         changed
     }
 
-    /// Reads the world.
+    /// Changes the world without waiting: now if no one is reading it,
+    /// otherwise queued, for the next reader or the worker to apply. So the
+    /// game's thread never waits on a trace or a measurement.
+    pub fn world_change_soon(&self, change: impl FnOnce(&mut World) -> bool + Send + 'static) {
+        match self.shared.world.try_write() {
+            Ok(mut world) => {
+                let mut changed = apply_queued(&self.shared, &mut world);
+                changed |= change(&mut world);
+                if changed {
+                    self.shared.world_version.fetch_add(1, Ordering::Release);
+                }
+            }
+            Err(_) => self
+                .shared
+                .queued
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(Change(Box::new(change))),
+        }
+    }
+
+    /// Reads the world, with every change made so far.
     pub fn world<T>(&self, read: impl FnOnce(&World) -> T) -> T {
+        catch_up(&self.shared);
         read(
             &self
                 .shared
@@ -275,6 +335,7 @@ fn worker(shared: &Shared) {
     let mut room = RoomTrace::default();
     let mut next_build = Instant::now();
     while !shared.stop.load(Ordering::Relaxed) {
+        catch_up(shared);
         let quality = *shared
             .quality
             .read()

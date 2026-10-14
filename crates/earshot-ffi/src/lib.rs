@@ -99,8 +99,9 @@ pub struct EarshotEngine {
 }
 
 impl EarshotEngine {
-    fn world_mut(&self, change: impl FnOnce(&mut World) -> bool) {
-        self.engine.world_change(change);
+    /// Changes the world without making the game's thread wait.
+    fn world_mut(&self, change: impl FnOnce(&mut World) -> bool + Send + 'static) {
+        self.engine.world_change_soon(change);
     }
 
     fn world<T>(&self, read: impl FnOnce(&World) -> T) -> T {
@@ -223,7 +224,7 @@ pub unsafe extern "C" fn earshot_set_section(
             if let Some(&id) = blocks.iter().find(|&&id| Material::from_id(id).id() != id) {
                 return Err(FfiError::invalid(format!("unknown material {id}")));
             }
-            e.world_mut(|world| world.set_section(SectionPos::new(x, y, z), &blocks));
+            e.world_mut(move |world| world.set_section(SectionPos::new(x, y, z), &blocks));
             Ok(())
         })
     }
@@ -244,7 +245,7 @@ pub unsafe extern "C" fn earshot_remove_section(
     // SAFETY: the caller guarantees `engine` is live.
     unsafe {
         with_engine(engine, |e| {
-            e.world_mut(|world| world.remove_section(SectionPos::new(x, y, z)));
+            e.world_mut(move |world| world.remove_section(SectionPos::new(x, y, z)));
             Ok(())
         })
     }
@@ -269,7 +270,7 @@ pub unsafe extern "C" fn earshot_set_block(
             if known.id() != material {
                 return Err(FfiError::invalid(format!("unknown material {material}")));
             }
-            e.world_mut(|world| world.set_block(x, y, z, known));
+            e.world_mut(move |world| world.set_block(x, y, z, known));
             Ok(())
         })
     }
