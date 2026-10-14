@@ -46,6 +46,9 @@ impl EaxReverb {
 const SHUT_IN_GAIN: f32 = 0.32;
 /// A mean free path this long (blocks) or more gives full modal density.
 const DENSE_PATH: f64 = 16.0;
+/// Outdoors the tail is short whatever the rays found bouncing among trunks
+/// and leaves, seconds: a wood doesn't ring as a room does.
+const OPEN_DECAY: f32 = 0.6;
 /// Spaces whose mean free path passes this (blocks) start to echo.
 const ECHO_PATH: f64 = 20.0;
 
@@ -64,7 +67,11 @@ pub fn eax_reverb(room: &Room) -> EaxReverb {
         gain: SHUT_IN_GAIN * enclosure * enclosure,
         gain_hf: 0.89,
         gain_lf: 1.0,
-        decay_time: mid.clamp(0.1, 20.0),
+        // Shut in, the room's own decay; under open sky, drawn towards a short
+        // outdoor tail (never longer than measured).
+        decay_time: (mid * enclosure + OPEN_DECAY * (1.0 - enclosure))
+            .min(mid)
+            .clamp(0.1, 20.0),
         decay_hf_ratio: (high / mid).clamp(0.1, 2.0),
         decay_lf_ratio: (low / mid).clamp(0.1, 2.0),
         reflections_gain: (enclosure / (1.0 + room.first_reflection as f32 / 8.0)).clamp(0.0, 3.16),
