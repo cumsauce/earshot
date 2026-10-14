@@ -3,6 +3,7 @@ package io.github.cumsauce.earshot.audio;
 import io.github.cumsauce.earshot.natives.NativeBridge;
 import java.lang.foreign.MemorySegment;
 import net.minecraft.world.phys.Vec3;
+import org.jspecify.annotations.Nullable;
 import org.lwjgl.openal.EXTEfx;
 
 /**
@@ -37,25 +38,31 @@ final class EarlyReflections {
 	}
 
 	/**
-	 * Measures the early reflections of up to {@value #SOURCES} sounds at {@code positions} and sets a slot for each.
-	 * Returns each one's slot, or 0 where it has no reflections.
+	 * Measures the early reflections of the sounds at {@code positions} ({@value #SOURCES} of them, one per slot, null
+	 * where a slot has none) and sets each slot. Returns each slot's name, or 0 where it has no reflections.
 	 *
 	 * @param right the listener's right, {@code up} up and {@code forward} forward, in world axes
 	 */
-	int[] update(double[] listener, Vec3[] positions, Vec3 right, Vec3 up, Vec3 forward) {
-		int count = Math.min(positions.length, SOURCES);
-		int[] assigned = new int[count];
+	int[] update(double[] listener, @Nullable Vec3[] positions, Vec3 right, Vec3 up, Vec3 forward) {
+		int[] assigned = new int[SOURCES];
+		int[] which = new int[SOURCES];
+		int count = 0;
+		for (int i = 0; i < Math.min(positions.length, SOURCES); i++) {
+			if (positions[i] != null) which[count++] = i;
+		}
 		if (count == 0) return assigned;
 		double[] sources = new double[3 * count];
-		for (int i = 0; i < count; i++) {
-			sources[3 * i] = positions[i].x;
-			sources[3 * i + 1] = positions[i].y;
-			sources[3 * i + 2] = positions[i].z;
+		for (int j = 0; j < count; j++) {
+			Vec3 position = positions[which[j]];
+			sources[3 * j] = position.x;
+			sources[3 * j + 1] = position.y;
+			sources[3 * j + 2] = position.z;
 		}
 		double[] early = new double[NativeBridge.EARLY_DOUBLES * count];
 		bridge.early(engine, listener, sources, count, early);
-		for (int i = 0; i < count; i++) {
-			int at = NativeBridge.EARLY_DOUBLES * i;
+		for (int j = 0; j < count; j++) {
+			int i = which[j];
+			int at = NativeBridge.EARLY_DOUBLES * j;
 			if (early[at + 5] == 0) continue;
 			if (slots[i] == 0) make(i);
 			Vec3 from = new Vec3(early[at + 2], early[at + 3], early[at + 4]);
