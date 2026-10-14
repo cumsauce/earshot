@@ -32,7 +32,8 @@ abstract class SoundEngineMixin {
 
 	@Inject(method = "play", at = @At("HEAD"), cancellable = true)
 	private void earshot$thunderLater(SoundInstance sound, CallbackInfoReturnable<SoundEngine.PlayResult> cir) {
-		if (!EarshotClient.shaping()) return;
+		// Started by a sound that already waited (another mod voicing or layering it): not held twice.
+		if (!EarshotClient.shaping() || io.github.cumsauce.earshot.audio.Propagation.releasing()) return;
 		boolean thunder = Thunder.isThunder(sound);
 		if (!thunder && !EarshotClient.config().realisticFalloff()) return;
 		Camera camera = Minecraft.getInstance().gameRenderer.mainCamera();
@@ -48,9 +49,11 @@ abstract class SoundEngineMixin {
 	@Inject(method = "tick", at = @At("HEAD"))
 	private void earshot$letOut(boolean paused, CallbackInfo ci) {
 		if (!loaded || paused) return;
-		for (SoundInstance sound : io.github.cumsauce.earshot.audio.Propagation.due()) {
-			((SoundEngine) (Object) this).play(sound);
-		}
+		var due = io.github.cumsauce.earshot.audio.Propagation.due();
+		if (due.isEmpty()) return;
+		io.github.cumsauce.earshot.audio.Propagation.release(() -> {
+			for (SoundInstance sound : due) ((SoundEngine) (Object) this).play(sound);
+		});
 	}
 
 	@Inject(method = "stop(Lnet/minecraft/client/resources/sounds/SoundInstance;)V", at = @At("HEAD"))
