@@ -84,6 +84,13 @@ public final class SoundShaper {
 	 * them: OpenAL won't delete a slot a source still sends to.
 	 */
 	private final boolean[] unusedOwn = new boolean[OWN_REVERBS];
+	/**
+	 * The OpenAL source each own reverb and each early-reflections slot was last given (0 for none), so a sound keeps
+	 * its slot while it stays among the loudest: given by rank, two sounds trading places swapped slots every tick,
+	 * jumping the reflections and remaking the convolutions.
+	 */
+	private final int[] ownOwners = new int[OWN_REVERBS];
+	private final int[] earlyOwners = new int[EarlyReflections.SOURCES];
 	/** A sound's own reverb is made again once it has moved this far. */
 	private static final double OWN_REVERB_MOVE = 2;
 	private final VoicePlayer voice;
@@ -500,19 +507,55 @@ public final class SoundShaper {
 		// The loudest get reverbs of their own (with their early reflections in them); the next their early
 		// reflections over the listener's reverb.
 		int owned = convolution ? Math.min(order.length, OWN_REVERBS) : 0;
-		for (int k = 0; k < OWN_REVERBS; k++) {
-			unusedOwn[k] = k >= owned;
-			if (k >= owned) continue;
+		int[] ownSlot = keep(ownOwners, order, 0, owned, targets);
+		java.util.Arrays.fill(unusedOwn, true);
+		for (int k = 0; k < owned; k++) {
+			int s = ownSlot[k];
+			unusedOwn[s] = false;
 			Vec3 at = targets.get(order[k]).position();
-			ownReverbs[k].tick(new double[] {at.x, at.y, at.z}, orientation);
-			if (ownReverbs[k].playing()) ownSends[order[k]] = ownReverbs[k].slots();
+			ownReverbs[s].tick(new double[] {at.x, at.y, at.z}, orientation);
+			if (ownReverbs[s].playing()) ownSends[order[k]] = ownReverbs[s].slots();
 		}
 		int chosen = Math.min(order.length - owned, EarlyReflections.SOURCES);
-		Vec3[] positions = new Vec3[chosen];
-		for (int k = 0; k < chosen; k++) positions[k] = targets.get(order[owned + k]).position();
+		int[] earlySlot = keep(earlyOwners, order, owned, chosen, targets);
+		Vec3[] positions = new Vec3[EarlyReflections.SOURCES];
+		for (int k = 0; k < chosen; k++) positions[earlySlot[k]] = targets.get(order[owned + k]).position();
 		int[] assigned = early.update(listener, positions, axes.right(), axes.up(), axes.forward());
-		for (int k = 0; k < chosen; k++) slots[order[owned + k]] = assigned[k];
+		for (int k = 0; k < chosen; k++) slots[order[owned + k]] = assigned[earlySlot[k]];
 		return slots;
+	}
+
+	/**
+	 * Gives each of the {@code n} targets at {@code order[from…]} one of {@code owners}' slots: the one it had last
+	 * update if it had one, else one freed. Records the new owners; returns each target's slot, by rank.
+	 */
+	private static int[] keep(int[] owners, Integer[] order, int from, int n, List<Target> targets) {
+		int[] slotOf = new int[n];
+		java.util.Arrays.fill(slotOf, -1);
+		boolean[] taken = new boolean[owners.length];
+		for (int k = 0; k < n; k++) {
+			int source = targets.get(order[from + k]).source();
+			for (int s = 0; s < owners.length; s++) {
+				if (owners[s] == source && !taken[s]) {
+					slotOf[k] = s;
+					taken[s] = true;
+					break;
+				}
+			}
+		}
+		for (int k = 0; k < n; k++) {
+			if (slotOf[k] >= 0) continue;
+			for (int s = 0; s < owners.length; s++) {
+				if (!taken[s]) {
+					slotOf[k] = s;
+					taken[s] = true;
+					break;
+				}
+			}
+		}
+		java.util.Arrays.fill(owners, 0);
+		for (int k = 0; k < n; k++) owners[slotOf[k]] = targets.get(order[from + k]).source();
+		return slotOf;
 	}
 
 	/** Sends a source to its own early reflections, unfiltered: they come by their own ways, not the direct one. */
