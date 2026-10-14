@@ -5,11 +5,13 @@
 //! `YakVcVoiceSink` that lives for the whole process, which queues them per
 //! speaker. Java gives each speaker an OpenAL source whose buffer is a
 //! callback buffer: OpenAL's mixer thread pulls the samples straight from
-//! the queue through [`pull`], with no Java in between.
+//! the queue through [`pull`], with no Java in between. The queue is a
+//! lock-free ring ([`Ring`]): the mixer never waits on yakvc's thread, nor
+//! allocates.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -107,10 +109,94 @@ pub fn set_own_voice(keep: bool) {
     OWN_VOICE.store(keep, Ordering::Relaxed);
 }
 
+/// Room for [`MAX_QUEUED`] samples and a few frames more.
+const CAPACITY: usize = MAX_QUEUED + 4 * FRAME;
+
+/// One speaker's samples, from yakvc's thread (the only writer) to OpenAL's
+/// mixer (the only reader), with neither ever waiting nor allocating. Each
+/// sample is an `f32` held as its bits; `written` and `read` count samples
+/// ever written and read. Past [`MAX_QUEUED`] the oldest go: the writer can't
+/// move `read`, so it raises `floor`, which the reader never reads below.
+#[derive(Debug)]
+struct Ring {
+    samples: Box<[AtomicU32]>,
+    written: AtomicUsize,
+    read: AtomicUsize,
+    floor: AtomicUsize,
+    /// Set by the writer to have the reader drop all that's queued.
+    clear: AtomicBool,
+}
+
+impl Default for Ring {
+    fn default() -> Self {
+        Ring {
+            samples: (0..CAPACITY).map(|_| AtomicU32::new(0)).collect(),
+            written: AtomicUsize::new(0),
+            read: AtomicUsize::new(0),
+            floor: AtomicUsize::new(0),
+            clear: AtomicBool::new(false),
+        }
+    }
+}
+
+impl Ring {
+    /// Where the oldest sample still queued is.
+    fn start(&self) -> usize {
+        self.read
+            .load(Ordering::Acquire)
+            .max(self.floor.load(Ordering::Acquire))
+    }
+
+    fn len(&self) -> usize {
+        self.written
+            .load(Ordering::Acquire)
+            .saturating_sub(self.start())
+    }
+
+    /// The writer: adds `pcm` (at most a few frames) times `gain`, letting
+    /// the oldest go past [`MAX_QUEUED`]. It only overwrites samples below
+    /// the floor, which the reader has given up.
+    fn push(&self, pcm: &[f32], gain: f32) {
+        let pcm = &pcm[..pcm.len().min(CAPACITY - MAX_QUEUED)];
+        let written = self.written.load(Ordering::Relaxed);
+        let end = written + pcm.len();
+        self.floor
+            .fetch_max(end.saturating_sub(MAX_QUEUED), Ordering::AcqRel);
+        for (i, sample) in pcm.iter().enumerate() {
+            self.samples[(written + i) % CAPACITY]
+                .store((sample * gain).to_bits(), Ordering::Relaxed);
+        }
+        self.written.store(end, Ordering::Release);
+    }
+
+    /// The reader: drops `n` of the oldest.
+    fn skip(&self, n: usize) {
+        let start = self.start();
+        self.read
+            .store(start + n.min(self.len()), Ordering::Release);
+    }
+
+    /// The reader: takes up to `out.len()` into `out`; how many. Drops
+    /// everything first if the writer asked.
+    fn pop(&self, out: &mut [f32]) -> usize {
+        if self.clear.swap(false, Ordering::Acquire) {
+            self.read
+                .store(self.written.load(Ordering::Acquire), Ordering::Release);
+        }
+        let read = self.start();
+        let n = self.len().min(out.len());
+        for (i, out) in out[..n].iter_mut().enumerate() {
+            *out = f32::from_bits(self.samples[(read + i) % CAPACITY].load(Ordering::Relaxed));
+        }
+        self.read.store(read + n, Ordering::Release);
+        n
+    }
+}
+
 /// One speaker's voice.
 #[derive(Debug, Default)]
 pub struct Stream {
-    queue: Mutex<VecDeque<f32>>,
+    queue: Ring,
     /// Whether the voice is playing out of the queue, rather than holding
     /// back until [`PRIME`] is buffered.
     primed: AtomicBool,
@@ -179,14 +265,18 @@ pub fn stream(uuid: [u8; 16]) -> Arc<Stream> {
 pub fn streams() -> Vec<([u8; 16], Info, usize)> {
     lock(&VOICE.streams)
         .iter()
-        .map(|(uuid, stream)| (*uuid, *lock(&stream.info), lock(&stream.queue).len()))
+        .map(|(uuid, stream)| (*uuid, *lock(&stream.info), stream.queue.len()))
         .collect()
 }
 
 /// Copies up to `out.len()` queued samples of `stream` into `out`, and
 /// silence after them if the queue runs dry.
 pub fn pull(stream: &Stream, out: &mut [f32]) {
-    let mut queue = lock(&stream.queue);
+    let queue = &stream.queue;
+    if queue.clear.load(Ordering::Acquire) {
+        queue.pop(&mut []);
+        stream.primed.store(false, Ordering::Relaxed);
+    }
     if !stream.primed.load(Ordering::Relaxed) {
         if queue.len() < PRIME {
             out.fill(0.0);
@@ -195,13 +285,9 @@ pub fn pull(stream: &Stream, out: &mut [f32]) {
         stream.primed.store(true, Ordering::Relaxed);
     }
     if queue.len() > out.len() + MAX_LAG {
-        let excess = queue.len() - out.len() - LAG_TARGET;
-        queue.drain(..excess);
+        queue.skip(queue.len() - out.len() - LAG_TARGET);
     }
-    let n = queue.len().min(out.len());
-    for (out, sample) in out.iter_mut().zip(queue.drain(..n)) {
-        *out = sample;
-    }
+    let n = queue.pop(out);
     out[n..].fill(0.0);
     if n < out.len() {
         // Ran dry: buffer again before playing on.
@@ -236,12 +322,7 @@ unsafe extern "C" fn frame(_user: *mut c_void, frame: *const YakVcVoiceFrame) {
         unsafe { std::slice::from_raw_parts(frame.pcm, frame.samples) }
     };
     let stream = stream(frame.uuid);
-    {
-        let mut queue = lock(&stream.queue);
-        queue.extend(pcm.iter().map(|s| s * frame.volume));
-        let excess = queue.len().saturating_sub(MAX_QUEUED);
-        queue.drain(..excess);
-    }
+    stream.queue.push(pcm, frame.volume);
     *lock(&stream.info) = Info {
         flags: frame.flags,
         range: frame.range,
@@ -265,7 +346,7 @@ unsafe extern "C" fn stream_end(_user: *mut c_void, uuid: *const u8) {
     let uuid: [u8; 16] = unsafe { std::ptr::read_unaligned(uuid.cast()) };
     if let Some(stream) = lock(&VOICE.streams).get(&uuid) {
         lock(&stream.info).ended = true;
-        lock(&stream.queue).clear();
+        stream.queue.clear.store(true, Ordering::Release);
     }
 }
 
@@ -382,7 +463,7 @@ mod tests {
         for _ in 0..100 {
             deliver(uuid, &[1.0; FRAME], 0);
         }
-        assert_eq!(lock(&stream(uuid).queue).len(), MAX_QUEUED);
+        assert_eq!(stream(uuid).queue.len(), MAX_QUEUED);
     }
 
     #[test]
@@ -394,7 +475,7 @@ mod tests {
         // 200 ms queued; OpenAL asks for 20 ms and gets the newest audio.
         let mut out = vec![0.0; FRAME];
         pull(&stream(uuid), &mut out);
-        assert_eq!(lock(&stream(uuid).queue).len(), LAG_TARGET);
+        assert_eq!(stream(uuid).queue.len(), LAG_TARGET);
         assert!(out[0] >= 3.0 * 0.5, "{}", out[0]);
     }
 
