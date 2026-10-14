@@ -37,6 +37,12 @@ public final class Propagation {
 
 	private static final List<Waiting> QUEUE = new ArrayList<>();
 
+	/**
+	 * Whether held sounds are being let out now (on the client thread). A sound started meanwhile was started by one
+	 * of them (Foley voicing it, or layering a strike under it): it has already waited, and isn't held again.
+	 */
+	private static boolean releasing;
+
 	private Propagation() {}
 
 	/** Holds {@code sound} back {@code ticks} ticks. */
@@ -53,6 +59,21 @@ public final class Propagation {
 			return true;
 		});
 		return due;
+	}
+
+	/** Plays {@code play}'s sounds as let out: anything they start isn't held again. Client thread. */
+	public static void release(Runnable play) {
+		releasing = true;
+		try {
+			play.run();
+		} finally {
+			releasing = false;
+		}
+	}
+
+	/** Whether held sounds are being let out right now. Client thread. */
+	public static boolean releasing() {
+		return releasing;
 	}
 
 	/** Forgets {@code sound} if it is held: it was stopped before it started. */
