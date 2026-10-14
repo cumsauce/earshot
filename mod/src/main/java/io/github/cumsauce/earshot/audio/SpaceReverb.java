@@ -64,6 +64,8 @@ final class SpaceReverb {
 		volatile boolean measuring;
 		/** Whether its reverb has been set from a measurement yet: until then its slot is silent. */
 		boolean ready;
+		/** Its reverb as heard, gliding each update towards {@link #room}, so a new measurement never steps it. */
+		final float[] heard = new float[SoundShaper.EAX_PARAMETERS.length];
 		/** The sums of where this update's sounds are and where they are heard from, and how many there are. */
 		Vec3 positions = Vec3.ZERO;
 		Vec3 heardFrom = Vec3.ZERO;
@@ -142,6 +144,7 @@ final class SpaceReverb {
 				continue;
 			}
 			apply(space);
+			glide(space);
 			if (space.sounds == 0) continue;
 			if (now - space.measuredAt > REMEASURE_NANOS) {
 				space.centre = space.positions.scale(1.0 / space.sounds);
@@ -199,15 +202,27 @@ final class SpaceReverb {
 		if (room == null) return;
 		space.measured = null;
 		System.arraycopy(room, 0, space.room, 0, room.length);
-		for (int i = 0; i < SoundShaper.EAX_PARAMETERS.length; i++) {
-			EXTEfx.alEffectf(space.effect, SoundShaper.EAX_PARAMETERS[i], (float) room[NativeBridge.EAX_FIRST + i]);
-		}
-		EXTEfx.alAuxiliaryEffectSloti(space.slot, EXTEfx.AL_EFFECTSLOT_EFFECT, space.effect);
 		if (!space.ready) {
+			// The first measurement is heard at once.
+			for (int i = 0; i < space.heard.length; i++) space.heard[i] = (float) room[NativeBridge.EAX_FIRST + i];
 			EXTEfx.alAuxiliaryEffectSlotf(space.slot, EXTEfx.AL_EFFECTSLOT_GAIN, 1f);
 			space.ready = true;
 		}
 	}
+
+	/** Moves a space's reverb a step towards its latest measurement and sets it. On the sound thread. */
+	private static void glide(Space space) {
+		if (!space.ready) return;
+		for (int i = 0; i < space.heard.length; i++) {
+			float target = (float) space.room[NativeBridge.EAX_FIRST + i];
+			space.heard[i] += (target - space.heard[i]) * GLIDE;
+			EXTEfx.alEffectf(space.effect, SoundShaper.EAX_PARAMETERS[i], space.heard[i]);
+		}
+		EXTEfx.alAuxiliaryEffectSloti(space.slot, EXTEfx.AL_EFFECTSLOT_EFFECT, space.effect);
+	}
+
+	/** How far a space's reverb moves towards its measurement each update: about a third of a second. */
+	private static final float GLIDE = 0.15f;
 
 	private static void free(Space space) {
 		EXTEfx.alAuxiliaryEffectSloti(space.slot, EXTEfx.AL_EFFECTSLOT_EFFECT, EXTEfx.AL_EFFECT_NULL);

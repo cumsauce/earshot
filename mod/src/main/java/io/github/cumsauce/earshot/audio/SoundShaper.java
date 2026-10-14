@@ -100,6 +100,14 @@ public final class SoundShaper {
 	private int effect;
 	private int slot;
 	private final double[] room = new double[NativeBridge.ROOM_DOUBLES];
+	/**
+	 * The reverb as heard, gliding each tick towards the room as last measured: measured every fifth of a second or
+	 * so (slower on Ultra), it stepped with each. Null until there's one; jumps when going under or out of water.
+	 */
+	private float @Nullable [] heardEax;
+	private boolean heardUnderwater;
+	/** How far the heard reverb moves towards the measured each tick: about a third of a second. */
+	private static final float EAX_GLIDE = 0.15f;
 	private volatile double[] lastRoom = new double[0];
 	/** The reverb asked for, or null for the best the game's OpenAL has. */
 	private volatile @Nullable ReverbMode wantedMode;
@@ -231,6 +239,7 @@ public final class SoundShaper {
 		synchronized (reverbLock) {
 			effect = 0;
 			slot = 0;
+			heardEax = null;
 		}
 		convolution.contextClosing();
 		spaces.contextClosing();
@@ -435,9 +444,13 @@ public final class SoundShaper {
 				EXTEfx.alEffecti(effect, EXTEfx.AL_EFFECT_TYPE, EXTEfx.AL_EFFECT_EAXREVERB);
 				slot = EXTEfx.alGenAuxiliaryEffectSlots();
 			}
+			boolean jump = heardEax == null || underwater != heardUnderwater;
+			if (heardEax == null) heardEax = new float[EAX_PARAMETERS.length];
+			heardUnderwater = underwater;
 			for (int i = 0; i < EAX_PARAMETERS.length; i++) {
 				float value = underwater ? UNDERWATER_REVERB[i] : (float) room[NativeBridge.EAX_FIRST + i];
-				EXTEfx.alEffectf(effect, EAX_PARAMETERS[i], value);
+				heardEax[i] = jump ? value : heardEax[i] + (value - heardEax[i]) * EAX_GLIDE;
+				EXTEfx.alEffectf(effect, EAX_PARAMETERS[i], heardEax[i]);
 			}
 			// A slot copies its effect when given it, so it is given it again after every change.
 			EXTEfx.alAuxiliaryEffectSloti(slot, EXTEfx.AL_EFFECTSLOT_EFFECT, effect);
