@@ -72,6 +72,9 @@ public final class ConvolutionReverb {
 	private long checkedAt;
 	/** The room the response playing (or loading) was made from. */
 	private double[] madeFrom = new double[0];
+	/** Loads failed in a row; past {@link #TRIES}, it's off. */
+	private int failures;
+	private static final int TRIES = 3;
 	/** Bumped when the game closes its context, so a load in flight for the old one is dropped. */
 	private int generation;
 	private final float[] orientation = {0, 0, -1, 0, 1, 0};
@@ -210,6 +213,9 @@ public final class ConvolutionReverb {
 				slot = slots[into];
 				effect = effects[into];
 			}
+			// OpenAL's error is the context's, shared with the sound thread: clear what it left, so only this load's
+			// own calls are checked below.
+			AL10.alGetError();
 			int buffer = AL10.alGenBuffers();
 			AL10.alBufferData(buffer, AL_FORMAT_BFORMAT3D_FLOAT32, ir, SAMPLE_RATE);
 			// Buffer first, then the effect, as OpenAL Soft's own example does.
@@ -220,14 +226,18 @@ public final class ConvolutionReverb {
 			synchronized (this) {
 				loading = false;
 				if (forGeneration != generation) return;
-				if (error != AL10.AL_NO_ERROR) {
-					failed = true;
-					EarshotClient.LOGGER.warn("Convolution reverb is off: loading a response failed (OpenAL error 0x{})",
-							Integer.toHexString(error));
-					return;
-				}
 				if (buffers[into] != 0) AL10.alDeleteBuffers(buffers[into]);
 				buffers[into] = buffer;
+				if (error != AL10.AL_NO_ERROR) {
+					// Maybe another thread's error, landing between the clear and the check: not a reason to turn
+					// convolution off for good at once. Kept (it's bound) but not faded in; made again next time.
+					if (++failures >= TRIES) failed = true;
+					EarshotClient.LOGGER.warn("Loading a convolution response failed (OpenAL error 0x{}){}",
+							Integer.toHexString(error), failed ? "; convolution reverb is off" : "; trying again");
+					madeFrom = new double[0];
+					return;
+				}
+				failures = 0;
 				incoming = into;
 				fade = 0;
 				loads++;
