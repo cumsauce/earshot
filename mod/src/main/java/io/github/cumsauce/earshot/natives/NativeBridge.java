@@ -31,7 +31,7 @@ import java.util.UUID;
  */
 public final class NativeBridge {
 	/** Must equal {@code EARSHOT_ABI_VERSION} in {@code earshot.h}. */
-	public static final int ABI_VERSION = 13;
+	public static final int ABI_VERSION = 14;
 	/** Blocks in a section, in Minecraft's order. */
 	public static final int SECTION_BLOCKS = 4096;
 	/** Doubles per traced leg: from x, y, z, to x, y, z, energy, escaped (1 or 0). */

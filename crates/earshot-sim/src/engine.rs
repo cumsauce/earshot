@@ -230,13 +230,17 @@ impl Engine {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Where the listener is now; the pathing field follows.
+    /// Where the listener is now; the pathing field follows. A listener the
+    /// sim can't carry (not finite, or out of [`Vec3::is_usable`] range) is
+    /// refused rather than overflowing the field's block arithmetic on the
+    /// worker.
     pub fn set_listener(&self, listener: Vec3) {
+        let listener = listener.is_usable().then_some(listener);
         *self
             .shared
             .listener
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(listener);
+            .unwrap_or_else(PoisonError::into_inner) = listener;
     }
 
     /// The room around the listener, smoothed, once it has been measured.
@@ -791,5 +795,82 @@ mod tests {
         }];
         engine.hear(listener, &[Vec3::new(5.5, 0.5, 0.5)], &mut out);
         assert_eq!(out[0].gains, [1.0; 3]);
+    }
+
+    #[test]
+    fn a_change_made_while_the_world_is_read_lands_before_the_next_read() {
+        let engine = Engine::start();
+        engine.set_listener(Vec3::new(0.5, 0.5, 0.5));
+        // Keep the worker reading and building so `world_change_soon` finds
+        // the world busy and queues.
+        engine.set_quality(Quality {
+            field_half: 24,
+            room_rays: 4096,
+            ..Quality::DEFAULT
+        });
+        for i in 0..200 {
+            engine.world_change_soon(move |world| world.set_block(i, 0, 100, Material::Rock));
+        }
+        // Every queued block is there by the time a waiting read runs; the
+        // calls themselves must never block on a trace.
+        engine.world(|world| {
+            for i in 0..200 {
+                assert_eq!(world.block(i, 0, 100), Material::Rock, "block {i}");
+            }
+        });
+    }
+
+    #[test]
+    fn rooms_blend_across_time_constant_and_decays_geometrically() {
+        let (from, to) = (
+            Room {
+                decay: [1.0, 1.0, 1.0],
+                mean_free_path: 4.0,
+                enclosure: 0.0,
+                first_reflection: 2.0,
+                scattering: 0.0,
+                volume: 100.0,
+            },
+            Room {
+                decay: [2.0, 4.0, 8.0],
+                mean_free_path: 12.0,
+                enclosure: 1.0,
+                first_reflection: 6.0,
+                scattering: 1.0,
+                volume: 300.0,
+            },
+        );
+        let whole = blend(&from, &to, 1.0);
+        assert_eq!(whole, to);
+        let none = blend(&from, &to, 0.0);
+        assert_eq!(none, from);
+        let half = blend(&from, &to, 0.5);
+        // Straight fields take half the difference.
+        assert!((half.enclosure - 0.5).abs() < 1e-6);
+        assert!((half.mean_free_path - 8.0).abs() < 1e-9);
+        // Decays take half of it in log space: 1 → 2 halves to √2, 1 → 4 to
+        // 2, 1 → 8 to √8.
+        assert!(
+            (half.decay[0] - std::f32::consts::SQRT_2).abs() < 1e-6,
+            "{half:?}"
+        );
+        assert!((half.decay[1] - 2.0).abs() < 1e-6, "{half:?}");
+        assert!((half.decay[2] - 8.0f32.sqrt()).abs() < 1e-6, "{half:?}");
+    }
+
+    #[test]
+    fn an_absurd_listener_is_refused_and_the_worker_survives() {
+        let engine = Engine::start();
+        engine.set_listener(Vec3::new(f64::NAN, 0.0, 0.0));
+        engine.set_listener(Vec3::new(-9e18, 0.5, 0.5));
+        engine.set_listener(Vec3::new(0.5, 0.5, 0.5));
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while engine.field().is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "no field: the worker never recovered"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 }

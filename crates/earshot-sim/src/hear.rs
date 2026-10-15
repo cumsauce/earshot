@@ -163,8 +163,11 @@ fn round_loss(detour: f64, bend: f64, enclosure: f32) -> Bands {
 }
 
 /// What going round edges costs, per band, for a way `detour` blocks longer
-/// than the straight line: ISO 9613-2's barrier attenuation (after Maekawa),
-/// `10 log10(3 + 20 detour / wavelength)` dB, at most [`MAX_DIFFRACTION_DB`].
+/// than the straight line: ISO 9613-2's barrier attenuation,
+/// `10 log10(3 + 20 detour / wavelength)` dB, at most [`MAX_DIFFRACTION_DB`]
+/// (ISO's and GB/T 17247.2's caps sit there too). Note this is the ISO curve:
+/// Maekawa's original, and China's HJ 2.4 which tabulates against his Fresnel
+/// number `N = 2 detour / wavelength`, is some 3 dB steeper around `N = 1`.
 /// Lows, with their long waves, bend round far better than highs.
 fn diffraction(detour: f64) -> Bands {
     WAVELENGTH.map(|wavelength| {
@@ -321,5 +324,78 @@ mod tests {
             (detour(way + 2.0, listener, source) - 2.0 * (source - listener).length() / way).abs()
                 < 1e-9
         );
+    }
+
+    #[test]
+    fn gains_stay_between_silence_and_full_however_it_gets_there() {
+        let mut rng = crate::Rng::new(0x9e37_79b9_7f4a_7c15);
+        let mut world = World::new();
+        for _ in 0..1200 {
+            let at =
+                [rng.next_f64(), rng.next_f64(), rng.next_f64()].map(|v| (v * 30.0 - 15.0) as i32);
+            world.set_block(at[0], at[1], at[2], Material::Rock);
+        }
+        let listener = Vec3::new(0.5, 0.5, 0.5);
+        world.set_block(0, 0, 0, Material::Air);
+        let field = Field::build(&world, listener, 12);
+        for _ in 0..400 {
+            let source = Vec3::new(
+                rng.next_f64() * 28.0 - 14.0,
+                rng.next_f64() * 28.0 - 14.0,
+                rng.next_f64() * 28.0 - 14.0,
+            );
+            for enclosure in [0.0f32, 0.5, 1.0] {
+                let heard = hear(&world, Some(&field), listener, source, 5, enclosure);
+                for gain in heard.gains {
+                    assert!((0.0..=1.0).contains(&gain), "{heard:?}");
+                }
+                assert!(
+                    [heard.heard_from.x, heard.heard_from.y, heard.heard_from.z]
+                        .iter()
+                        .all(|v| v.is_finite()),
+                    "{heard:?}"
+                );
+                assert!(
+                    heard.path_length + 1e-9 >= (source - listener).length(),
+                    "{heard:?}"
+                );
+                assert!(
+                    (0.0..=crate::MAX_APERTURE).contains(&heard.aperture),
+                    "{heard:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn any_ray_count_but_one_and_nine_is_taken_as_five() {
+        let world = wall(None);
+        let at = Vec3::new(9.5, 0.5, 1.4);
+        let five = occlusion(&world, LISTENER, at, 5);
+        for rays in [0, 2, 3, 4, 6, 7, 8] {
+            assert_eq!(occlusion(&world, LISTENER, at, rays), five, "{rays} rays");
+        }
+        // A source where the listener is: nothing in the way at all.
+        assert_eq!(occlusion(&world, LISTENER, LISTENER, 5), [1.0; BANDS]);
+        let coincident = hear(&world, None, LISTENER, LISTENER, 5, 1.0);
+        assert_eq!(coincident.gains, [1.0; BANDS]);
+        assert_eq!(coincident.heard_from, LISTENER);
+    }
+
+    #[test]
+    fn going_round_costs_more_the_longer_and_sharper_the_way() {
+        let quarter = std::f64::consts::FRAC_PI_4;
+        for enclosure in [0.0f32, 0.5, 1.0] {
+            let near = round_loss(0.5, quarter, enclosure);
+            let far = round_loss(4.0, quarter, enclosure);
+            let sharp = round_loss(0.5, std::f64::consts::FRAC_PI_2, enclosure);
+            for band in 0..BANDS {
+                assert!(far[band] <= near[band], "band {band}: {far:?} vs {near:?}");
+                assert!(
+                    sharp[band] <= near[band],
+                    "band {band}: {sharp:?} vs {near:?}"
+                );
+            }
+        }
     }
 }

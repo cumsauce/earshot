@@ -139,4 +139,47 @@ mod tests {
         assert!(hall.echo_depth > 0.0 && open.echo_depth == 0.0);
         assert!(hall.late_reverb_delay > open.late_reverb_delay);
     }
+
+    #[test]
+    fn the_array_keeps_the_abis_field_order() {
+        let e = EaxReverb {
+            density: 1.0,
+            diffusion: 2.0,
+            gain: 3.0,
+            gain_hf: 4.0,
+            gain_lf: 5.0,
+            decay_time: 6.0,
+            decay_hf_ratio: 7.0,
+            decay_lf_ratio: 8.0,
+            reflections_gain: 9.0,
+            reflections_delay: 10.0,
+            late_reverb_gain: 11.0,
+            late_reverb_delay: 12.0,
+            echo_time: 13.0,
+            echo_depth: 14.0,
+        };
+        assert_eq!(
+            e.to_array(),
+            [
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0
+            ]
+        );
+    }
+
+    #[test]
+    fn under_open_sky_the_tail_is_drawn_towards_a_short_outdoor_one() {
+        let measured = [2.0, 2.0, 2.0];
+        let open = eax_reverb(&room(measured, 10.0, 0.0));
+        assert!((open.decay_time - OPEN_DECAY).abs() < 1e-6, "{open:?}");
+        let shut = eax_reverb(&room(measured, 10.0, 1.0));
+        assert!((shut.decay_time - 2.0).abs() < 1e-6, "{shut:?}");
+        // A measured decay shorter than the outdoor tail stands as measured.
+        let brisk = eax_reverb(&room([0.3, 0.3, 0.3], 10.0, 0.0));
+        assert!((brisk.decay_time - 0.3).abs() < 1e-6, "{brisk:?}");
+        // The delays follow the room's distances: the helper's first
+        // reflection is half the mean free path.
+        let expected = (10.0 / SPEED_OF_SOUND) as f32;
+        assert!((shut.late_reverb_delay - expected).abs() < 1e-9);
+        assert!((shut.reflections_delay - expected).abs() < 1e-9);
+    }
 }

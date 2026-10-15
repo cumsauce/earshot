@@ -20,6 +20,13 @@ pub struct Segment {
     pub escaped: bool,
     /// What it ended on; air when it escaped.
     pub material: Material,
+    /// How much of what it ended on is there: the share a crossing through
+    /// it takes, which the room loses besides the absorption — but only
+    /// where the way behind is open (`leaky`).
+    pub fill: f32,
+    /// Whether the block behind the hit face is open, so a crossing really
+    /// leaves the room. A rug over rock keeps its room's bass.
+    pub leaky: bool,
     /// Which leg of its path it is: 0 leaves the listener.
     pub bounce: u32,
     /// The outward normal of the face it ended on; zero when it escaped.
@@ -110,23 +117,56 @@ pub fn trace_directions(
                     energy,
                     escaped: true,
                     material: Material::Air,
+                    fill: 1.0,
+                    leaky: true,
                     bounce: leg,
                     normal: Vec3::ZERO,
                 });
                 break;
             };
+            // Whether the way behind the face is open, so a crossing really
+            // leaves the room. A leaf-walled treehouse is nearly outdoors; a
+            // rug over rock keeps its room's bass.
+            let past = from + dir * (hit.exit + 1e-6);
+            let leaky = !world
+                .block(
+                    past.x.floor() as i32,
+                    past.y.floor() as i32,
+                    past.z.floor() as i32,
+                )
+                .is_solid();
+            if std::env::var("EARSHOT_DEBUG_TALLY").is_ok() {
+                println!(
+                    "dbg leaky {leaky} fill {} exit {} past {:?}",
+                    hit.fill, hit.exit, past
+                );
+            }
             segment(Segment {
                 from,
                 to: hit.point,
                 energy,
                 escaped: false,
                 material: hit.material,
+                fill: hit.fill,
+                leaky,
                 bounce: leg,
                 normal: hit.normal,
             });
             hit_lengths += hit.distance;
             hits += 1;
             let acoustics = hit.material.acoustics();
+            // The wall lets the ray through with its transmissivity — when
+            // the way behind is open — and the ray leaves the room. What it
+            // takes besides the absorption is already on the tally, so the
+            // encounter's expected loss comes out right whatever the draw.
+            let through = if leaky {
+                acoustics.transmission[1] * hit.fill
+            } else {
+                0.0
+            };
+            if rng.next_f64() < f64::from(through) {
+                break;
+            }
             energy *= 1.0 - acoustics.absorption[1];
             // Starting inside a block gives no face to leave from.
             if hit.normal == Vec3::ZERO || energy < MIN_ENERGY {
@@ -245,5 +285,79 @@ mod tests {
             assert!(d.dot(normal) >= 0.0);
             assert!((d.length() - 1.0).abs() < 1e-9);
         }
+    }
+
+    #[test]
+    fn every_bounce_pays_its_surfaces_absorption() {
+        let world = rock_box(10);
+        // What one bounce leaves is the surface's share: walls that let rays
+        // through take them out of the room at the tally, not off the weight.
+        let survivor = 1.0 - Material::Rock.acoustics().absorption[1];
+        trace_paths(
+            &world,
+            Vec3::new(5.0, 5.0, 5.0),
+            64,
+            12,
+            64.0,
+            11,
+            |segment| {
+                let expected = survivor.powi(segment.bounce as i32);
+                assert!(
+                    (segment.energy - expected).abs() < 1e-6 * expected,
+                    "bounce {}: {} vs {expected}",
+                    segment.bounce,
+                    segment.energy
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn no_bounces_leaves_one_leg_per_ray() {
+        let world = rock_box(10);
+        let mut legs = 0u32;
+        let stats = trace_paths(
+            &world,
+            Vec3::new(5.0, 5.0, 5.0),
+            128,
+            0,
+            64.0,
+            5,
+            |segment| {
+                assert_eq!(segment.bounce, 0);
+                assert!(!segment.escaped);
+                legs += 1;
+            },
+        );
+        assert_eq!(legs, 128);
+        assert_eq!(stats.segments, 128);
+        assert_eq!(stats.escaped, 0);
+        assert_eq!(stats.escaped_first, 0);
+    }
+
+    #[test]
+    fn legs_after_a_bounce_leave_the_surface_they_hit() {
+        // A rock floor and nothing else: every leg past its first bounce
+        // follows one off that floor, so it goes into the open half-space.
+        let mut world = World::new();
+        for x in -30..30 {
+            for z in -30..30 {
+                world.set_block(x, -1, z, Material::Rock);
+            }
+        }
+        trace_paths(
+            &world,
+            Vec3::new(0.5, 4.5, 0.5),
+            256,
+            2,
+            32.0,
+            9,
+            |segment| {
+                if segment.bounce > 0 {
+                    let dir = segment.to - segment.from;
+                    assert!(dir.y > -1e-9, "went back into the floor: {segment:?}");
+                }
+            },
+        );
     }
 }

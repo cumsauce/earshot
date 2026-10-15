@@ -25,3 +25,32 @@ impl Rng {
         (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_same_seed_runs_the_same_way_whatever_it_is() {
+        for seed in [0, 1, 2, u64::MAX, 0x9e37_79b9_7f4a_7c15] {
+            let (mut a, mut b) = (Rng::new(seed), Rng::new(seed));
+            for _ in 0..100 {
+                assert_eq!(a.next_u64(), b.next_u64());
+                assert_eq!(a.next_f64(), b.next_f64());
+            }
+        }
+        assert_ne!(Rng::new(1).next_u64(), Rng::new(2).next_u64());
+    }
+
+    #[test]
+    fn fractions_fill_the_unit_interval_evenly() {
+        let mut rng = Rng::new(7);
+        let mut sum = 0.0f64;
+        for _ in 0..100_000 {
+            let x = rng.next_f64();
+            assert!((0.0..1.0).contains(&x));
+            sum += x;
+        }
+        assert!((sum / 100_000.0 - 0.5).abs() < 0.01);
+    }
+}
