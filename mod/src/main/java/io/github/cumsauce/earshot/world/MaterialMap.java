@@ -144,7 +144,10 @@ public final class MaterialMap {
 			return state.getSoundType() == SoundType.GLASS ? AcousticMaterial.GLASS : AcousticMaterial.AIR;
 		}
 		// A thin soft layer doesn't stop sound, but it soaks the room's highs up.
-		if (state.is(BlockTags.CARPETS) || block instanceof SnowLayerBlock) return AcousticMaterial.RUG;
+		if (state.is(BlockTags.WOOL_CARPETS) || state.getSoundType() == SoundType.MOSS_CARPET
+				|| block instanceof SnowLayerBlock) {
+			return AcousticMaterial.RUG;
+		}
 		// A closed door is thin, but it fills its doorway.
 		boolean panel = block instanceof DoorBlock || block instanceof TrapDoorBlock || block instanceof FenceGateBlock;
 		if (!panel && volume(shape) < SOLID_VOLUME) return AcousticMaterial.AIR;
