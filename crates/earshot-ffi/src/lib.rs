@@ -38,7 +38,8 @@ use crate::guard::{FfiError, array_arg, guard, out_arg, slice_arg, slice_mut_arg
 /// 11: `earshot_set_quality` takes the room rays' reach.
 /// 12: `earshot_impulse_response_for`.
 /// 13: `earshot_hear` adds the opening's size.
-pub const EARSHOT_ABI_VERSION: u32 = 13;
+/// 14: section and block bytes pack the fill fraction into the high nibble.
+pub const EARSHOT_ABI_VERSION: u32 = 14;
 
 pub const EARSHOT_OK: i32 = 0;
 /// A null pointer, unknown material or out-of-range value.
@@ -204,7 +205,10 @@ pub unsafe extern "C" fn earshot_material_names(
 }
 
 /// Replaces the section at section coordinates `x, y, z` with `blocks`:
-/// 4096 material ids in Minecraft's order, index `(y << 8) | (z << 4) | x`.
+/// 4096 packed block bytes in Minecraft's order, index
+/// `(y << 8) | (z << 4) | x` — the material id in the low nibble, how much
+/// of the block is there in the high one (0 = full; otherwise sixteenths,
+/// so a slab is 8).
 ///
 /// # Safety
 /// `engine` must be live; `blocks` must be readable for 4096 bytes.
@@ -221,8 +225,14 @@ pub unsafe extern "C" fn earshot_set_section(
         with_engine(engine, |e| {
             // SAFETY: the caller guarantees `blocks` is readable for 4096 bytes.
             let blocks: [u8; SECTION_BLOCKS] = array_arg(blocks, "blocks")?;
-            if let Some(&id) = blocks.iter().find(|&&id| Material::from_id(id).id() != id) {
-                return Err(FfiError::invalid(format!("unknown material {id}")));
+            if let Some(&byte) = blocks
+                .iter()
+                .find(|&&byte| byte & 0x0F > Material::Rug.id())
+            {
+                return Err(FfiError::invalid(format!(
+                    "unknown material {}",
+                    byte & 0x0F
+                )));
             }
             e.world_mut(move |world| world.set_section(SectionPos::new(x, y, z), &blocks));
             Ok(())
@@ -251,7 +261,9 @@ pub unsafe extern "C" fn earshot_remove_section(
     }
 }
 
-/// Sets block `x, y, z` to `material`, as when the game changes it.
+/// Sets block `x, y, z` to a packed block byte, as when the game changes
+/// it: the material id in the low nibble, how much of the block is there in
+/// the high one (0 = full; otherwise sixteenths, so a slab is 8).
 ///
 /// # Safety
 /// `engine` must be live.
@@ -261,16 +273,18 @@ pub unsafe extern "C" fn earshot_set_block(
     x: i32,
     y: i32,
     z: i32,
-    material: u8,
+    block: u8,
 ) -> i32 {
     // SAFETY: the caller guarantees `engine` is live.
     unsafe {
         with_engine(engine, |e| {
-            let known = Material::from_id(material);
-            if known.id() != material {
-                return Err(FfiError::invalid(format!("unknown material {material}")));
+            if block & 0x0F > Material::Rug.id() {
+                return Err(FfiError::invalid(format!(
+                    "unknown material {}",
+                    block & 0x0F
+                )));
             }
-            e.world_mut(move |world| world.set_block(x, y, z, known));
+            e.world_mut(move |world| world.set_block_raw(x, y, z, block));
             Ok(())
         })
     }
@@ -385,8 +399,13 @@ pub unsafe extern "C" fn earshot_hear(
             let xyz = slice_arg(sources, 3 * count, "sources")?;
             // SAFETY: the caller guarantees `out` is writable for `len` doubles.
             let out = slice_mut_arg(out, len, "out")?;
-            if !xyz.iter().all(|v| v.is_finite()) {
-                return Err(FfiError::invalid("sources are not finite"));
+            if !xyz
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .all(|&p| Vec3::new(p[0], p[1], p[2]).is_usable())
+            {
+                return Err(FfiError::invalid("sources are not finite or out of range"));
             }
             let points: Vec<Vec3> = xyz
                 .as_chunks::<3>()
@@ -479,8 +498,13 @@ pub unsafe extern "C" fn earshot_early(
             let xyz = slice_arg(sources, 3 * count, "sources")?;
             // SAFETY: the caller guarantees `out` is writable for `len` doubles.
             let out = slice_mut_arg(out, len, "out")?;
-            if !xyz.iter().all(|v| v.is_finite()) {
-                return Err(FfiError::invalid("sources are not finite"));
+            if !xyz
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .all(|&p| Vec3::new(p[0], p[1], p[2]).is_usable())
+            {
+                return Err(FfiError::invalid("sources are not finite or out of range"));
             }
             e.world(|world| {
                 for (&[x, y, z], out) in xyz
@@ -925,17 +949,21 @@ pub unsafe extern "C" fn earshot_last_error(buf: *mut u8, cap: usize) -> usize {
     message.len()
 }
 
-/// A finite point from 3 doubles.
+/// A finite point from 3 doubles, within the range the sim's block
+/// arithmetic can carry (see [`Vec3::is_usable`]).
 ///
 /// # Safety
 /// `ptr` must be null or point to 3 doubles.
 unsafe fn point_arg(ptr: *const f64, what: &str) -> Result<Vec3, FfiError> {
     // SAFETY: forwarded from the caller.
     let [x, y, z] = unsafe { array_arg::<f64, 3>(ptr, what) }?;
-    if !(x.is_finite() && y.is_finite() && z.is_finite()) {
-        return Err(FfiError::invalid(format!("{what} is not finite")));
+    let point = Vec3::new(x, y, z);
+    if !point.is_usable() {
+        return Err(FfiError::invalid(format!(
+            "{what} is not finite or out of range"
+        )));
     }
-    Ok(Vec3::new(x, y, z))
+    Ok(point)
 }
 
 #[cfg(test)]
@@ -1015,7 +1043,7 @@ mod tests {
         unsafe {
             assert_eq!(earshot_set_block(engine, 8, 8, 8, 0), EARSHOT_OK);
             assert_eq!(
-                earshot_set_block(engine, 0, 0, 0, 99),
+                earshot_set_block(engine, 0, 0, 0, 14),
                 EARSHOT_ERR_INVALID_ARGUMENT
             );
             earshot_destroy(engine);
@@ -1241,6 +1269,35 @@ mod tests {
             earshot_destroy(engine);
         }
         assert!(stats.iter().all(|v| v.is_finite()), "{stats:?}");
+    }
+
+    #[test]
+    fn absurd_coordinates_are_refused_and_nothing_breaks() {
+        let engine = engine();
+        let huge = [9e18, -9e18, 9e18];
+        let listener = [0.5, 0.5, 0.5];
+        let sources = [0.5, 0.5, 0.5, 9e18, 0.0, 0.0];
+        let mut out = [0.0; 2 * EARSHOT_HEARD_DOUBLES];
+        // SAFETY: `engine` is live and every buffer is valid for its length.
+        unsafe {
+            assert_eq!(
+                earshot_set_listener(engine, huge.as_ptr()),
+                EARSHOT_ERR_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                earshot_hear(
+                    engine,
+                    listener.as_ptr(),
+                    sources.as_ptr(),
+                    2,
+                    out.as_mut_ptr()
+                ),
+                EARSHOT_ERR_INVALID_ARGUMENT
+            );
+            // The engine still takes work afterwards.
+            assert_eq!(earshot_set_listener(engine, listener.as_ptr()), EARSHOT_OK);
+            earshot_destroy(engine);
+        }
     }
 
     #[test]

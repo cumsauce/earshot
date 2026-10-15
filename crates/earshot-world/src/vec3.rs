@@ -40,6 +40,17 @@ impl Vec3 {
             _ => self.z,
         }
     }
+
+    /// Whether the point is somewhere the sim can work with: finite and well
+    /// inside `i32` on every axis. `floor() as i32` saturates past the type's
+    /// range, and the ray walks then add steps to the saturated block, which
+    /// overflows. Minecraft's own world border is near ±30 million blocks.
+    pub fn is_usable(self) -> bool {
+        const LIMIT: f64 = 1.0e9;
+        [self.x, self.y, self.z]
+            .iter()
+            .all(|v| v.is_finite() && v.abs() <= LIMIT)
+    }
 }
 
 impl Add for Vec3 {

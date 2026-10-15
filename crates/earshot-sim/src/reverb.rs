@@ -11,9 +11,12 @@ const MIN_DECAY: f64 = 0.1;
 /// About a cathedral's: past it a space is heard as echoes, not a longer
 /// tail.
 const MAX_DECAY: f64 = 8.0;
-/// The air's own absorption of energy, per metre (Np/m), per band: about 1,
-/// 5 and 25 dB a kilometre at 250 Hz, 1 kHz and 4 kHz (ISO 9613-1, 20 °C,
-/// 50 % humidity). In a big space it shortens the highs' decay.
+/// The air's own absorption of energy, per metre, per band: about 1, 5 and
+/// 25 dB a kilometre at 250 Hz, 1 kHz and 4 kHz (ISO 9613-1, 20 °C, 50 %
+/// humidity). Eyring's loss takes it as `m · l`, the textbook Knudsen form
+/// `T60 = 24 ln 10 · V / (c · (−S ln(1 − ā) + 4 m V))`: divide through by
+/// `S` and `4V/S` is the mean free path. In a big space it shortens the
+/// highs' decay.
 const AIR: [f64; BANDS] = [0.000_25, 0.001_15, 0.005_8];
 
 /// What a listener's surroundings do to sound, from a path trace: the input
@@ -154,6 +157,16 @@ impl Tally {
         self.free_path += length;
         self.hits += 1;
         let acoustics = segment.material.acoustics();
+        // What a crossing through the surface takes besides the absorption,
+        // when the way behind is open: a leaky wall drains the room, a
+        // leaf-walled treehouse is nearly outdoors, and a rug over rock
+        // keeps its room's bass.
+        let leak = 1.0
+            - if segment.leaky {
+                acoustics.transmission[1] * segment.fill
+            } else {
+                0.0
+            };
         if segment.bounce == 0 {
             self.first += length;
             self.firsts += 1;
@@ -163,13 +176,27 @@ impl Tally {
             self.early.push(Reflection {
                 direction,
                 delay: (trip / SPEED_OF_SOUND) as f32,
-                energy: (1.0 - acoustics.absorption[1]) * cos * cos / (trip * trip).max(1.0) as f32
+                energy: (1.0 - acoustics.absorption[1]) * leak * cos * cos
+                    / (trip * trip).max(1.0) as f32
                     * 12.0
                     / rays.max(1) as f32,
             });
         }
-        for (a, absorption) in self.absorbed.iter_mut().zip(acoustics.absorption) {
-            *a += f64::from(absorption);
+        for ((band, a), absorption) in self
+            .absorbed
+            .iter_mut()
+            .enumerate()
+            .zip(acoustics.absorption)
+        {
+            // Per band: what the surface soaks up, plus what gets through
+            // it and never comes back — where the way behind is open.
+            let absorption = f64::from(absorption);
+            let through = if segment.leaky {
+                f64::from(acoustics.transmission[band]).powf(f64::from(segment.fill))
+            } else {
+                0.0
+            };
+            *a += absorption + (1.0 - absorption) * through;
         }
         self.scattering += f64::from(acoustics.scattering);
     }
@@ -198,7 +225,7 @@ impl Tally {
         let decay = self.absorbed.map(|a| {
             let mean = (a / f64::from(self.events)).clamp(1e-4, 1.0 - 1e-9);
             // Eyring's, with the air's absorption over each free path.
-            let loss = -(1.0 - mean).ln() + 4.0 * AIR[band] * mean_free_path;
+            let loss = -(1.0 - mean).ln() + AIR[band] * mean_free_path;
             band += 1;
             let t60 = SIXTY_DB * mean_free_path / (SPEED_OF_SOUND * loss);
             t60.clamp(MIN_DECAY, MAX_DECAY) as f32
@@ -240,34 +267,214 @@ mod tests {
         world
     }
 
-    /// Eyring's decay for a box of side `size` with absorption `a`, and the
-    /// air's `air` (Np/m) over its mean free path 4V/S.
-    fn eyring(size: f64, a: f64, air: f64) -> f64 {
+    /// Eyring's decay for a box of side `size` built of `material` in
+    /// `band`, with the air's `air` (Np/m) over its mean free path 4V/S.
+    /// `leaky` folds the wall's transmission in as a loss per hit; the trace
+    /// recovers only part of it, since rays that graze along a wall layer
+    /// leave late — so the shoebox test holds the decay between the leaky
+    /// and the sealed formulas.
+    fn eyring(size: f64, material: Material, band: usize, air: f64) -> f64 {
+        let acoustics = material.acoustics();
+        let a = f64::from(acoustics.absorption[band]);
         let (volume, surface) = (size.powi(3), 6.0 * size * size);
         let path = 4.0 * volume / surface;
-        SIXTY_DB * path / (SPEED_OF_SOUND * (-(1.0 - a).ln() + 4.0 * air * path))
+        let loss = |a: f64| SIXTY_DB * path / (SPEED_OF_SOUND * (-((1.0 - a).ln()) + air * path));
+        let leaky = a + (1.0 - a) * f64::from(acoustics.transmission[band]);
+        loss(leaky)
+    }
+
+    /// Eyring's decay with no leak at all: the sealed-box figure.
+    fn eyring_sealed(size: f64, material: Material, band: usize, air: f64) -> f64 {
+        let a = f64::from(material.acoustics().absorption[band]);
+        let (volume, surface) = (size.powi(3), 6.0 * size * size);
+        let path = 4.0 * volume / surface;
+        SIXTY_DB * path / (SPEED_OF_SOUND * (-((1.0 - a).ln()) + air * path))
     }
 
     #[test]
     #[allow(clippy::needless_range_loop)]
     fn shoebox_decay_matches_eyring() {
-        for material in [Material::Wood, Material::Cloth, Material::Soil] {
+        for material in [
+            Material::Wood,
+            Material::Cloth,
+            Material::Soil,
+            Material::Rock,
+            Material::Glass,
+            Material::Metal,
+            Material::Snow,
+        ] {
             let world = closed_box(material, 12);
             let room = measure(&world, Vec3::new(6.0, 6.0, 6.0), 2048, 24, 64.0, 1);
             for band in 0..BANDS {
-                let expected = eyring(
-                    12.0,
-                    f64::from(material.acoustics().absorption[band]),
-                    AIR[band],
-                );
                 let measured = f64::from(room.decay[band]);
-                let error = (measured - expected).abs() / expected;
+                let least = eyring(12.0, material, band, AIR[band]);
+                let most = eyring_sealed(12.0, material, band, AIR[band]).max(least);
+                let (low, high) = (least.min(most), most.max(least));
                 assert!(
-                    error < 0.2,
-                    "{material:?} band {band}: {measured} vs {expected}"
+                    measured >= 0.85 * low && measured <= 1.15 * high,
+                    "{material:?} band {band}: {measured} outside {low}..{high}"
                 );
             }
             assert_eq!(room.enclosure, 1.0);
+        }
+    }
+
+    #[test]
+    #[allow(clippy::needless_range_loop)]
+    fn a_rectangular_room_sizes_itself_by_4v_over_s() {
+        // 16 × 8 × 4 inside: V = 512, S = 448, so the mean free path is
+        // 4V/S = 4.57, not the two thirds of any one side.
+        let mut world = World::new();
+        for x in -1..=16 {
+            for y in -1..=8 {
+                for z in -1..=4 {
+                    let inside = (0..16).contains(&x) && (0..8).contains(&y) && (0..4).contains(&z);
+                    if !inside {
+                        world.set_block(x, y, z, Material::Rock);
+                    }
+                }
+            }
+        }
+        let room = measure(&world, Vec3::new(8.0, 4.0, 2.0), 2048, 24, 64.0, 3);
+        let path = 4.0 * 16.0 * 8.0 * 4.0 / 448.0;
+        assert!(
+            (room.mean_free_path - path).abs() < 0.1 * path,
+            "{} vs {path}",
+            room.mean_free_path
+        );
+        for band in 0..BANDS {
+            let absorption = f64::from(Material::Rock.acoustics().absorption[band]);
+            let loss = -(1.0 - absorption).ln() + AIR[band] * path;
+            let expected = SIXTY_DB * path / (SPEED_OF_SOUND * loss);
+            let measured = f64::from(room.decay[band]);
+            assert!(
+                (measured - expected).abs() < 0.25 * expected,
+                "band {band}: {measured} vs {expected}"
+            );
+        }
+    }
+
+    #[test]
+    #[allow(clippy::needless_range_loop)]
+    fn the_air_takes_the_highs_of_a_big_hall() {
+        // Metal barely absorbs, so in a hall 40 blocks across the air's own
+        // absorption is what ends the highs: Eyring with the air's term. The
+        // low and mid bands of such a hall outrun MAX_DECAY and clamp.
+        let big = measure(
+            &closed_box(Material::Metal, 40),
+            Vec3::new(20.0, 20.0, 20.0),
+            4096,
+            32,
+            64.0,
+            1,
+        );
+        for band in 0..BANDS {
+            let expected = eyring(40.0, Material::Metal, band, AIR[band]).min(MAX_DECAY);
+            let measured = f64::from(big.decay[band]);
+            assert!(
+                (measured - expected).abs() < 0.25 * expected,
+                "band {band}: {measured} vs {expected}"
+            );
+        }
+    }
+
+    /// The air coefficient read back out of closed metal boxes: sealed and
+    /// uniform, so the wall term is exact and everything beyond it is air.
+    /// The Eyring tests can't see a wrong air coefficient — their helper
+    /// would repeat it — so this derives it from the decay directly.
+    #[test]
+    fn the_air_absorbs_at_the_rate_the_table_documents() {
+        let metal = Material::Metal.acoustics();
+        let implied = |t60: f32, mfp: f64| {
+            SIXTY_DB / (SPEED_OF_SOUND * f64::from(t60))
+                - -(1.0 - f64::from(metal.absorption[2])).ln() / mfp
+        };
+        // A 40-block hall, where the high band's loss is four fifths air.
+        let hall = measure(
+            &closed_box(Material::Metal, 40),
+            Vec3::new(20.0, 20.0, 20.0),
+            4096,
+            32,
+            64.0,
+            1,
+        );
+        let air = implied(hall.decay[2], hall.mean_free_path);
+        assert!(
+            (air - AIR[2]).abs() < 0.2 * AIR[2],
+            "high band, big hall: implied {air:.6} against {}",
+            AIR[2]
+        );
+        // A 12-block box pins the small end: its mfp is short enough that
+        // the decay stays unclamped while the air term is still a fifth of
+        // the high band's loss.
+        let box12 = measure(
+            &closed_box(Material::Metal, 12),
+            Vec3::new(6.0, 6.0, 6.0),
+            4096,
+            24,
+            64.0,
+            1,
+        );
+        let air = implied(box12.decay[2], box12.mean_free_path);
+        assert!(
+            (air - AIR[2]).abs() < 0.2 * AIR[2],
+            "high band, small box: implied {air:.6} against {}",
+            AIR[2]
+        );
+    }
+
+    #[test]
+    fn the_scattering_measured_is_what_the_surfaces_scatter() {
+        let room = measure(
+            &closed_box(Material::Cloth, 10),
+            Vec3::new(5.0, 5.0, 5.0),
+            1024,
+            16,
+            64.0,
+            2,
+        );
+        let wanted = Material::Cloth.acoustics().scattering;
+        assert!((room.scattering - wanted).abs() < 0.05, "{room:?}");
+    }
+
+    #[test]
+    fn the_first_reflection_and_volume_size_the_space() {
+        let room = measure(
+            &closed_box(Material::Rock, 12),
+            Vec3::new(6.0, 6.0, 6.0),
+            2048,
+            0,
+            64.0,
+            4,
+        );
+        // From the centre of a 12-cube the walls are 6 away along an axis and
+        // 10.4 across the corner; the mean first hit lies between.
+        assert!(
+            room.first_reflection > 5.5 && room.first_reflection < 10.5,
+            "{room:?}"
+        );
+        // The volume estimate is the room's order of magnitude, not the open
+        // sky's, and not a shoebox's.
+        assert!(room.volume > 500.0 && room.volume < 2000.0, "{room:?}");
+    }
+
+    #[test]
+    fn the_same_seed_measures_the_same_room_twice() {
+        let world = closed_box(Material::Rock, 12);
+        let at = Vec3::new(6.0, 6.0, 6.0);
+        // 2048 rays takes the threaded path, so this holds for the split
+        // trace too.
+        let a = measure_with_early(&world, at, 2048, 16, 64.0, 42);
+        let b = measure_with_early(&world, at, 2048, 16, 64.0, 42);
+        assert_eq!(a.0, b.0);
+        assert_eq!(a.1, b.1);
+        // A different seed is a different sample of the same room: nearby,
+        // not identical.
+        let c = measure_with_early(&world, at, 2048, 16, 64.0, 43).0;
+        for band in 0..BANDS {
+            let spread =
+                (f64::from(c.decay[band] - a.0.decay[band]) / f64::from(a.0.decay[band])).abs();
+            assert!(spread < 0.1, "band {band} moved {spread}");
         }
     }
 

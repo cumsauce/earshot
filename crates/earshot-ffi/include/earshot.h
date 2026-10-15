@@ -24,8 +24,9 @@
  * 11: `earshot_set_quality` takes the room rays' reach.
  * 12: `earshot_impulse_response_for`.
  * 13: `earshot_hear` adds the opening's size.
+ * 14: section and block bytes pack the fill fraction into the high nibble.
  */
-#define EARSHOT_ABI_VERSION 13
+#define EARSHOT_ABI_VERSION 14
 
 #define EARSHOT_OK 0
 
@@ -141,7 +142,10 @@ int32_t earshot_material_names(uint8_t *buf, size_t cap, size_t *needed);
 
 /**
  * Replaces the section at section coordinates `x, y, z` with `blocks`:
- * 4096 material ids in Minecraft's order, index `(y << 8) | (z << 4) | x`.
+ * 4096 packed block bytes in Minecraft's order, index
+ * `(y << 8) | (z << 4) | x` — the material id in the low nibble, how much
+ * of the block is there in the high one (0 = full; otherwise sixteenths,
+ * so a slab is 8).
  *
  * # Safety
  * `engine` must be live; `blocks` must be readable for 4096 bytes.
@@ -162,7 +166,9 @@ int32_t earshot_set_section(struct EarshotEngine *engine,
 int32_t earshot_remove_section(struct EarshotEngine *engine, int32_t x, int32_t y, int32_t z);
 
 /**
- * Sets block `x, y, z` to `material`, as when the game changes it.
+ * Sets block `x, y, z` to a packed block byte, as when the game changes
+ * it: the material id in the low nibble, how much of the block is there in
+ * the high one (0 = full; otherwise sixteenths, so a slab is 8).
  *
  * # Safety
  * `engine` must be live.
@@ -171,7 +177,7 @@ int32_t earshot_set_block(struct EarshotEngine *engine,
                           int32_t x,
                           int32_t y,
                           int32_t z,
-                          uint8_t material);
+                          uint8_t block);
 
 /**
  * Forgets every section, as when the player changes dimension or leaves.

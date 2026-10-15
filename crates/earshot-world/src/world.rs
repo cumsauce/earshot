@@ -26,7 +26,9 @@ impl SectionPos {
     }
 }
 
-/// One mirrored section: a material id per block.
+/// One mirrored section: a byte per block, the material id in the low
+/// nibble and how much of the block is there in the high one (0 = full;
+/// otherwise sixteenths, so a slab carries 8).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Section {
     blocks: Box<[u8; SECTION_BLOCKS]>,
@@ -36,11 +38,28 @@ impl Section {
     /// The material at `(x, y, z)` within the section, each 0 to 15.
     #[inline]
     pub fn get(&self, x: i32, y: i32, z: i32) -> Material {
-        Material::from_id(self.blocks[index(x, y, z)])
+        Material::from_id(self.blocks[index(x, y, z)] & 0x0F)
+    }
+
+    /// How much of the block at `(x, y, z)` is there, 0 to 1.
+    #[inline]
+    pub fn fill(&self, x: i32, y: i32, z: i32) -> f32 {
+        fill_of(self.blocks[index(x, y, z)])
     }
 
     fn is_empty(&self) -> bool {
-        self.blocks.iter().all(|&id| id == Material::Air.id())
+        self.blocks.iter().all(|&byte| byte & 0x0F == 0)
+    }
+}
+
+/// The fill a packed block byte carries: 0 means full.
+#[inline]
+fn fill_of(byte: u8) -> f32 {
+    let code = byte >> 4;
+    if code == 0 {
+        1.0
+    } else {
+        f32::from(code) / 16.0
     }
 }
 
@@ -61,8 +80,9 @@ impl World {
         World::default()
     }
 
-    /// Replaces a whole section with `blocks`, material ids in section
-    /// order. Whether anything changed.
+    /// Replaces a whole section with `blocks`, one packed byte per block in
+    /// section order (material id in the low nibble, fill fraction in the
+    /// high one, 0 = full). Whether anything changed.
     pub fn set_section(&mut self, pos: SectionPos, blocks: &[u8; SECTION_BLOCKS]) -> bool {
         if self
             .sections
@@ -91,13 +111,38 @@ impl World {
     /// changed: a block changing state (water flowing, a crop growing) often
     /// keeps it.
     pub fn set_block(&mut self, x: i32, y: i32, z: i32, material: Material) -> bool {
+        self.set_block_raw(x, y, z, material.id())
+    }
+
+    /// [`World::set_block`] with a fill fraction (0 to 1) packed into the
+    /// high nibble.
+    pub fn set_block_fill(
+        &mut self,
+        x: i32,
+        y: i32,
+        z: i32,
+        material: Material,
+        fill: f32,
+    ) -> bool {
+        let code = if fill >= 1.0 {
+            0
+        } else {
+            ((fill * 16.0).round() as u8).clamp(1, 15)
+        };
+        self.set_block_raw(x, y, z, (code << 4) | material.id())
+    }
+
+    /// Writes a packed block byte (material id in the low nibble, fill in
+    /// the high one, 0 = full). Whether the byte changed.
+    pub fn set_block_raw(&mut self, x: i32, y: i32, z: i32, byte: u8) -> bool {
+        let material = Material::from_id(byte & 0x0F);
         let pos = SectionPos::of_block(x, y, z);
         match self.sections.get_mut(&pos) {
             Some(section) => {
-                if section.blocks[index(x, y, z)] == material.id() {
+                if section.blocks[index(x, y, z)] == byte {
                     return false;
                 }
-                section.blocks[index(x, y, z)] = material.id();
+                section.blocks[index(x, y, z)] = byte;
                 if material == Material::Air && section.is_empty() {
                     self.sections.remove(&pos);
                 }
@@ -105,7 +150,7 @@ impl World {
             }
             None if material != Material::Air => {
                 let mut blocks = Box::new([Material::Air.id(); SECTION_BLOCKS]);
-                blocks[index(x, y, z)] = material.id();
+                blocks[index(x, y, z)] = byte;
                 self.sections.insert(pos, Section { blocks });
                 true
             }
@@ -207,6 +252,48 @@ mod tests {
         assert_eq!(world.sections(), 0);
         world.set_section(SectionPos::new(0, 0, 0), &[0; SECTION_BLOCKS]);
         assert_eq!(world.sections(), 0);
+    }
+
+    #[test]
+    fn fill_packs_into_the_high_nibble() {
+        let mut world = World::new();
+        world.set_block_fill(1, 2, 3, Material::Wood, 0.5);
+        assert_eq!(world.block(1, 2, 3), Material::Wood);
+        assert!(
+            (world
+                .section(SectionPos::of_block(1, 2, 3))
+                .unwrap()
+                .fill(1, 2, 3)
+                - 0.5)
+                .abs()
+                < 1e-6
+        );
+        // A full block packs as plain material id: code 0 means full.
+        world.set_block(1, 2, 4, Material::Rock);
+        assert!(
+            (world
+                .section(SectionPos::of_block(1, 2, 4))
+                .unwrap()
+                .fill(1, 2, 4)
+                - 1.0)
+                .abs()
+                < 1e-6
+        );
+        // Only a material change counts as a change when the fill matches.
+        let mut blocks = [0u8; SECTION_BLOCKS];
+        blocks[index(5, 5, 5)] = (8 << 4) | Material::Rock.id();
+        assert!(world.set_section(SectionPos::of_block(5, 5, 5), &blocks));
+        assert!(!world.set_block_raw(5, 5, 5, (8 << 4) | Material::Rock.id()));
+        assert!(world.set_block_raw(5, 5, 5, Material::Rock.id()));
+        assert!(
+            (world
+                .section(SectionPos::of_block(5, 5, 5))
+                .unwrap()
+                .fill(5, 5, 5)
+                - 1.0)
+                .abs()
+                < 1e-6
+        );
     }
 
     #[test]

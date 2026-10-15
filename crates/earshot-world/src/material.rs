@@ -34,6 +34,9 @@ pub enum Material {
     Lava,
     Ice,
     Snow,
+    /// A thin soft layer that doesn't stop sound but soaks it up: wool and
+    /// moss carpets, snow layers.
+    Rug,
 }
 
 /// How a material treats sound.
@@ -71,10 +74,17 @@ const TABLE: [(&str, Bands, f32, Bands); Material::ALL.len()] = [
     ("soil", [0.15, 0.40, 0.55], 0.65, [30.0, 40.0, 50.0]),
     ("sand", [0.20, 0.45, 0.60], 0.6, [25.0, 35.0, 45.0]),
     ("metal", [0.08, 0.05, 0.04], 0.1, [30.0, 40.0, 50.0]),
-    ("water", [0.01, 0.01, 0.02], 0.05, [3.0, 5.0, 9.0]),
+    // Bulk water passes sound almost as well as air does — whales call across
+    // oceans — so nearly nothing per block. The air–water *surface* is what
+    // blocks sound, and `transmission` charges it once per crossing.
+    ("water", [0.01, 0.01, 0.02], 0.05, [0.0, 0.005, 0.01]),
     ("lava", [0.05, 0.05, 0.05], 0.1, [30.0, 40.0, 50.0]),
     ("ice", [0.02, 0.02, 0.03], 0.05, [25.0, 35.0, 45.0]),
     ("snow", [0.45, 0.70, 0.85], 0.6, [6.0, 12.0, 20.0]),
+    // A thin layer of textile or fresh snow on something hard: not much of a
+    // wall, but it takes the highs out of a room's ring and out of the floor's
+    // slap back. Coefficients are about a heavy carpet's.
+    ("rug", [0.15, 0.35, 0.60], 0.65, [1.0, 2.0, 3.0]),
 ];
 
 static ACOUSTICS: LazyLock<[Acoustics; Material::ALL.len()]> = LazyLock::new(|| {
@@ -87,7 +97,7 @@ static ACOUSTICS: LazyLock<[Acoustics; Material::ALL.len()]> = LazyLock::new(|| 
 
 impl Material {
     /// Every material, in id order.
-    pub const ALL: [Material; 13] = [
+    pub const ALL: [Material; 14] = [
         Material::Air,
         Material::Rock,
         Material::Wood,
@@ -101,6 +111,7 @@ impl Material {
         Material::Lava,
         Material::Ice,
         Material::Snow,
+        Material::Rug,
     ];
 
     /// The material with this id, or air for an unknown one.
@@ -153,6 +164,27 @@ mod tests {
         // 18 dB through a block of rock at low frequencies.
         let rock = Material::Rock.acoustics().transmission[0];
         assert!((rock - 0.000_316).abs() < 1e-5, "{rock}");
+    }
+
+    #[test]
+    fn the_rug_is_a_heavy_carpet_over_a_hard_floor() {
+        let [lo, mid, hi] = Material::Rug.acoustics().absorption;
+        // Published heavy-carpet figures at 250 Hz / 1 kHz / 4 kHz: a little
+        // at the bottom, most of the treble.
+        assert!((0.05..=0.2).contains(&lo), "{lo}");
+        assert!((0.2..=0.4).contains(&mid), "{mid}");
+        assert!((0.4..=0.7).contains(&hi), "{hi}");
+        // A rug is not a curtain: it passes what cloth stops.
+        for band in 0..BANDS {
+            assert!(
+                Material::Rug.acoustics().transmission[band]
+                    > Material::Cloth.acoustics().transmission[band],
+                "band {band}"
+            );
+        }
+        // Fresh snow soaks up more than a carpet; the layer less than the
+        // full block.
+        assert!(Material::Snow.acoustics().absorption[1] > mid);
     }
 
     #[test]

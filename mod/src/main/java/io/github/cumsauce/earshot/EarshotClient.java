@@ -77,10 +77,15 @@ public final class EarshotClient implements ClientModInitializer {
 		use(bypass ? config.withPreset(EarshotConfig.Preset.OFF) : config);
 	}
 
-	/** How far room rays reach: twice as far under a dimension's ceiling, whose caverns are far bigger. */
+	/**
+	 * How far room rays reach: twice as far under a dimension's ceiling, whose caverns are far bigger, and half as far
+	 * again on Ultra, whose budget absorbs the cost and whose players build halls over a hundred blocks across.
+	 */
 	private static double roomReach() {
 		var level = net.minecraft.client.Minecraft.getInstance().level;
-		return level != null && level.dimensionType().hasCeiling() ? 128 : 64;
+		boolean ceiling = level != null && level.dimensionType().hasCeiling();
+		double base = config.preset().resolve() == EarshotConfig.Preset.ULTRA ? 96 : 64;
+		return ceiling ? base * 2 : base;
 	}
 
 	/** Under a ceiling or not, as {@link #roomReach} last saw. */

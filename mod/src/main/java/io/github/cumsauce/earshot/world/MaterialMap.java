@@ -14,6 +14,7 @@ import net.minecraft.world.level.block.IceBlock;
 import net.minecraft.world.level.block.IronBarsBlock;
 import net.minecraft.world.level.block.LeavesBlock;
 import net.minecraft.world.level.block.SoundType;
+import net.minecraft.world.level.block.SnowLayerBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.TrapDoorBlock;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
@@ -91,13 +92,16 @@ public final class MaterialMap {
 
 	/** The material of {@code state}. */
 	public AcousticMaterial material(BlockState state) {
-		return AcousticMaterial.values()[id(state)];
+		return AcousticMaterial.values()[packed(state) & 0x0F];
 	}
 
-	/** The native id of {@code state}'s material. */
-	public byte id(BlockState state) {
+	/**
+	 * The native byte for {@code state}: the material id in the low nibble, how much of the block is there in the
+	 * high one (0 = full; otherwise sixteenths, so a slab carries 8).
+	 */
+	public byte packed(BlockState state) {
 		int stateId = Block.getId(state);
-		if (stateId < 0) return classify(state, overrides).id();
+		if (stateId < 0) return pack(state, overrides);
 		if (stateId >= byState.length) {
 			int size = Math.max(stateId + 1, Block.BLOCK_STATE_REGISTRY.size());
 			int old = byState.length;
@@ -106,7 +110,7 @@ public final class MaterialMap {
 		}
 		byte id = byState[stateId];
 		if (id == UNKNOWN) {
-			id = classify(state, overrides).id();
+			id = pack(state, overrides);
 			byState[stateId] = id;
 		}
 		return id;
@@ -139,6 +143,8 @@ public final class MaterialMap {
 		if (block instanceof IronBarsBlock) {
 			return state.getSoundType() == SoundType.GLASS ? AcousticMaterial.GLASS : AcousticMaterial.AIR;
 		}
+		// A thin soft layer doesn't stop sound, but it soaks the room's highs up.
+		if (state.is(BlockTags.CARPETS) || block instanceof SnowLayerBlock) return AcousticMaterial.RUG;
 		// A closed door is thin, but it fills its doorway.
 		boolean panel = block instanceof DoorBlock || block instanceof TrapDoorBlock || block instanceof FenceGateBlock;
 		if (!panel && volume(shape) < SOLID_VOLUME) return AcousticMaterial.AIR;
@@ -151,6 +157,37 @@ public final class MaterialMap {
 		if (state.is(BlockTags.SAND)) return AcousticMaterial.SAND;
 		if (state.is(BlockTags.SNOW)) return AcousticMaterial.SNOW;
 		return BY_SOUND.getOrDefault(state.getSoundType(), AcousticMaterial.ROCK);
+	}
+
+	/** Decides a state's native byte, with no overrides. */
+	static byte pack(BlockState state) {
+		return pack(state, MaterialOverrides.NONE);
+	}
+
+	/** Decides a state's native byte: the material's id, with the fill fraction beside it. */
+	static byte pack(BlockState state, MaterialOverrides overrides) {
+		AcousticMaterial material = classify(state, overrides);
+		if (material == AcousticMaterial.AIR) return 0;
+		return (byte) (fillCode(state, material) << 4 | material.id());
+	}
+
+	/**
+	 * How much of the block is there, as a nibble code: 0 for full, otherwise sixteenths, never under a quarter. The
+	 * mass law scales a wall's transmission loss with its thickness, so a half slab passes most of what a full block
+	 * stops. Things whose thinness is a lie — a closed door fills its doorway, a glass pane fills its window — and
+	 * fluids stay full: the water's surface toll is charged per crossing, not per block.
+	 */
+	private static byte fillCode(BlockState state, AcousticMaterial material) {
+		if (material == AcousticMaterial.WATER || material == AcousticMaterial.LAVA) return 0;
+		Block block = state.getBlock();
+		if (block instanceof DoorBlock || block instanceof TrapDoorBlock || block instanceof FenceGateBlock
+				|| block instanceof IronBarsBlock) {
+			return 0;
+		}
+		VoxelShape shape = state.getShape(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
+		double v = volume(shape);
+		if (v >= 0.97) return 0;
+		return (byte) Math.clamp(Math.round(v * 16), 4, 15);
 	}
 
 	/** The volume of a collision shape, in blocks. */

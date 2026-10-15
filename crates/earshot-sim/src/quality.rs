@@ -68,3 +68,100 @@ pub struct Stats {
     /// How far that field reaches each way, in blocks; 0 when there is none.
     pub field_half: i32,
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn the_bounds_are_checked_one_step_past_each_edge() {
+        assert!(Quality::DEFAULT.is_valid());
+        for broken in [
+            Quality {
+                room_rays: (1 << 16) + 1,
+                ..Quality::DEFAULT
+            },
+            Quality {
+                room_bounces: 65,
+                ..Quality::DEFAULT
+            },
+            Quality {
+                room_every: Duration::from_millis(19),
+                ..Quality::DEFAULT
+            },
+            Quality {
+                room_every: Duration::from_millis(5001),
+                ..Quality::DEFAULT
+            },
+            Quality {
+                occlusion_rays: 2,
+                ..Quality::DEFAULT
+            },
+            Quality {
+                field_half: -1,
+                ..Quality::DEFAULT
+            },
+            Quality {
+                field_half: 65,
+                ..Quality::DEFAULT
+            },
+            Quality {
+                room_reach: 7.9,
+                ..Quality::DEFAULT
+            },
+            Quality {
+                room_reach: 256.1,
+                ..Quality::DEFAULT
+            },
+            Quality {
+                budget: 0.0,
+                ..Quality::DEFAULT
+            },
+            Quality {
+                budget: 8.1,
+                ..Quality::DEFAULT
+            },
+        ] {
+            assert!(!broken.is_valid(), "{broken:?}");
+        }
+        // The edges themselves are all fine.
+        for edge in [
+            Quality {
+                room_rays: 1 << 16,
+                ..Quality::DEFAULT
+            },
+            Quality {
+                room_bounces: 64,
+                ..Quality::DEFAULT
+            },
+            Quality {
+                room_every: Duration::from_millis(20),
+                ..Quality::DEFAULT
+            },
+            Quality {
+                room_every: Duration::from_secs(5),
+                ..Quality::DEFAULT
+            },
+            Quality {
+                occlusion_rays: 9,
+                ..Quality::DEFAULT
+            },
+            Quality {
+                field_half: 64,
+                ..Quality::DEFAULT
+            },
+            Quality {
+                room_reach: 256.0,
+                ..Quality::DEFAULT
+            },
+            Quality {
+                budget: 8.0,
+                ..Quality::DEFAULT
+            },
+        ] {
+            assert!(edge.is_valid(), "{edge:?}");
+        }
+    }
+}

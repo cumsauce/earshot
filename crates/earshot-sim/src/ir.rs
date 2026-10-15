@@ -396,4 +396,131 @@ mod tests {
         let bands = Bands3::new(48_000.0).split(1.0);
         assert!((bands.iter().sum::<f32>() - 1.0).abs() < 1e-6);
     }
+
+    #[test]
+    fn the_same_seed_makes_the_same_response_and_a_different_one_rebalances() {
+        let r = room([1.5, 1.0, 0.6], 6.0, 1.0);
+        let a = impulse_response(&r, &[], 48_000, 1.5, 5);
+        let b = impulse_response(&r, &[], 48_000, 1.5, 5);
+        assert_eq!(a, b);
+        let c = impulse_response(&r, &[], 48_000, 1.5, 6);
+        assert_ne!(a, c);
+        let energy = |ir: &[f32]| 2.0 * ir.iter().step_by(IR_CHANNELS).map(|s| s * s).sum::<f32>();
+        assert!(
+            (energy(&a) / energy(&c) - 1.0).abs() < 0.1,
+            "{} vs {}",
+            energy(&a),
+            energy(&c)
+        );
+    }
+
+    #[test]
+    fn every_sample_is_finite_the_length_bounded_and_the_end_faded() {
+        let r = room([2.0, 1.0, 0.5], 8.0, 1.0);
+        let ir = impulse_response(&r, &[], 48_000, 1.5, 1);
+        assert!(ir.iter().all(|s| s.is_finite()));
+        // The mid decay of a second sets the length.
+        assert_eq!(ir.len(), 48_000 * IR_CHANNELS);
+        let short = impulse_response(&r, &[], 48_000, 0.25, 1);
+        assert_eq!(short.len(), 12_000 * IR_CHANNELS);
+        // The fade-out at the end lands near silence.
+        let peak = ir.iter().fold(0.0f32, |peak, s| peak.max(s.abs()));
+        let last = ir[ir.len() - IR_CHANNELS];
+        assert!(last.abs() < 2e-3 * peak, "{last} after a peak of {peak}");
+    }
+
+    #[test]
+    fn a_tail_bigger_than_its_room_is_held_to_max_energy() {
+        let r = Room {
+            decay: [4.0; 3],
+            mean_free_path: 10.0,
+            enclosure: 1.0,
+            first_reflection: 5.0,
+            scattering: 0.3,
+            volume: 1.0,
+        };
+        assert!(late_energy(&r) >= 4.0, "the formula caps at 4 itself");
+        let ir = impulse_response(&r, &[], 48_000, 1.5, 1);
+        let energy = 2.0 * ir.iter().step_by(IR_CHANNELS).map(|s| s * s).sum::<f32>();
+        assert!(energy <= MAX_ENERGY * 1.000_1, "{energy}");
+    }
+
+    #[test]
+    fn each_band_of_the_tail_decays_at_its_own_measured_rate() {
+        let rate = 48_000.0;
+        let r = room([3.0, 1.5, 0.75], 8.0, 1.0);
+        let ir = impulse_response(&r, &[], 48_000, 1.5, 8);
+        // Band energies of W early (100–200 ms) and late (600–700 ms); the
+        // windows are half a second apart.
+        let mut bands = Bands3::new(rate);
+        let mut windows = [[0.0f32; 3]; 2];
+        for (i, &w) in ir.iter().step_by(IR_CHANNELS).enumerate() {
+            let t = i as f32 / rate;
+            let window = if (0.1..0.2).contains(&t) {
+                0
+            } else if (0.6..0.7).contains(&t) {
+                1
+            } else {
+                continue;
+            };
+            for (energy, band) in windows[window].iter_mut().zip(bands.split(w)) {
+                *energy += band * band;
+            }
+        }
+        let measured: Vec<f32> = r
+            .decay
+            .iter()
+            .enumerate()
+            .map(|(band, _)| {
+                let drop = 10.0 * (windows[0][band] / windows[1][band]).log10();
+                60.0 * 0.5 / drop
+            })
+            .collect();
+        for (measured_t60, t60) in measured.iter().zip(r.decay) {
+            // The split's 12 dB/oct crossovers leak the neighbouring bands'
+            // rates into each measurement, so half the rate is as close as
+            // this method gets; the ordering below is the sharp check.
+            assert!(
+                (measured_t60 / t60 - 1.0).abs() < 0.5,
+                "{measured_t60} against {t60}"
+            );
+        }
+        assert!(
+            measured[0] >= measured[1] && measured[1] >= measured[2],
+            "each band decays at its own rate: {measured:?}"
+        );
+    }
+
+    #[test]
+    fn reflections_ahead_and_above_land_on_their_channels() {
+        // B-format with the listener facing -z: what is ahead is +X, what is
+        // above is +Z (the +x test, on Y, is above).
+        let ahead = Reflection {
+            direction: Vec3::new(0.0, 0.0, -1.0),
+            delay: 0.02,
+            energy: 0.25,
+        };
+        let above = Reflection {
+            direction: Vec3::new(0.0, 1.0, 0.0),
+            delay: 0.03,
+            energy: 0.25,
+        };
+        let ir = impulse_response(&room([0.5; 3], 4.0, 1.0), &[ahead, above], 48_000, 1.0, 3);
+        let tap = |delay: f32| {
+            let at = (delay * 48_000.0) as usize * IR_CHANNELS;
+            [ir[at], ir[at + 1], ir[at + 2], ir[at + 3]]
+        };
+        let ahead = tap(0.02);
+        // W is swamped by the diffuse tail's noise; the directional channels
+        // against each other say where it comes from.
+        assert!(
+            ahead[1] > 4.0 * ahead[2].abs().max(ahead[3].abs()),
+            "ahead is X: {ahead:?}"
+        );
+        let above = tap(0.03);
+        assert!(
+            above[3] > 4.0 * above[1].abs().max(above[2].abs()),
+            "above is Z: {above:?}"
+        );
+    }
 }

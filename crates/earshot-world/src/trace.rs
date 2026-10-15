@@ -7,6 +7,10 @@ use crate::{BANDS, Bands, Material, Section, SectionPos, Vec3, World};
 pub struct Step {
     pub block: [i32; 3],
     pub material: Material,
+    /// How much of the block is there, 0 to 1: half for a slab, 1 for a
+    /// full block. Transmission loss scales with it (the mass law: the loss
+    /// is of the thickness).
+    pub fill: f32,
     /// How far along the ray it enters and leaves the block.
     pub enter: f64,
     pub exit: f64,
@@ -20,7 +24,13 @@ pub struct Step {
 pub struct Hit {
     pub block: [i32; 3],
     pub material: Material,
+    /// How much of the hit block is there, 0 to 1: the share of the energy
+    /// a crossing takes.
+    pub fill: f32,
     pub distance: f64,
+    /// How far along the ray it leaves the hit block, for sampling what's
+    /// behind it.
+    pub exit: f64,
     pub point: Vec3,
     /// The outward normal of the face hit; zero when the ray starts inside a
     /// solid block.
@@ -74,10 +84,11 @@ pub fn walk(
             2
         };
         let exit = t_max[axis].min(max);
-        let material = cache.block(world, block);
+        let (material, fill) = cache.block(world, block);
         let here = Step {
             block,
             material,
+            fill,
             enter,
             exit,
             normal,
@@ -102,7 +113,9 @@ pub fn cast(world: &World, origin: Vec3, dir: Vec3, max: f64) -> Option<Hit> {
         hit = Some(Hit {
             block: step.block,
             material: step.material,
+            fill: step.fill,
             distance: step.enter,
+            exit: step.exit,
             point: origin + dir * step.enter,
             normal: Vec3::new(x, y, z),
         });
@@ -115,7 +128,8 @@ pub fn cast(world: &World, origin: Vec3, dir: Vec3, max: f64) -> Option<Hit> {
 /// blocks between `from` and `to`. Each block passes its material's
 /// transmission raised to the length of the path inside it, so clipping a
 /// corner costs little. The blocks at either end don't count: a sound from a
-/// chest or a note block comes from inside its own block.
+/// chest or a note block comes from inside its own block. Crossing the
+/// water's surface costs [`WATER_INTERFACE_DB`] once per crossing.
 pub fn transmission(world: &World, from: Vec3, to: Vec3) -> Bands {
     let delta = to - from;
     let distance = delta.length();
@@ -123,13 +137,37 @@ pub fn transmission(world: &World, from: Vec3, to: Vec3) -> Bands {
     if distance == 0.0 {
         return passing;
     }
+    let dir = delta * (1.0 / distance);
     let ends = [floor(from), floor(to)];
-    walk_solid(world, from, delta * (1.0 / distance), distance, |step| {
+    walk_solid(world, from, dir, distance, |step| {
         if ends.contains(&step.block) {
             return ControlFlow::Continue(());
         }
+        if step.material == Material::Water {
+            // The surface's toll is per crossing, not per block: charged on
+            // each face of a water block that borders another medium, so a
+            // submerged path pays nothing and an air bubble pays twice.
+            let mut surface = |neighbour: [i32; 3]| {
+                if world.block(neighbour[0], neighbour[1], neighbour[2]) != Material::Water {
+                    for (passing, db) in passing.iter_mut().zip(WATER_INTERFACE_DB) {
+                        *passing *= 10f32.powf(-db / 10.0);
+                    }
+                }
+            };
+            if step.normal != [0; 3] {
+                surface([
+                    step.block[0] + step.normal[0],
+                    step.block[1] + step.normal[1],
+                    step.block[2] + step.normal[2],
+                ]);
+            }
+            surface(exit_neighbour(from, dir, step));
+        }
         let length = (step.exit - step.enter) as f32;
         let through = step.material.acoustics().transmission;
+        // The loss is of the thickness (the mass law): a half-slab passes
+        // the square root of what the full block does.
+        let length = length * step.fill;
         for (passing, through) in passing.iter_mut().zip(through) {
             *passing *= through.powf(length);
         }
@@ -139,6 +177,22 @@ pub fn transmission(world: &World, from: Vec3, to: Vec3) -> Bands {
         ControlFlow::Continue(())
     });
     passing
+}
+
+/// What crossing the air–water surface costs, once per crossing, per band.
+/// The plane-wave figure for the impedance jump (water is some 3600× air,
+/// which passes a tenth of a percent of the energy) is 29.5 dB flat; the
+/// tilt lets lows squeeze through an edged or rough surface a little better.
+const WATER_INTERFACE_DB: Bands = [25.0, 30.0, 35.0];
+
+/// The block just across the face a ray leaves `step` through.
+fn exit_neighbour(origin: Vec3, dir: Vec3, step: &Step) -> [i32; 3] {
+    let past = origin + dir * (step.exit + 1e-6);
+    [
+        past.x.floor() as i32,
+        past.y.floor() as i32,
+        past.z.floor() as i32,
+    ]
 }
 
 /// [`walk`], visiting only the solid blocks, and crossing a section with
@@ -240,6 +294,7 @@ fn walk_solid(
             let here = Step {
                 block,
                 material,
+                fill: section.fill(block[0], block[1], block[2]),
                 enter,
                 exit: t_max[axis].min(max),
                 normal,
@@ -276,14 +331,15 @@ struct Cache<'a> {
 }
 
 impl<'a> Cache<'a> {
-    fn block(&mut self, world: &'a World, [x, y, z]: [i32; 3]) -> Material {
+    fn block(&mut self, world: &'a World, [x, y, z]: [i32; 3]) -> (Material, f32) {
         let pos = SectionPos::of_block(x, y, z);
         if self.pos != Some(pos) {
             self.pos = Some(pos);
             self.section = world.section(pos);
         }
-        self.section
-            .map_or(Material::Air, |section| section.get(x, y, z))
+        self.section.map_or((Material::Air, 1.0), |section| {
+            (section.get(x, y, z), section.fill(x, y, z))
+        })
     }
 }
 
@@ -355,7 +411,9 @@ mod tests {
             hit = Some(Hit {
                 block: step.block,
                 material: step.material,
+                fill: 1.0,
                 distance: step.enter,
+                exit: step.exit,
                 point: origin + dir * step.enter,
                 normal: Vec3::new(x, y, z),
             });
@@ -446,6 +504,254 @@ mod tests {
         world.set_block(10, 0, 0, Material::Wood);
         let through = transmission(&world, Vec3::new(0.5, 0.5, 0.5), Vec3::new(10.5, 0.5, 0.5));
         assert_eq!(through, [1.0; BANDS]);
+    }
+
+    /// The product over the ray's solid blocks of transmission^length, the
+    /// way a slow walk would add it up, for holding [`transmission`] to.
+    fn transmission_by_walking(world: &World, from: Vec3, to: Vec3) -> Bands {
+        let delta = to - from;
+        let distance = delta.length();
+        let mut passing = [1.0f32; BANDS];
+        walk(world, from, delta * (1.0 / distance), distance, |step| {
+            if !step.material.is_solid() {
+                return ControlFlow::Continue(());
+            }
+            let length = (step.exit - step.enter) as f32;
+            for (passing, through) in passing
+                .iter_mut()
+                .zip(step.material.acoustics().transmission)
+            {
+                *passing *= through.powf(length);
+            }
+            ControlFlow::Continue(())
+        });
+        passing
+    }
+
+    #[test]
+    fn diagonal_transmission_matches_a_slow_walk_through_the_same_blocks() {
+        let mut world = World::new();
+        let mut rng = Rng(0x2545_f491_4f6c_dd1d);
+        for _ in 0..600 {
+            let at = [rng.signed(), rng.signed(), rng.signed()].map(|v| (v * 20.0) as i32);
+            let solids = [
+                Material::Rock,
+                Material::Wood,
+                Material::Glass,
+                Material::Cloth,
+                Material::Leaves,
+                Material::Soil,
+                Material::Sand,
+                Material::Metal,
+                Material::Lava,
+                Material::Ice,
+                Material::Snow,
+            ];
+            let material = solids[(rng.next() * 11.0) as usize % solids.len()];
+            world.set_block(at[0], at[1], at[2], material);
+        }
+        let from = Vec3::new(0.5, 0.5, 0.5);
+        for _ in 0..2000 {
+            let to = Vec3::new(rng.signed(), rng.signed(), rng.signed()) * 20.0;
+            let want = transmission_by_walking(&world, from, to);
+            let got = transmission(&world, from, to);
+            // The end blocks count in the slow walk but not in transmission;
+            // ignore results where that difference can show.
+            let ends =
+                [from, to].map(|p| [p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32]);
+            let end_solid = ends
+                .iter()
+                .any(|b| world.block(b[0], b[1], b[2]).is_solid());
+            if end_solid {
+                continue;
+            }
+            for (got, want) in got.iter().zip(want) {
+                assert!((got - want).abs() < 1e-4, "{got} vs {want}");
+            }
+        }
+    }
+
+    #[test]
+    fn clipping_a_corner_loses_little_and_the_middle_of_a_wall_loses_it_all() {
+        let mut world = World::new();
+        // A hedge five blocks thick, x from 3 to 7: thick enough to check
+        // the per-block powers, thin enough in loss to stay above
+        // transmission's −60 dB early-out.
+        for x in 3..=7 {
+            for y in -2..=2 {
+                for z in -2..=2 {
+                    world.set_block(x, y, z, Material::Leaves);
+                }
+            }
+        }
+        // Through the middle: five blocks in a row.
+        let straight = transmission(&world, Vec3::new(0.5, 0.5, 0.5), Vec3::new(9.5, 0.5, 0.5));
+        let leaves = Material::Leaves.acoustics().transmission;
+        for (got, want) in straight.iter().zip(leaves) {
+            assert!(
+                (got - want * want * want * want * want).abs() < 1e-6,
+                "{got} vs {want}"
+            );
+        }
+        // A stone wall in the way loses nearly everything in one block.
+        let mut world = World::new();
+        for y in -2..=2 {
+            for z in -2..=2 {
+                world.set_block(5, y, z, Material::Rock);
+            }
+        }
+        let straight = transmission(&world, Vec3::new(0.5, 0.5, 0.5), Vec3::new(9.5, 0.5, 0.5));
+        let rock = Material::Rock.acoustics().transmission;
+        for (got, want) in straight.iter().zip(rock) {
+            assert!((got - want).abs() < 1e-12, "{got} vs {want}");
+        }
+        // Over the wall's top edge, the ray leaves through the top block's
+        // upper face partway across: here from (5, 2.9) to (5.19, 3.0),
+        // under a quarter of a block, so it loses far less than the full
+        // block straight through the middle.
+        let grazing = transmission(&world, Vec3::new(0.5, 0.5, 0.5), Vec3::new(9.5, 5.3, 0.5));
+        assert!(
+            grazing[1] > straight[1] && grazing[1] < 1.0,
+            "{grazing:?} vs {straight:?}"
+        );
+        // Clear over the top, nothing in the way at all.
+        let over = transmission(&world, Vec3::new(0.5, 0.5, 0.5), Vec3::new(9.5, 5.6, 0.5));
+        assert_eq!(over, [1.0; BANDS], "{over:?}");
+    }
+
+    /// A slab of water `at` blocks deep along x, from z -4 to 4 and
+    /// y -4 to 4.
+    fn water_slab(at: i32, depth: i32) -> World {
+        let mut world = World::new();
+        for z in -4..=4 {
+            for y in -4..=4 {
+                for x in at..at + depth {
+                    world.set_block(x, y, z, Material::Water);
+                }
+            }
+        }
+        world
+    }
+
+    #[test]
+    fn open_water_passes_sound_almost_as_well_as_air() {
+        let world = water_slab(-10, 20);
+        let from = Vec3::new(-9.5, 0.5, 0.5);
+        let to = Vec3::new(9.5, 0.5, 0.5);
+        let through_water = transmission(&world, from, to);
+        let through_air = transmission(&World::new(), from, to);
+        // Twenty blocks of open water, both ends under: what air passes,
+        // water passes too. The old table took a hundred decibels over this.
+        for band in 0..BANDS {
+            assert!(
+                through_water[band] > 0.85 * through_air[band],
+                "{through_water:?} vs {through_air:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fully_submerged_path_pays_no_surface_toll() {
+        let world = water_slab(-10, 20);
+        // Both ends in the water: no air on the way, so no crossing at all.
+        let through = transmission(&world, Vec3::new(-9.5, 0.5, 0.5), Vec3::new(9.5, 0.5, 0.5));
+        assert!(through[2] > 0.95, "{through:?}");
+    }
+
+    #[test]
+    fn crossing_the_surface_once_costs_the_interface_toll() {
+        let world = water_slab(0, 4);
+        // In the air above (y = 3 is water; go from y = 5), down into the
+        // water: one crossing.
+        let down = transmission(&world, Vec3::new(1.5, 5.5, 0.5), Vec3::new(1.5, 0.5, 0.5));
+        let mid = f64::from(down[1]);
+        assert!(
+            (mid - 10f64.powf(-30.0 / 10.0)).abs() < 0.4 * mid,
+            "{down:?}"
+        );
+        // Lows cross the surface a little better than highs.
+        assert!(down[0] > down[2], "{down:?}");
+        // And back up: the toll is the same either way.
+        let up = transmission(&world, Vec3::new(1.5, 0.5, 0.5), Vec3::new(1.5, 5.5, 0.5));
+        assert!((f64::from(up[1]) - mid).abs() < 1e-6, "{up:?} vs {down:?}");
+    }
+
+    #[test]
+    fn in_and_out_of_a_pond_costs_two_crossings() {
+        let world = water_slab(-1, 3);
+        // Air on both sides: through a 3-block pond and out again.
+        let through = transmission(&world, Vec3::new(-4.5, 0.5, 0.5), Vec3::new(4.5, 0.5, 0.5));
+        let expected = 10f64.powf(-60.0 / 10.0);
+        let mid = f64::from(through[1]);
+        assert!((mid - expected).abs() < 0.4 * expected, "{through:?}");
+    }
+
+    #[test]
+    fn an_air_bubble_in_the_water_costs_twice() {
+        let mut world = water_slab(-10, 20);
+        for y in -1..=1 {
+            for z in -1..=1 {
+                world.set_block(0, y, z, Material::Air);
+            }
+        }
+        let through = transmission(&world, Vec3::new(-9.5, 0.5, 0.5), Vec3::new(9.5, 0.5, 0.5));
+        let expected = 10f64.powf(-60.0 / 10.0);
+        let mid = f64::from(through[1]);
+        assert!((mid - expected).abs() < 0.4 * expected, "{through:?}");
+    }
+
+    #[test]
+    fn a_half_slab_passes_the_square_root_of_the_full_loss() {
+        let mut world = World::new();
+        // One full rock block.
+        world.set_block(5, 0, 0, Material::Rock);
+        let from = Vec3::new(0.5, 0.5, 0.5);
+        let to = Vec3::new(9.5, 0.5, 0.5);
+        let full = transmission(&world, from, to);
+        // The same wall, half filled: the mass law halves the thickness.
+        world.set_block_fill(5, 0, 0, Material::Rock, 0.5);
+        let slab = transmission(&world, from, to);
+        for band in 0..BANDS {
+            assert!(
+                (f64::from(slab[band]) - (f64::from(full[band])).sqrt()).abs()
+                    < 1e-4 * f64::from(full[band]).sqrt(),
+                "{slab:?} against {full:?}"
+            );
+        }
+        // Pathing still treats the slab as solid: it is something to walk
+        // around, whatever it passes.
+        assert!(world.block(5, 0, 0).is_solid());
+    }
+
+    #[test]
+    fn two_half_slabs_are_one_full_block() {
+        // The loss is of the thickness: two half-filled blocks in a row pass
+        // exactly what one full block does.
+        let mut halves = World::new();
+        halves.set_block_fill(5, 0, 0, Material::Rock, 0.5);
+        halves.set_block_fill(6, 0, 0, Material::Rock, 0.5);
+        let mut whole = World::new();
+        whole.set_block(6, 0, 0, Material::Rock);
+        let through_halves =
+            transmission(&halves, Vec3::new(0.5, 0.5, 0.5), Vec3::new(9.5, 0.5, 0.5));
+        let through_whole =
+            transmission(&whole, Vec3::new(0.5, 0.5, 0.5), Vec3::new(9.5, 0.5, 0.5));
+        assert_eq!(through_halves, through_whole);
+    }
+
+    #[test]
+    fn the_surface_toll_is_the_impedance_jump() {
+        // Water is some 3600× air; a plane wave crossing passes
+        // 4·Z₁·Z₂/(Z₁+Z₂)² of its energy, 0.11 %, −29.5 dB. The table's mid
+        // band sits on that figure.
+        let toll = -10.0 * (WATER_INTERFACE_DB[1] as f64).log10();
+        assert!((toll - 29.54).abs() < 0.5, "{toll} dB");
+        // And the band tilt only ever helps the lows (a const, so the check
+        // compiles itself).
+        const _: () = assert!(
+            WATER_INTERFACE_DB[0] < WATER_INTERFACE_DB[1]
+                && WATER_INTERFACE_DB[1] < WATER_INTERFACE_DB[2]
+        );
     }
 
     #[test]

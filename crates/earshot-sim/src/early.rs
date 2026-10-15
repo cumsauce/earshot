@@ -119,18 +119,23 @@ pub fn early_taps(world: &World, listener: Vec3, source: Vec3) -> Vec<Reflection
 pub const ECHO_REACH: i32 = 128;
 /// Echoes up to this order: a ravine's walls send a shout back and forth.
 const ECHO_ORDER: u32 = 4;
-/// Reflections arriving sooner than this after the sound blend into the
-/// reverb; only later ones are heard as echoes.
-const ECHO_MIN_DELAY: f64 = 0.05;
+/// Reflections arriving sooner than this after the sound fuse with it.
+const FUSE_SECONDS: f64 = 0.005;
+/// The narrowest gap a periodic series is heard in: past it the taps of a
+/// back-and-forth between facing walls are distinct — flutter from about
+/// 5 to 50 ms (a corridor 1 to 8 blocks across), then echoes.
+const MIN_TAP_DELAY: f64 = FUSE_SECONDS;
 /// A wall must be solid this far round the point a ray hits it to give a
 /// clean echo, so a tree trunk or a pillar doesn't.
 const WALL_SPAN: i32 = 2;
 
 /// The echoes of a sound beside `listener` off the big walls along each axis
 /// (cliffs, ravine sides, a cave's far end), up to [`ECHO_ORDER`] bounces
-/// back and forth between two facing walls, from their image sources. Only
-/// echoes later than [`ECHO_MIN_DELAY`] count, and first ones within
-/// `traced` blocks are left out: the room trace already has those.
+/// back and forth between two facing walls, from their image sources. The
+/// same series read in the 5–50 ms window is flutter: a mineshaft corridor's
+/// walls ring, a ravine's answer. Taps sooner than [`MIN_TAP_DELAY`] count
+/// as nothing, and first ones within `traced` blocks are left out: the room
+/// trace already has those.
 pub fn echoes(world: &World, listener: Vec3, traced: f64) -> Vec<Reflection> {
     let mut out = Vec::new();
     for axis in 0..3 {
@@ -148,7 +153,9 @@ pub fn echoes(world: &World, listener: Vec3, traced: f64) -> Vec<Reflection> {
             Some((distance, (1.0 - a.absorption[1]) * (1.0 - a.scattering)))
         };
         let walls = [side(-1), side(1)];
-        // Images of the listener: start off each wall, then alternate.
+        // Images of the listener: start off each wall, then alternate. The
+        // first off a wall the trace already reached is the trace's own
+        // first reflection; the ones after it are the corridor's.
         for first in 0..2 {
             let Some((d, r)) = walls[first] else {
                 continue;
@@ -156,7 +163,7 @@ pub fn echoes(world: &World, listener: Vec3, traced: f64) -> Vec<Reflection> {
             let (mut position, mut energy, mut wall) = (2.0 * d, r, first);
             for order in 1..=ECHO_ORDER {
                 let delay = position / SPEED_OF_SOUND;
-                if delay >= ECHO_MIN_DELAY && (order > 1 || d > traced) {
+                if delay >= MIN_TAP_DELAY && (order > 1 || d > traced) {
                     let sign = if wall == 0 { -1.0 } else { 1.0 };
                     out.push(Reflection {
                         direction: with(Vec3::ZERO, axis, sign),
@@ -319,6 +326,54 @@ mod tests {
     }
 
     #[test]
+    fn a_parallel_wall_corridor_rings_in_flutter() {
+        // A corridor 5 blocks across (faces at x = 0 and x = 4), the
+        // listener 1.5 and 2.5 from them. The back-and-forth: 3 blocks
+        // round trip is the trace's own first reflection; the rest arrive
+        // as flutter at 8, 11 and 16 blocks.
+        let mut world = World::new();
+        for y in -6..8 {
+            for z in -8..8 {
+                world.set_block(-1, y, z, Material::Wood);
+                world.set_block(4, y, z, Material::Wood);
+            }
+        }
+        let listener = Vec3::new(1.5, 0.5, 0.5);
+        let taps = echoes(&world, listener, 64.0);
+        let delays: Vec<f64> = taps
+            .iter()
+            .map(|e| f64::from(e.delay) * SPEED_OF_SOUND)
+            .collect();
+        for expected in [8.0, 11.0, 16.0] {
+            assert!(
+                delays.iter().any(|d| (d - expected).abs() < 0.5),
+                "no flutter tap at {expected} blocks: {delays:?}"
+            );
+        }
+        assert!(
+            taps.iter().all(|e| f64::from(e.delay) < 0.12),
+            "a corridor flutters, it doesn't echo: {delays:?}"
+        );
+        // And rough stone scatters most of the ring away: its mirrored
+        // share is (1−a)(1−s) with scattering 0.6 against wood's 0.35, so
+        // the same corridor in rock flutters well under half as loud.
+        let mut stone = World::new();
+        for y in -6..8 {
+            for z in -8..8 {
+                stone.set_block(-1, y, z, Material::Rock);
+                stone.set_block(4, y, z, Material::Rock);
+            }
+        }
+        let energy = |list: &[Reflection]| list.iter().map(|t| t.energy).sum::<f32>();
+        let rock = energy(&echoes(&stone, listener, 64.0));
+        assert!(
+            rock < energy(&taps) / 2.0,
+            "rock {rock} vs wood {}",
+            energy(&taps)
+        );
+    }
+
+    #[test]
     fn a_pillar_or_a_close_wall_gives_no_echo() {
         let mut world = World::new();
         for y in -10..10 {
@@ -328,15 +383,19 @@ mod tests {
             echoes(&world, Vec3::new(0.5, 0.5, 0.5), 0.0).is_empty(),
             "a pillar is no wall"
         );
-        // A wall 5 blocks off answers within 50 ms: reverb, not an echo.
+        // A wall 5 blocks off answers within 50 ms — as flutter now, when
+        // nothing else has covered it (the trace reached nowhere).
         let (world, listener) = ravine(200, 5.0);
+        let untraced = echoes(&world, listener, 0.0);
         assert!(
-            echoes(&world, listener, 0.0)
-                .iter()
-                .all(|e| e.delay >= 0.05)
+            untraced.iter().any(|e| f64::from(e.delay) < 0.05),
+            "{untraced:?}"
         );
-        // And one the room trace already reached isn't counted twice.
+        // But the room trace's own first reflections stand in for it: traced
+        // that far, nothing is added a second time.
         let (world, listener) = ravine(200, 30.0);
+        assert!(echoes(&world, listener, 64.0).is_empty());
+        let (world, listener) = ravine(200, 5.0);
         assert!(echoes(&world, listener, 64.0).is_empty());
     }
 
@@ -351,5 +410,104 @@ mod tests {
         // The source's +x wall is between it and the listener's side.
         let early = early_reflections(&world, Vec3::new(8.5, 0.5, 0.5), Vec3::new(2.5, 0.5, 0.5));
         assert_eq!(early.count, 0, "{early:?}");
+    }
+
+    #[test]
+    fn a_floors_reflection_carries_its_image_sources_energy() {
+        let world = floor(Material::Rock);
+        let (listener, source) = (Vec3::new(0.5, 5.5, 0.5), Vec3::new(8.5, 5.5, 0.5));
+        let taps = early_taps(&world, listener, source);
+        assert_eq!(taps.len(), 1, "{taps:?}");
+        let acoustics = Material::Rock.acoustics();
+        let mirrored = (1.0 - acoustics.absorption[1]) * (1.0 - acoustics.scattering);
+        // The image source is at y = -5.5: its way is sqrt(8² + 11²) = 13.6
+        // against the direct 8.
+        let way = (8.0f64.powi(2) + 11.0f64.powi(2)).sqrt();
+        let expected = (f64::from(mirrored) * (8.0 / way).powi(2)) as f32;
+        assert!(
+            (taps[0].energy - expected).abs() < 1e-3 * expected,
+            "{} vs {expected}",
+            taps[0].energy
+        );
+        // From the point it bounces at, which lies between the two: down and
+        // towards the source.
+        assert!(
+            taps[0].direction.y < -0.5 && taps[0].direction.x > 0.0,
+            "from below: {taps:?}"
+        );
+    }
+
+    #[test]
+    fn a_floor_and_ceiling_answer_from_either_side() {
+        let mut world = floor(Material::Rock);
+        for x in -20..20 {
+            for z in -20..20 {
+                world.set_block(x, 9, z, Material::Rock);
+            }
+        }
+        let (listener, source) = (Vec3::new(0.5, 3.5, 0.5), Vec3::new(8.5, 3.5, 0.5));
+        let early = early_reflections(&world, listener, source);
+        assert_eq!(early.count, 2, "{early:?}");
+        // One from below and one from above, mostly cancelling: the listener
+        // is nearer the floor, so it answers first.
+        assert!(early.direction.y.abs() < 0.3, "{early:?}");
+        assert!(
+            early.direction.y < 0.0,
+            "the floor is the stronger: {early:?}"
+        );
+        let down = ((8.0f64.powi(2) + 7.0f64.powi(2)).sqrt() - 8.0) / SPEED_OF_SOUND;
+        assert!((f64::from(early.delay) - down).abs() < 1e-4, "{early:?}");
+    }
+
+    #[test]
+    fn each_echo_carries_its_walls_share_over_its_distance_squared() {
+        let (world, listener) = ravine(40, 10.0);
+        let acoustics = Material::Rock.acoustics();
+        let mirrored = (1.0 - acoustics.absorption[1]) * (1.0 - acoustics.scattering);
+        let echoes = echoes(&world, listener, 0.0);
+        let at = |blocks: f64| {
+            echoes
+                .iter()
+                .find(|e| (f64::from(e.delay) * SPEED_OF_SOUND - blocks).abs() < 0.01)
+                .unwrap_or_else(|| panic!("no echo at {blocks} blocks: {echoes:?}"))
+        };
+        // Off the near wall, the far one, and both in a row.
+        assert!((at(20.0).energy - mirrored / 400.0).abs() < 1e-6);
+        assert!((at(60.0).energy - mirrored / 3600.0).abs() < 1e-6);
+        assert!((at(80.0).energy - mirrored * mirrored / 6400.0).abs() < 1e-7);
+    }
+
+    #[test]
+    fn soft_walls_answer_more_faintly_than_hard_ones() {
+        let mut cloth = World::new();
+        for y in -10..10 {
+            for z in -10..10 {
+                cloth.set_block(-1, y, z, Material::Cloth);
+                cloth.set_block(40, y, z, Material::Cloth);
+            }
+        }
+        let listener = Vec3::new(10.0, 0.5, 0.5);
+        let soft = echoes(&cloth, listener, 0.0);
+        let (rock, listener) = ravine(40, 10.0);
+        let hard = echoes(&rock, listener, 0.0);
+        let first =
+            |list: &[Reflection]| list.iter().map(|e| e.energy).fold(f32::INFINITY, f32::min);
+        assert!(first(&soft) < 0.7 * first(&hard), "{soft:?} vs {hard:?}");
+    }
+
+    #[test]
+    fn echoes_are_looked_for_as_far_as_the_world_is_copied() {
+        let wall_at = |x: i32| {
+            let mut world = World::new();
+            for y in -10..10 {
+                for z in -10..10 {
+                    world.set_block(x, y, z, Material::Rock);
+                }
+            }
+            world
+        };
+        // ECHO_REACH is 128: a wall there answers, one farther doesn't.
+        assert!(!echoes(&wall_at(128), Vec3::new(0.5, 0.5, 0.5), 0.0).is_empty());
+        assert!(echoes(&wall_at(129), Vec3::new(0.5, 0.5, 0.5), 0.0).is_empty());
     }
 }

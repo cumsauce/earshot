@@ -560,4 +560,85 @@ mod tests {
         // Not 1.4 straight through the crack: round, at least 2.
         assert!(field.distance([1, 0, 1]).unwrap() >= 2.0);
     }
+
+    #[test]
+    fn distances_never_undersell_a_straight_line_or_skip_a_step() {
+        let mut rng = crate::Rng::new(5);
+        let mut world = World::new();
+        for _ in 0..800 {
+            let at =
+                [rng.next_f64(), rng.next_f64(), rng.next_f64()].map(|v| (v * 28.0 - 14.0) as i32);
+            world.set_block(at[0], at[1], at[2], Material::Rock);
+        }
+        let listener = Vec3::new(0.5, 0.5, 0.5);
+        world.set_block(0, 0, 0, Material::Air);
+        let field = Field::build(&world, listener, 12);
+        let size = 25;
+        for x in 0..size {
+            for y in 0..size {
+                for z in 0..size {
+                    let local = [x, y, z];
+                    if field.dist[field.index(local)] == UNREACHED {
+                        assert_eq!(field.distance(field.origin(local)), None);
+                        continue;
+                    }
+                    let way = field.distance(field.origin(local)).unwrap();
+                    // Grid steps round their lengths down (1.7 against √3),
+                    // so a way may undercut the crow-flies distance slightly
+                    // — never past what those roundings allow. The field
+                    // measures block to block, so compare block centres.
+                    let block = field.origin(local);
+                    let centre = block.map(|c| f64::from(c) + 0.5);
+                    let straight = ((centre[0] - listener.x).powi(2)
+                        + (centre[1] - listener.y).powi(2)
+                        + (centre[2] - listener.z).powi(2))
+                    .sqrt();
+                    assert!(
+                        way + 1e-9 >= straight * (1.7 / 3f64.sqrt()),
+                        "({x},{y},{z}): {way} against {straight}"
+                    );
+                    // Every way but the listener's own block arrives over a
+                    // step from a neighbour at least a face's cost nearer.
+                    if local != [12, 12, 12] {
+                        let nearer = NEIGHBOURS.iter().any(|(step, _)| {
+                            let next = [local[0] + step[0], local[1] + step[1], local[2] + step[2]];
+                            field.contains(next)
+                                && field.dist[field.index(next)] != UNREACHED
+                                && field.dist[field.index(next)] + FACE
+                                    <= field.dist[field.index(local)]
+                        });
+                        assert!(nearer, "({x},{y},{z}) is reached from nowhere");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sources_beyond_the_field_or_buried_in_rock_have_no_way_round() {
+        let world = wall(Some(6));
+        let small = Field::build(&world, LISTENER, 8);
+        assert!(small.route(&world, Vec3::new(30.5, 0.5, 0.5)).is_none());
+
+        // A source sealed in a 3 × 3 × 3 boulder: no face of its block is open.
+        let mut buried = wall(None);
+        for dx in 8..11 {
+            for dy in -1..2 {
+                for dz in -1..2 {
+                    buried.set_block(dx, dy, dz, Material::Rock);
+                }
+            }
+        }
+        let field = Field::build(&buried, LISTENER, 12);
+        assert!(field.route(&buried, Vec3::new(9.5, 0.5, 0.5)).is_none());
+    }
+
+    #[test]
+    fn a_doorway_is_heard_through_two_square_blocks() {
+        let world = wall(Some(4));
+        let field = Field::build(&world, LISTENER, 16);
+        assert_eq!(field.route(&world, SOURCE).unwrap().aperture, 2.0);
+        let heard = crate::hear(&world, Some(&field), LISTENER, SOURCE, 5, 1.0);
+        assert_eq!(heard.aperture, 2.0, "{heard:?}");
+    }
 }

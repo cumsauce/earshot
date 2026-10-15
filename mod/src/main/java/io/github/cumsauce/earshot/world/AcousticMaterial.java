@@ -21,7 +21,9 @@ public enum AcousticMaterial {
 	WATER,
 	LAVA,
 	ICE,
-	SNOW;
+	SNOW,
+	/** A thin soft layer that doesn't stop sound but soaks it up: carpets, snow layers. */
+	RUG;
 
 	/** The id the native world stores. */
 	public byte id() {

@@ -102,7 +102,7 @@ public final class WorldMirror {
 	/** A block changed in {@code level}: called for every change, from {@code ClientLevel.sendBlockUpdated}. */
 	public void blockChanged(ClientLevel level, BlockPos pos, BlockState state) {
 		if (level != this.level || !mirrored.contains(ChunkPos.pack(pos))) return;
-		call(() -> bridge.setBlock(engine, pos.getX(), pos.getY(), pos.getZ(), materials.id(state)));
+		call(() -> bridge.setBlock(engine, pos.getX(), pos.getY(), pos.getZ(), materials.packed(state)));
 	}
 
 	private void chunkLoaded(ClientLevel level, LevelChunk chunk) {
@@ -182,7 +182,7 @@ public final class WorldMirror {
 						// Runs of one state are common: skip the lookup for them.
 						if (state != last) {
 							last = state;
-							lastId = materials.id(state);
+							lastId = materials.packed(state);
 						}
 						blocks[(y << 8) | (z << 4) | x] = lastId;
 					}
