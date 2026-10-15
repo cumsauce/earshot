@@ -28,10 +28,12 @@ import net.minecraft.client.gui.screens.options.SoundOptionsScreen;
 import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.client.resources.sounds.SoundInstance;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.item.DyeColor;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.SnowLayerBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.phys.Vec3;
@@ -378,6 +380,11 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 	}
 
 	private static void checkMaterials(MaterialMap materials) {
+		BlockState snowLayer = BuiltInRegistries.BLOCK.stream()
+				.filter(block -> block instanceof SnowLayerBlock)
+				.findFirst()
+				.orElseThrow()
+				.defaultBlockState();
 		Map<BlockState, AcousticMaterial> expected = Map.ofEntries(
 				Map.entry(Blocks.AIR.defaultBlockState(), AcousticMaterial.AIR),
 				Map.entry(Blocks.STONE.defaultBlockState(), AcousticMaterial.ROCK),
@@ -388,7 +395,8 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 				Map.entry(Blocks.GLASS_PANE.defaultBlockState(), AcousticMaterial.GLASS),
 				Map.entry(Blocks.IRON_BARS.defaultBlockState(), AcousticMaterial.AIR),
 				Map.entry(Blocks.WOOL.pick(DyeColor.WHITE).defaultBlockState(), AcousticMaterial.CLOTH),
-				Map.entry(Blocks.CARPET.pick(DyeColor.WHITE).defaultBlockState(), AcousticMaterial.AIR),
+				Map.entry(Blocks.CARPET.pick(DyeColor.WHITE).defaultBlockState(), AcousticMaterial.RUG),
+				Map.entry(snowLayer, AcousticMaterial.RUG),
 				Map.entry(Blocks.OAK_LEAVES.defaultBlockState(), AcousticMaterial.LEAVES),
 				Map.entry(Blocks.DIRT.defaultBlockState(), AcousticMaterial.SOIL),
 				Map.entry(Blocks.GRASS_BLOCK.defaultBlockState(), AcousticMaterial.SOIL),
@@ -407,6 +415,20 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 		expected.forEach((state, material) -> {
 			AcousticMaterial actual = materials.material(state);
 			if (actual != material) wrong.append("\n  ").append(state).append(": ").append(actual);
+		});
+		// How much of the block is there, in sixteenths (0 = full): a slab is
+		// a half, a carpet only just registers, and a pane or a closed door
+		// fills its opening whatever its shape.
+		Map<BlockState, Integer> fills = Map.of(
+				Blocks.STONE.defaultBlockState(), 0,
+				Blocks.OAK_SLAB.defaultBlockState(), 8,
+				Blocks.CARPET.pick(DyeColor.WHITE).defaultBlockState(), 4,
+				Blocks.GLASS_PANE.defaultBlockState(), 0,
+				Blocks.OAK_DOOR.defaultBlockState().setValue(BlockStateProperties.OPEN, false), 0,
+				Blocks.SNOW_BLOCK.defaultBlockState(), 0);
+		fills.forEach((state, fill) -> {
+			int actual = materials.packed(state) >> 4;
+			if (actual != fill) wrong.append("\n  ").append(state).append(": fill ").append(actual);
 		});
 		if (!wrong.isEmpty()) throw new AssertionError("wrong materials:" + wrong);
 	}
