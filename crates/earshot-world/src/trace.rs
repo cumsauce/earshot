@@ -726,7 +726,9 @@ mod tests {
     #[test]
     fn two_half_slabs_are_one_full_block() {
         // The loss is of the thickness: two half-filled blocks in a row pass
-        // exactly what one full block does.
+        // what one full block does, to within a powf's rounding — the two
+        // walks pay different exponents, and libm's last bit differs by
+        // platform.
         let mut halves = World::new();
         halves.set_block_fill(5, 0, 0, Material::Rock, 0.5);
         halves.set_block_fill(6, 0, 0, Material::Rock, 0.5);
@@ -736,16 +738,27 @@ mod tests {
             transmission(&halves, Vec3::new(0.5, 0.5, 0.5), Vec3::new(9.5, 0.5, 0.5));
         let through_whole =
             transmission(&whole, Vec3::new(0.5, 0.5, 0.5), Vec3::new(9.5, 0.5, 0.5));
-        assert_eq!(through_halves, through_whole);
+        for (halves, whole) in through_halves.iter().zip(through_whole) {
+            assert!(
+                (halves - whole).abs() < 1e-5 * whole,
+                "{through_halves:?} against {through_whole:?}"
+            );
+        }
     }
 
     #[test]
     fn the_surface_toll_is_the_impedance_jump() {
-        // Water is some 3600× air; a plane wave crossing passes
-        // 4·Z₁·Z₂/(Z₁+Z₂)² of its energy, 0.11 %, −29.5 dB. The table's mid
-        // band sits on that figure.
-        let toll = -10.0 * (WATER_INTERFACE_DB[1] as f64).log10();
-        assert!((toll - 29.54).abs() < 0.5, "{toll} dB");
+        // Water is about 3600× air by impedance; a plane wave crossing
+        // passes 4·Z₁·Z₂/(Z₁+Z₂)² of its energy — the toll the table's mid
+        // band sits on.
+        let ratio: f64 = 3600.0;
+        let share = 4.0 * ratio / (1.0 + ratio).powi(2);
+        let toll = -10.0 * share.log10();
+        assert!(
+            (f64::from(WATER_INTERFACE_DB[1]) - toll).abs() < 0.6,
+            "the table says {} dB, the impedance jump {toll} dB",
+            WATER_INTERFACE_DB[1]
+        );
         // And the band tilt only ever helps the lows (a const, so the check
         // compiles itself).
         const _: () = assert!(
