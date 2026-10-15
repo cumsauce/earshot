@@ -32,8 +32,11 @@ class NativeBridgeTest {
 
 			bridge.clearWorld(engine);
 			assertEquals(0, bridge.sectionCount(engine));
+			// A block byte whose low nibble is no material: 0xE is 14, past
+			// the table's last. (0x63 would be a *valid* packed byte — glass
+			// at six sixteenths — since the nibble scheme arrived.)
 			EarshotException e = assertThrows(EarshotException.class,
-					() -> bridge.setBlock(engine, 0, 0, 0, (byte) 99));
+					() -> bridge.setBlock(engine, 0, 0, 0, (byte) 0x0E));
 			assertEquals(EarshotException.INVALID_ARGUMENT, e.code());
 			assertTrue(e.getMessage().contains("unknown material"), e.getMessage());
 		} finally {
