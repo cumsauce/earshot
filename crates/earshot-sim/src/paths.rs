@@ -135,12 +135,6 @@ pub fn trace_directions(
                     past.z.floor() as i32,
                 )
                 .is_solid();
-            if std::env::var("EARSHOT_DEBUG_TALLY").is_ok() {
-                println!(
-                    "dbg leaky {leaky} fill {} exit {} past {:?}",
-                    hit.fill, hit.exit, past
-                );
-            }
             segment(Segment {
                 from,
                 to: hit.point,
