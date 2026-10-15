@@ -427,7 +427,9 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 				Blocks.OAK_DOOR.defaultBlockState().setValue(BlockStateProperties.OPEN, false), 0,
 				Blocks.SNOW_BLOCK.defaultBlockState(), 0);
 		fills.forEach((state, fill) -> {
-			int actual = materials.packed(state) >> 4;
+			// The byte is signed: mask it before the shift, or a half-filled
+			// slab reads as -8.
+			int actual = (materials.packed(state) & 0xFF) >> 4;
 			if (actual != fill) wrong.append("\n  ").append(state).append(": fill ").append(actual);
 		});
 		if (!wrong.isEmpty()) throw new AssertionError("wrong materials:" + wrong);

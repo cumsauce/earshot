@@ -132,6 +132,9 @@ public final class MaterialMap {
 		if (shape.isEmpty()) {
 			if (fluid.getType().isSame(Fluids.WATER)) return AcousticMaterial.WATER;
 			if (fluid.getType().isSame(Fluids.LAVA)) return AcousticMaterial.LAVA;
+			// A snow layer thin enough to walk through (a single layer has no
+			// collision box) is still lying on the ground.
+			if (block instanceof SnowLayerBlock) return AcousticMaterial.RUG;
 			return AcousticMaterial.AIR;
 		}
 		// An open door, trapdoor or gate leaves its opening clear.
