@@ -37,14 +37,15 @@ jobs:
       - run: cargo test --workspace --locked
 
   # earshot-ffi for every platform. Each OS builds its own targets; the mod
-  # job merges them into one jar. macOS is pinned off -latest, whose macOS 26
-  # image cancelled every job queued for it within minutes of rolling out;
-  # 15 is the same Arm64 hardware on the settled image.
+  # job merges them into one jar. The macOS runner builds on Intel: the Arm
+  # pools cancelled every job queued for them for a day around the macOS 26
+  # image rollout, whatever the image pinned, and both darwin targets are
+  # cross-compiled with --target anyway, so the artifacts don't care.
   natives:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-15]
+        os: [ubuntu-latest, windows-latest, macos-15-intel]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -138,12 +139,14 @@ jobs:
             mod/build/run/clientGameTest/logs/
 
   # The OpenAL cost benchmark (M0) and the path tracer's (M1), on the
-  # runners' Apple Silicon and x86.
+  # runners' Apple Silicon and x86. The Arm bench is informational: it can't
+  # block ci-ok while the Arm macOS pools are short of runners.
   bench:
     strategy:
       fail-fast: false
       matrix:
         os: [macos-15, ubuntu-latest]
+    continue-on-error: ${{ matrix.os == 'macos-15' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
