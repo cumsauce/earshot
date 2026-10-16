@@ -220,16 +220,34 @@ impl Tally {
             self.elapsed = leg_end;
             return;
         }
-        // Every bin the leg spans holds this ray's energy for its whole
-        // duration: the curve is occupancy, all rays starting in bin 0.
+        // Every bin the leg spans holds this ray's energy, but only for
+        // the part of the bin the leg actually covers: a bin is a one
+        // millisecond window, 0.343 m of travel, and a leg in a small room
+        // can be shorter, starting or ending inside one. Counting every bin
+        // a leg touched at full weight counted the bin where one leg ends
+        // and the next begins twice (the next leg's first bin is this leg's
+        // last), which bowed the curve up wherever the legs were short. In
+        // a room measured from a listener against a wall it inflated the
+        // peak at bin 0 and dragged the early decay under the room's own.
+        // Each bin instead gets the leg's share of it: the fraction of the
+        // bin the leg spans, so a ray's legs end to end add up to its
+        // energy over a bin exactly once, however they line up with the
+        // bin edges, and a leg wholly inside one bin still leaves the
+        // ray's energy there for the time it truly occupies.
         let first_bin = (leg_start / HIST_DT) as usize;
         let last_bin = (leg_end / HIST_DT) as usize;
         for bin in first_bin..=last_bin {
             if bin >= HIST_BINS {
                 break;
             }
+            let bin_from = (bin as f64 * HIST_DT).max(leg_start);
+            let bin_to = ((bin + 1) as f64 * HIST_DT).min(leg_end);
+            let share = (bin_to - bin_from) / HIST_DT;
+            if share <= 0.0 {
+                continue;
+            }
             for (hist, energy) in self.hist.iter_mut().zip(self.band_energy) {
-                hist[bin] += energy;
+                hist[bin] += energy * share;
             }
         }
         self.elapsed = leg_end;
@@ -787,7 +805,7 @@ mod tests {
         let open = measure(&couplet(true), at, 2048, 16, 64.0, 1);
         // Open, the cloth drains the early curve while the hall's slow
         // energy — and Eyring's mean over it — keeps the mix ringing.
-        // Seeded actuals: early 0.530 against decay 0.660 (ratio 0.803),
+        // Seeded actuals: early 0.515 against decay 0.660 (ratio 0.780),
         // so the bound sits at 0.85: clear of the placeholder's 1.0, with
         // the measured separation to spare.
         assert!(
@@ -798,7 +816,9 @@ mod tests {
 
     /// One material everywhere: the traced curve is a single slope, so the
     /// early fit lands on Eyring's figure — a flat head and sampling noise
-    /// move it only a little.
+    /// move it only a little. Seeded actuals: early 4.621 against decay
+    /// 4.135 (ratio 1.117), where the twice-counted end bins read 4.528
+    /// (1.095): the bound sits at 0.2 with the measured 0.117 to spare.
     #[test]
     fn a_uniform_rooms_early_decay_is_its_decay() {
         let room = measure(
@@ -811,13 +831,41 @@ mod tests {
         );
         let early = f64::from(room.early_decay[1]);
         let late = f64::from(room.decay[1]);
-        assert!((early / late - 1.0).abs() < 0.3, "{early} against {late}");
+        assert!((early / late - 1.0).abs() < 0.2, "{early} against {late}");
         for band in 0..BANDS {
             assert!(
                 (0.1..=8.0).contains(&f64::from(room.early_decay[band])),
                 "{room:?}"
             );
         }
+    }
+
+    /// A listener pressed against the wall of a small room hears the room a
+    /// listener in its centre hears. In a room whose legs are shorter than
+    /// one bin's 0.343 m of travel, counting every bin a leg touched at
+    /// full weight counted the shared end bins twice nearly everywhere,
+    /// and from the wall, where half the first legs fall inside a single
+    /// bin, it inflated the peak at bin 0; the early decay read under the
+    /// room's own: seeded actuals 0.854 (centre) and 0.890 (wall) before
+    /// the fix, 0.999 and 1.001 with each bin holding only the legs'
+    /// share of it. Both sides of the room must land within 0.1 of the
+    /// Eyring figure.
+    #[test]
+    fn a_listener_against_the_wall_hears_the_room() {
+        let world = closed_box(Material::Rock, 2);
+        let mid_ratio = |at: Vec3| {
+            let room = measure(&world, at, 1024, 16, 64.0, 1);
+            let early = f64::from(room.early_decay[1]);
+            let late = f64::from(room.decay[1]);
+            (early / late, room)
+        };
+        let (centre, centre_room) = mid_ratio(Vec3::new(1.0, 1.0, 1.0));
+        let (wall, wall_room) = mid_ratio(Vec3::new(0.02, 1.0, 1.0));
+        assert!(
+            (centre - 1.0).abs() < 0.1,
+            "centre: {centre} in {centre_room:?}"
+        );
+        assert!((wall - 1.0).abs() < 0.1, "wall: {wall} in {wall_room:?}");
     }
 
     /// The fit reads the slope of the curve's first ten decibels: of a pure

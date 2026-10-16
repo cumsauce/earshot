@@ -122,11 +122,13 @@ fn the_seminar_room_decays_as_the_benchmark_measured_it() {
     let room = measure(&world, Vec3::new(6.0, 1.5, 3.0), 1024, 16, 64.0, 1);
     // As recorded at seed 1: decay [1.756, 1.314, 0.839] s against the
     // measured [1.473, 1.932, 1.110] (ratios 1.19 / 0.68 / 0.76), early
-    // [1.610, 1.220, 0.880] against the measured mid EDT 1.922 (0.63) —
-    // the mid sits low exactly where the module comment's stack says it
-    // will (initial-estimate gap, then the box's wider surface, then the
-    // trace's scatter), and the early differs from the full decay, so the
-    // fit is reading the traced curve rather than falling back.
+    // [1.741, 1.333, 0.943] against the measured mid EDT 1.922 (0.69) —
+    // it was [1.610, 1.220, 0.880] before the histogram counted each
+    // bounce bin's occupancy once, and it sits low exactly where the
+    // module comment's stack says it will (initial-estimate gap, then the
+    // box's wider surface, then the trace's scatter), and the early
+    // differs from the full decay, so the fit is reading the traced curve
+    // rather than falling back.
 
     // Each band of the simulated decay against the measured T20 averaged
     // over that band. See the module comment for where 0.60–1.30 comes
