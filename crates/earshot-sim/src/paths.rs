@@ -63,9 +63,10 @@ pub fn sphere_directions(count: u32) -> Vec<Vec3> {
 
 /// Traces `rays` paths from `origin`, evenly spread, with up to `bounces`
 /// reflections each and at most `reach` blocks per leg, and hands every leg
-/// to `segment`. A reflection is mirror-like, or with the surface's
-/// scattering probability diffuse (cosine-weighted), and loses the surface's
-/// mid-band absorption.
+/// to `segment`. A reflection follows Vorländer's directional scattering
+/// model — specular with probability (1 - s), or a forward-scattered lobe
+/// `cos(θ)^p` around the mirror direction with probability s — and loses
+/// the surface's mid-band absorption.
 pub fn trace_paths(
     world: &World,
     origin: Vec3,
@@ -166,11 +167,7 @@ pub fn trace_directions(
             if hit.normal == Vec3::ZERO || energy < MIN_ENERGY {
                 break;
             }
-            dir = if rng.next_f64() < f64::from(acoustics.scattering) {
-                diffuse(hit.normal, &mut rng)
-            } else {
-                dir - hit.normal * (2.0 * dir.dot(hit.normal))
-            };
+            dir = scatter(dir, hit.normal, acoustics.scattering, &mut rng);
             from = hit.point + hit.normal * SURFACE_OFFSET;
         }
     }
@@ -180,21 +177,64 @@ pub fn trace_directions(
     stats
 }
 
-/// A cosine-weighted direction in the hemisphere around `normal`.
-fn diffuse(normal: Vec3, rng: &mut Rng) -> Vec3 {
-    let (u, v) = (rng.next_f64(), rng.next_f64());
-    let radius = u.sqrt();
-    let angle = std::f64::consts::TAU * v;
-    let (x, y, z) = (radius * angle.cos(), radius * angle.sin(), (1.0 - u).sqrt());
-    // Any two axes perpendicular to the normal.
-    let helper = if normal.x.abs() < 0.9 {
+/// Vorländer's directional scattering BRDF: with probability (1 - s) the
+/// reflection is specular, with probability s it scatters off a forward
+/// lobe `cos(θ_axis)^p`. Both the lobe's axis and its sharpness vary
+/// continuously with `s`:
+///
+/// - At `s = 0` the axis is the mirror direction and `p = 11` puts all the
+///   lobe's mass on the mirror peak — but the Bernoulli short-circuits the
+///   lobe entirely and returns the mirror direction.
+/// - At `s = 1` the axis is the wall normal and `p = 1` makes the lobe
+///   `cos(θ_n)` over the upper hemisphere, exactly a Lambertian. The
+///   Bernoulli never short-circuits.
+/// - In between the axis interpolates `mirror * (1 - s) + n * s` and
+///   `p = 1 + 10 * (1 - s)` flattens the lobe, so a rough surface spreads
+///   energy along the mirror–normal line and a hard one keeps it close to
+///   the mirror.
+///
+/// The lobe sample is restricted to the wall's upper hemisphere by
+/// rejection: when a sample dips below the wall plane, another pair of
+/// uniforms is drawn. The rejection count varies with `s` and the angle of
+/// incidence, but the direction returned is deterministic in the seed.
+fn scatter(incoming: Vec3, normal: Vec3, s: f32, rng: &mut Rng) -> Vec3 {
+    let mirror = incoming - normal * (2.0 * incoming.dot(normal));
+    let s = s.clamp(0.0, 1.0);
+    // Probability (1 - s): specular reflection.
+    if rng.next_f64() >= f64::from(s) {
+        return mirror;
+    }
+    // Lobe axis: mirror at s = 0, wall normal at s = 1. The two are
+    // perpendicular for a flat wall, so the interpolation is well-defined.
+    let axis = if s >= 1.0 {
+        normal
+    } else {
+        (mirror * f64::from(1.0 - s) + normal * f64::from(s)).normalized()
+    };
+    // Sharpness: Lambertian (`p = 1`) at `s = 1`, forward spike (`p = 11`)
+    // at `s = 0`.
+    let p = 1.0 + 10.0 * (1.0 - s);
+    let pp1 = f64::from(p) + 1.0;
+    // Sample `cos^p(θ_axis)` via inverse CDF: U = 1 - cos(θ)^(p + 1) ->
+    // cos(θ) = (1 - U)^(1 / (p + 1)).
+    let helper = if axis.x.abs() < 0.9 {
         Vec3::new(1.0, 0.0, 0.0)
     } else {
         Vec3::new(0.0, 1.0, 0.0)
     };
-    let tangent = cross(helper, normal).normalized();
-    let bitangent = cross(normal, tangent);
-    (tangent * x + bitangent * y + normal * z).normalized()
+    let tangent = cross(helper, axis).normalized();
+    let bitangent = cross(axis, tangent);
+    loop {
+        let (u, v) = (rng.next_f64(), rng.next_f64());
+        let cos_theta = (1.0 - u).powf(1.0 / pp1);
+        let sin_theta = (1.0 - cos_theta * cos_theta).sqrt();
+        let phi = std::f64::consts::TAU * v;
+        let (x, y, z) = (sin_theta * phi.cos(), sin_theta * phi.sin(), cos_theta);
+        let d = (tangent * x + bitangent * y + axis * z).normalized();
+        if d.dot(normal) >= 0.0 {
+            return d;
+        }
+    }
 }
 
 fn cross(a: Vec3, b: Vec3) -> Vec3 {
@@ -270,14 +310,102 @@ mod tests {
         );
     }
 
+    /// A wall with `s = 0` only ever reflects the mirror direction.
     #[test]
-    fn diffuse_directions_leave_the_surface() {
-        let mut rng = Rng::new(3);
+    fn a_pure_specular_wall_always_mirrors() {
+        let mut rng = Rng::new(13);
         let normal = Vec3::new(0.0, 1.0, 0.0);
+        let incoming = Vec3::new(0.4, -1.0, 0.5).normalized();
+        let mirror = incoming - normal * (2.0 * incoming.dot(normal));
         for _ in 0..1000 {
-            let d = diffuse(normal, &mut rng);
-            assert!(d.dot(normal) >= 0.0);
-            assert!((d.length() - 1.0).abs() < 1e-9);
+            let out = scatter(incoming, normal, 0.0, &mut rng);
+            assert!((out - mirror).length() < 1e-9, "{out:?} vs {mirror:?}");
+        }
+    }
+
+    /// A wall with any `s` always reflects into the upper hemisphere, never
+    /// back into the wall: the lobe is rejection-sampled so the directional
+    /// scatter stays above the surface.
+    #[test]
+    fn no_scattering_dips_below_the_wall() {
+        let mut rng = Rng::new(17);
+        let normal = Vec3::new(0.0, 1.0, 0.0);
+        let incoming = Vec3::new(0.6, -1.0, 0.4).normalized();
+        for s in [0.0_f32, 0.2, 0.5, 0.7, 1.0] {
+            for _ in 0..2000 {
+                let out = scatter(incoming, normal, s, &mut rng);
+                assert!(
+                    out.dot(normal) >= -1e-12,
+                    "s={s}: {out:?} dipped below the wall"
+                );
+                assert!((out.length() - 1.0).abs() < 1e-9, "s={s}: {out:?}");
+            }
+        }
+    }
+
+    /// A wall with `s = 0.5` reflects the mirror direction about half the
+    /// time — the Bernoulli step of the Vorländer mixture.
+    #[test]
+    fn half_scattered_wall_is_half_mirror() {
+        let mut rng = Rng::new(19);
+        let normal = Vec3::new(0.0, 1.0, 0.0);
+        let incoming = Vec3::new(0.3, -1.0, 0.4).normalized();
+        let mirror = incoming - normal * (2.0 * incoming.dot(normal));
+        let mut mirrors = 0;
+        let n = 4000;
+        for _ in 0..n {
+            let out = scatter(incoming, normal, 0.5, &mut rng);
+            if (out - mirror).length() < 1e-9 {
+                mirrors += 1;
+            }
+        }
+        let fraction = mirrors as f64 / n as f64;
+        assert!(
+            (fraction - 0.5).abs() < 0.05,
+            "got {fraction} mirror at s=0.5, expected ~0.5"
+        );
+    }
+
+    /// A wall with `s = 0.3` has a sharp forward lobe (`p ≈ 8`): non-mirror
+    /// samples concentrate near the mirror direction, not back toward the
+    /// incoming ray. The mean dot product with the mirror axis is well above
+    /// what an isotropic sphere sample around the wall normal would give.
+    #[test]
+    fn a_low_scattered_wall_scatters_near_the_mirror_direction() {
+        let mut rng = Rng::new(23);
+        let normal = Vec3::new(0.0, 1.0, 0.0);
+        let incoming = Vec3::new(0.3, -1.0, 0.4).normalized();
+        let mirror = incoming - normal * (2.0 * incoming.dot(normal));
+        let mut sum_forward = 0.0;
+        let n = 4000;
+        for _ in 0..n {
+            let out = scatter(incoming, normal, 0.3, &mut rng);
+            sum_forward += out.dot(mirror);
+        }
+        let mean = sum_forward / n as f64;
+        // An isotropic lobe over the upper hemisphere gives a mean dot
+        // product with the mirror axis of around 0.25 (cosines 0°..90°
+        // averaged against a Lambertian weight); a sharp `cos^8` lobe
+        // pushes the mean well above that. Assert a directional bias.
+        assert!(mean > 0.4, "lobe not forward enough at s=0.3: mean {mean}");
+    }
+
+    /// Determinism per seed: same inputs, same direction sequence. The
+    /// rejection loop's draw count depends on the seeded uniforms, so the
+    /// output is reproducible without preserving the exact draw count.
+    #[test]
+    fn scatter_is_deterministic_per_seed() {
+        let mut a = Rng::new(101);
+        let mut b = Rng::new(101);
+        let normal = Vec3::new(0.0, 1.0, 0.0);
+        let incoming = Vec3::new(0.3, -1.0, 0.4).normalized();
+        for _ in 0..200 {
+            let da = scatter(incoming, normal, 0.4, &mut a);
+            let db = scatter(incoming, normal, 0.4, &mut b);
+            assert_eq!(
+                da, db,
+                "Vorländer scattering must be deterministic per seed"
+            );
         }
     }
 
