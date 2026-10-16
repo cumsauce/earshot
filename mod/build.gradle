@@ -162,10 +162,16 @@ fabricApi {
 // `-Pearshot.runDir=<dir on a local disk>` moves the game directories of the runs there.
 def runDirOverride = providers.gradleProperty('earshot.runDir')
 
+// Extra JVM arguments for the game runs, space-separated, from the environment.
+// CI sets this to keep the client off a compiler tier that has segfaulted
+// while compiling the game (a JIT bug, not the mod's): see ci.yml.
+def runJvmArgs = (System.getenv('EARSHOT_RUN_JVM_ARGS') ?: '').trim().split(/\s+/).findAll { !it.isEmpty() }
+
 loom {
 	runs {
 		configureEach {
 			vmArg '--enable-native-access=ALL-UNNAMED'
+			runJvmArgs.each { vmArg it }
 			if (runDirOverride.isPresent()) runDir = "${runDirOverride.get()}/${name}"
 		}
 	}

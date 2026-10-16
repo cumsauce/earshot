@@ -120,10 +120,17 @@ jobs:
       # HotSpot report, which names no frame at all — so the core the default
       # pattern already writes is read back with gdb: every thread's
       # backtrace, above all the name of the library that died.
+      #
+      # The crashes seen so far are the JVM's own C2 compiler thread (frames
+      # in libjvm.so's C2Compiler::compile_method, none in the mod), which is
+      # a HotSpot JIT bug, not Earshot's. TieredStopAtLevel=3 keeps the client
+      # off C2 while leaving C1 and the interpreter, so the game still runs at
+      # a sensible speed and CI stops being blocked on an upstream crash.
       - name: Client gametest
         working-directory: mod
         env:
           ALSOFT_DRIVERS: "null"
+          EARSHOT_RUN_JVM_ARGS: "-XX:TieredStopAtLevel=3"
         run: |
           ulimit -c unlimited
           echo "kernel: $(uname -r)"
