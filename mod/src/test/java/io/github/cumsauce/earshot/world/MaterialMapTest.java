@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -53,17 +54,31 @@ class MaterialMapTest {
 
 	/**
 	 * A wall's post alone is far under the volume that reads as open air, but the wall fills its opening, so
-	 * it packs to a solid material with some fill instead of a hole in the mirrored world.
+	 * it packs full — the same lie of thinness a closed door tells — instead of a hole in the mirrored world.
 	 */
 	@Test
-	void aWallIsSolidEvenThoughItsPostIsThin() {
+	void aWallPacksFullLikeAClosedDoor() {
 		BlockState[] walls = {Blocks.COBBLESTONE_WALL.defaultBlockState(), Blocks.STONE_BRICK_WALL.defaultBlockState()};
 		for (BlockState wall : walls) {
 			String at = wall + " should fill its opening";
 			assertNotEquals(AcousticMaterial.AIR, MaterialMap.classify(wall), at);
 			byte packed = MaterialMap.pack(wall);
 			assertNotEquals((byte) 0, packed, at);
-			assertTrue((packed >>> 4 & 0x0F) != 0, at + " (fill nibble)");
+			assertEquals(0, packed >>> 4 & 0x0F, at + " (fill nibble, 0 = full)");
 		}
+	}
+
+	/** An open barrel lifts a lid on a full wooden cube — the cube stays, so the wood stays. */
+	@Test
+	void anOpenBarrelIsStillWood() {
+		BlockState openBarrel = Blocks.BARREL.defaultBlockState().setValue(BlockStateProperties.OPEN, true);
+		assertEquals(AcousticMaterial.WOOD, MaterialMap.classify(openBarrel));
+	}
+
+	/** An open door leaves its doorway clear, and that is a hole regardless of the boards it swings on. */
+	@Test
+	void anOpenDoorIsAir() {
+		BlockState openDoor = Blocks.OAK_DOOR.defaultBlockState().setValue(BlockStateProperties.OPEN, true);
+		assertEquals(AcousticMaterial.AIR, MaterialMap.classify(openDoor));
 	}
 }

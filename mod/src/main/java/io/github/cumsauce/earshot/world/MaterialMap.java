@@ -145,8 +145,10 @@ public final class MaterialMap {
 			if (block instanceof SnowLayerBlock) return AcousticMaterial.RUG;
 			return AcousticMaterial.AIR;
 		}
-		// An open door, trapdoor or gate leaves its opening clear.
-		if (state.hasProperty(BlockStateProperties.OPEN) && state.getValue(BlockStateProperties.OPEN)) {
+		// An open door, trapdoor or gate leaves its opening clear. Other blocks that report an openable lid —
+		// a barrel, say — keep their full cube, so the rule stays on the blocks whose shape it describes.
+		if (state.hasProperty(BlockStateProperties.OPEN) && state.getValue(BlockStateProperties.OPEN)
+				&& (block instanceof DoorBlock || block instanceof TrapDoorBlock || block instanceof FenceGateBlock)) {
 			return AcousticMaterial.AIR;
 		}
 		// Fences are mostly gaps; panes and bars are thin, but a glass pane fills its window.
@@ -209,14 +211,14 @@ public final class MaterialMap {
 	/**
 	 * How much of the block is there, as a nibble code: 0 for full, otherwise sixteenths, never under a quarter. The
 	 * mass law scales a wall's transmission loss with its thickness, so a half slab passes most of what a full block
-	 * stops. Things whose thinness is a lie — a closed door fills its doorway, a glass pane fills its window — and
-	 * fluids stay full: the water's surface toll is charged per crossing, not per block.
+	 * stops. Things whose thinness is a lie — a closed door fills its doorway, a glass pane fills its window, a wall
+	 * fills its opening — and fluids stay full: the water's surface toll is charged per crossing, not per block.
 	 */
 	private static byte fillCode(BlockState state, AcousticMaterial material) {
 		if (material == AcousticMaterial.WATER || material == AcousticMaterial.LAVA) return 0;
 		Block block = state.getBlock();
 		if (block instanceof DoorBlock || block instanceof TrapDoorBlock || block instanceof FenceGateBlock
-				|| block instanceof IronBarsBlock) {
+				|| block instanceof IronBarsBlock || block instanceof WallBlock) {
 			return 0;
 		}
 		VoxelShape shape = state.getShape(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
