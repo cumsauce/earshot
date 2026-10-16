@@ -117,31 +117,30 @@ jobs:
       # Loom runs client gametests under Xvfb when CI is set. There is no sound
       # card, so OpenAL Soft's null backend stands in for one. The client has
       # been known to die with the shell's bare "Segmentation fault" and no
-      # HotSpot report, which names no frame at all — so the core the kernel
-      # already writes is pointed at a known path and read back with gdb: every
-      # thread's backtrace, above all the name of the library that died.
+      # HotSpot report, which names no frame at all — so the core the default
+      # pattern already writes is read back with gdb: every thread's
+      # backtrace, above all the name of the library that died.
       - name: Client gametest
         working-directory: mod
         env:
           ALSOFT_DRIVERS: "null"
         run: |
-          sudo sysctl -w kernel.core_pattern=/tmp/cores/core.%e.%p > /dev/null
-          mkdir -p /tmp/cores
           ulimit -c unlimited
           echo "kernel: $(uname -r)"
+          echo "core_pattern: $(cat /proc/sys/kernel/core_pattern)"
           set +e
           ./gradlew runClientGameTest -Pearshot.prebuiltNatives="$GITHUB_WORKSPACE/target/dist/natives"
           rc=$?
           set -e
           if [ "$rc" -ne 0 ]; then
-            core=$(ls -t /tmp/cores/core.* 2>/dev/null | head -n1 || true)
+            core=$(find . /tmp/cores -maxdepth 5 -type f -name 'core*' -size +10M 2>/dev/null | head -n1 || true)
             if [ -n "$core" ]; then
               echo "core: $core ($(stat -c %s "$core") bytes)"
               gdb -batch -nx -ex "set pagination off" -ex "thread apply all bt" \
                 "$(command -v java)" "$core" 2>&1 | tail -n 400
             else
-              echo "no core file in /tmp/cores:"
-              ls -la /tmp/cores || true
+              echo "no core file found under mod/ or /tmp/cores"
+              find . -maxdepth 5 -name 'core*' -newer build.gradle 2>/dev/null | head || true
             fi
           fi
           exit $rc
