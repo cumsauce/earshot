@@ -330,15 +330,40 @@ public final class SoundShaper {
 	private void update(Stream<Channel> channels, double[] listener, boolean underwater, boolean efx,
 			ReverbMode mode, float[] orientation, Map<UUID, VoicePlayer.Head> players, float voiceVolume, Vec3 listenerVelocity,
 			Axes axes) {
+		Vec3 ear = new Vec3(listener[0], listener[1], listener[2]);
+		long now = System.nanoTime();
+		// Filled by the pass as it finds targets, so a pass that dies part way can still release what it had:
+		// its sends taken off and the slots freed. Empty (and the release a no-op on sources) if it dies before
+		// any target was known.
+		List<Target> targets = new ArrayList<>();
+		shapeSafely(() -> shape(channels, listener, underwater, efx, mode, orientation, players, voiceVolume,
+				listenerVelocity, axes, ear, now, targets), () -> {
+			// A pass that dies part way must not repeat every tick: half of the sources would keep the filters
+			// and sends set on them, spaces.begin() would have no matching end(), and unusedOwn would never be
+			// released — and with failed unset, tick() would queue the same broken pass forever. Turn shaping
+			// off cleanly instead: failed stops tick(), voice.fail() frees the voices, and releaseAll takes
+			// every send off the tracked sources and frees the slots, whatever the pass had time to do.
+			failed = true;
+			voice.fail();
+			releaseAll(targets, now, ear, axes);
+		});
+	}
+
+	/**
+	 * One shaping pass: the reverb up to date, then every playing source's filter, position, velocity and sends.
+	 * On the sound thread, run only through {@link #update}, which guards it with {@link #shapeSafely}.
+	 */
+	private void shape(Stream<Channel> channels, double[] listener, boolean underwater, boolean efx,
+			ReverbMode mode, float[] orientation, Map<UUID, VoicePlayer.Head> players, float voiceVolume, Vec3 listenerVelocity,
+			Axes axes, Vec3 ear, long now, List<Target> targets) {
+		// Before reverb(): a pass that dies in reverb() must still leave a begin() for releaseAll's
+		// spaces.end() to close. reverb() makes no space slot, so the order costs nothing.
+		spaces.begin();
 		int[] sends = reverb(mode, underwater, orientation);
 		boolean spacesOn = spaceReverb && efx && mode != ReverbMode.OFF && !underwater;
-		Vec3 ear = new Vec3(listener[0], listener[1], listener[2]);
-		spaces.begin();
 		AL10.alListener3f(AL10.AL_VELOCITY, (float) listenerVelocity.x, (float) listenerVelocity.y,
 				(float) listenerVelocity.z);
-		long now = System.nanoTime();
 		boolean doppler = this.doppler;
-		List<Target> targets = new ArrayList<>();
 		channels.forEach(channel -> {
 			ShapedChannel c = (ShapedChannel) channel;
 			Vec3 position = c.earshot$position();
@@ -802,6 +827,26 @@ public final class SoundShaper {
 			failed = true;
 			EarshotClient.LOGGER.error("Sound shaping stopped: a native call failed", e);
 			voice.fail();
+			return false;
+		}
+	}
+
+	/**
+	 * Runs one whole shaping pass ({@link #shape}), catching any {@link RuntimeException} that escapes it. The
+	 * typed native failures are handled inside the pass by {@link #call}, but anything else — a broken contract
+	 * like {@link #requireRoom}, an unguarded native call, a bad cast — would escape to the sound thread's
+	 * executor, which logs "Error executing task" and carries on, leaving the pass half-applied (sends set on
+	 * some sources, spaces.begin() with no matching end(), unusedOwn never released) and queueing the same
+	 * failure every tick. Nothing is rethrown: on failure {@code onFail} has already turned shaping off. Returns
+	 * whether the pass ran.
+	 */
+	static boolean shapeSafely(Runnable pass, Runnable onFail) {
+		try {
+			pass.run();
+			return true;
+		} catch (RuntimeException e) {
+			EarshotClient.LOGGER.error("Sound shaping stopped: the shaping pass threw", e);
+			onFail.run();
 			return false;
 		}
 	}

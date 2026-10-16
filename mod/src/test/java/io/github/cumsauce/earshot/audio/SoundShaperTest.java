@@ -1,6 +1,7 @@
 package io.github.cumsauce.earshot.audio;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -54,5 +55,34 @@ class SoundShaperTest {
 		assertArrayEquals(new int[2], ownOwners);
 		assertArrayEquals(new int[EarlyReflections.SOURCES], earlyOwners);
 		assertArrayEquals(new boolean[2], unusedOwn);
+	}
+
+	/** A shaping pass that dies part way must stop shaping cleanly, not repeat half-applied every tick. */
+	@Test
+	void a_failed_update_stops_shaping() {
+		boolean[] failed = {false};
+		int[] cleanedUp = {0};
+		// What update() passes as onFail: set failed (tick() checks it first and stops queueing passes) and
+		// release the filters and sends the half-pass left attached.
+		Runnable onFail = () -> {
+			failed[0] = true;
+			cleanedUp[0]++;
+		};
+
+		// A pass that throws — requireRoom's IllegalStateException, say. The throw must not escape: the sound
+		// thread's executor would only log "Error executing task" and come back for the same broken pass next
+		// tick, with half the sources still filtered and sent.
+		boolean survived = SoundShaper.shapeSafely(() -> {
+			throw new IllegalStateException("room has 0 doubles");
+		}, onFail);
+		assertFalse(survived, "a thrown pass must report failure");
+		assertTrue(failed[0], "onFail must mark the shaper failed so tick() stops queueing passes");
+		assertEquals(1, cleanedUp[0], "onFail must release what the half-pass left attached");
+
+		// A pass that does not throw runs to the end and leaves onFail alone.
+		boolean[] ran = {false};
+		assertTrue(SoundShaper.shapeSafely(() -> ran[0] = true, onFail));
+		assertTrue(ran[0], "a healthy pass must run");
+		assertEquals(1, cleanedUp[0], "a healthy pass must not run onFail");
 	}
 }
