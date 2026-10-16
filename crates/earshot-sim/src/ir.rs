@@ -175,11 +175,20 @@ pub fn impulse_response(
     // tail provides the per-band decay. Fused with the direct sound by
     // `edge_sources()` itself (drop below EDGE_FUSE_SECONDS).
     for source in edge {
+        // The same filter `merge` puts on the reflections: a NaN delay
+        // casts to sample 0 and a NaN energy writes NaN samples, which the
+        // energy cap below cannot catch (NaN > x is false). Checked here,
+        // a broken edge source is dropped instead of poisoning the
+        // response the OpenAL buffer is built from.
+        let total = source.energy.iter().sum::<f32>();
+        if !(total > 0.0 && total.is_finite() && source.delay.is_finite() && source.delay >= 0.0) {
+            continue;
+        }
         let i = (source.delay * rate) as usize;
         if i >= length {
             continue;
         }
-        let a = source.energy.iter().sum::<f32>().sqrt();
+        let a = total.sqrt();
         let d = source.direction;
         let at = i * IR_CHANNELS;
         out[at] += a * std::f32::consts::FRAC_1_SQRT_2;
@@ -203,6 +212,15 @@ pub fn impulse_response(
         for channel in 0..IR_CHANNELS {
             out[i * IR_CHANNELS + channel] *= g;
         }
+    }
+    // The last word on what is uploaded: whatever slipped past the filters
+    // above, one non-finite sample would be sent to OpenAL as sound, and
+    // the energy cap cannot catch it (NaN > x is false). A debug_assert!
+    // alone would only check in debug builds, so the whole response is
+    // silenced instead: the filters make this unreachable in practice,
+    // and this makes it impossible in any build.
+    if !out.iter().all(|s| s.is_finite()) {
+        out.fill(0.0);
     }
     out
 }
@@ -942,6 +960,37 @@ mod tests {
         );
     }
 
+    /// Edge taps go in through the same filter the reflections do: a NaN
+    /// delay casts to sample 0 and a NaN energy writes NaN samples, which
+    /// the energy cap cannot catch (NaN > x is false) and which would be
+    /// uploaded to OpenAL as sound. The bad edges must leave the response
+    /// bit for bit as if they had never been handed over.
+    #[test]
+    fn an_edge_tap_with_a_nan_delay_is_ignored() {
+        let r = room([0.5; 3], 4.0, 1.0);
+        let clean = impulse_response(&r, &[], &[], 48_000, 0.5, 4);
+        let bad = [
+            EdgeSource {
+                direction: Vec3::new(1.0, 0.0, 0.0),
+                delay: f32::NAN,
+                energy: [0.25; BANDS],
+            },
+            EdgeSource {
+                direction: Vec3::new(1.0, 0.0, 0.0),
+                delay: 0.01,
+                energy: [f32::NAN, 0.1, 0.1],
+            },
+            EdgeSource {
+                direction: Vec3::new(1.0, 0.0, 0.0),
+                delay: -0.01,
+                energy: [0.25; BANDS],
+            },
+        ];
+        let ir = impulse_response(&r, &[], &bad, 48_000, 0.5, 4);
+        assert!(ir.iter().all(|s| s.is_finite()), "a non-finite sample");
+        assert_eq!(ir, clean, "the bad taps changed the response");
+    }
+
     /// The tap set a listener two metres over a large flat near-specular
     /// plane produces: first-bounce delays from 2h/c ≈ 11.7 ms out to the
     /// 50 m reach limit ≈ 292 ms, dense (about seven rays per old-style
@@ -1014,6 +1063,55 @@ mod tests {
         let want: f64 = early.iter().map(|r| f64::from(r.energy)).sum();
         let got: f64 = merge(&early).iter().map(|r| f64::from(r.energy)).sum();
         assert!((got - want).abs() < 1e-6 * want, "{got} against {want}");
+    }
+
+    /// Merging hands its taps back in delay order whatever order the
+    /// buckets come out of the map, and every bucket that fuses several
+    /// rays carries the jitter that keeps it off the half-millisecond bin
+    /// grid: the same offset `bucket_jitter` derives from that bucket's
+    /// key alone, inside the bin, never zero for these buckets.
+    #[test]
+    fn the_merged_taps_are_sorted_by_delay() {
+        // Eight bins, four rays apiece, all from one direction: the rays'
+        // energy-weighted time sits on a known point of each bin. The bins
+        // start at one: bucket key 0 hashes to jitter 0 in splitmix64, so
+        // only the non-zero keys can show the nudge.
+        let mut early = Vec::new();
+        for bin in 1..9u32 {
+            for ray in 0..4 {
+                early.push(Reflection {
+                    direction: Vec3::new(1.0, 0.0, 0.0),
+                    delay: bin as f32 * MERGE_SECONDS + 1e-5 * ray as f32,
+                    energy: 0.01,
+                });
+            }
+        }
+        let taps = merge(&early);
+        assert_eq!(taps.len(), 8, "one tap per bin");
+        for pair in taps.windows(2) {
+            assert!(
+                pair[0].delay <= pair[1].delay,
+                "out of order: {:?}",
+                taps.iter().map(|t| t.delay).collect::<Vec<_>>()
+            );
+        }
+        for (bin, tap) in taps.iter().enumerate() {
+            // The sort lines the taps up with the bins they came from.
+            let key = (bin + 1) as u32;
+            let mean = key as f32 * MERGE_SECONDS + 1.5e-5;
+            let jitter = bucket_jitter(key, 0);
+            assert!(
+                jitter > 0.0 && jitter < 1.0,
+                "bin {bin} jitter {jitter} outside [0, 1)"
+            );
+            let want = mean + jitter * MERGE_SECONDS;
+            assert!(
+                (tap.delay - want).abs() < 1e-6,
+                "bin {bin}: {} against {want}",
+                tap.delay
+            );
+        }
+        assert_eq!(merge(&early), taps, "the jitter is not deterministic");
     }
 
     /// ISO 9613-1 air absorption on the taps: a tap 171 m out arrives with
