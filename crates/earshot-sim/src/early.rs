@@ -221,9 +221,6 @@ pub fn edge_sources(
     // Drop edge sources that fuse with the direct sound: first, so edges that
     // are dropped don't count towards the cap below and shrink the ones that
     // stay.
-    // Drop edge sources that fuse with the direct sound: first, so edges that
-    // are dropped don't count towards the cap below and shrink the ones that
-    // stay.
     edges.retain(|e| e.delay >= EDGE_FUSE_SECONDS as f32);
     // Cap the total edge energy per band at EDGE_TOTAL_CAP of the parent's image-source
     // energy. We use the parent's energy as a proxy: each parent reflection's mid-band
