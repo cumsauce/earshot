@@ -133,14 +133,15 @@ jobs:
           rc=$?
           set -e
           if [ "$rc" -ne 0 ]; then
-            core=$(find . /tmp/cores -maxdepth 5 -type f -name 'core*' -size +10M 2>/dev/null | head -n1 || true)
-            if [ -n "$core" ]; then
-              echo "core: $core ($(stat -c %s "$core") bytes)"
+            # The default pattern pipes to systemd-coredump: the store keeps the
+            # core, not the working directory.
+            if sudo coredumpctl dump -1 -o /tmp/earshot-core > /tmp/cdumpctl.log 2>&1; then
+              echo "core: $(stat -c %s /tmp/earshot-core) bytes"
               gdb -batch -nx -ex "set pagination off" -ex "thread apply all bt" \
-                "$(command -v java)" "$core" 2>&1 | tail -n 400
+                "$(command -v java)" /tmp/earshot-core 2>&1 | tail -n 400
             else
-              echo "no core file found under mod/ or /tmp/cores"
-              find . -maxdepth 5 -name 'core*' -newer build.gradle 2>/dev/null | head || true
+              echo "coredumpctl failed:"; cat /tmp/cdumpctl.log
+              sudo ls -la /var/lib/systemd/coredump 2>&1 | tail -n 10
             fi
           fi
           exit $rc
