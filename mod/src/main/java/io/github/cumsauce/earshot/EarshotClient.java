@@ -145,38 +145,75 @@ public final class EarshotClient implements ClientModInitializer {
 		net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry.addLast(
 				net.minecraft.resources.Identifier.fromNamespaceAndPath("earshot", "debug"),
 				new io.github.cumsauce.earshot.ui.DebugOverlay());
-		NativeBridge bridge;
+		NativeBridge bridge = null;
+		MemorySegment engine = null;
+		SoundShaper shaper = null;
 		try {
 			bridge = new NativeBridge(NativeLoader.load(configDir()));
 			nativeAbi = bridge.abiVersion();
+			if (nativeAbi != NativeBridge.ABI_VERSION) {
+				LOGGER.error("Earshot is off: native ABI version {} does not match expected {}", nativeAbi,
+						NativeBridge.ABI_VERSION);
+				return;
+			}
+			engine = bridge.create();
+			LOGGER.info("Started the native engine (ABI version {})", nativeAbi);
+			WorldMirror mirror = new WorldMirror(bridge, engine);
+			mirror.materials().setOverrides(MaterialOverrides.load(materialsFile()));
+			mirror.register();
+			shaper = new SoundShaper(bridge, engine);
+			EarshotCommands.register(bridge, engine, mirror, shaper);
+			bridge.setQuality(engine, config.quality(64));
+			shaper.configure(config);
+			shaper.voice().configure(config.voice(), config.ownVoice());
+			EarshotClient.bridge = bridge;
+			EarshotClient.engine = engine;
+			EarshotClient.mirror = mirror;
+			EarshotClient.shaper = shaper;
 		} catch (NativeLoader.UnsupportedPlatformException e) {
 			LOGGER.error("Earshot is off: this platform has no native engine", e);
+			stop(bridge, engine, shaper);
 			return;
 		} catch (Exception | LinkageError e) {
 			LOGGER.error("Earshot is off: could not load the native engine", e);
+			stop(bridge, engine, shaper);
 			return;
 		}
-		if (nativeAbi != NativeBridge.ABI_VERSION) {
-			LOGGER.error("Earshot is off: native ABI version {} does not match expected {}", nativeAbi,
-					NativeBridge.ABI_VERSION);
-			return;
-		}
-		MemorySegment engine = bridge.create();
-		LOGGER.info("Started the native engine (ABI version {})", nativeAbi);
-		WorldMirror mirror = new WorldMirror(bridge, engine);
-		mirror.materials().setOverrides(MaterialOverrides.load(materialsFile()));
-		mirror.register();
-		SoundShaper shaper = new SoundShaper(bridge, engine);
-		EarshotCommands.register(bridge, engine, mirror, shaper);
-		EarshotClient.bridge = bridge;
-		EarshotClient.engine = engine;
-		EarshotClient.mirror = mirror;
-		EarshotClient.shaper = shaper;
-		bridge.setQuality(engine, config.quality(64));
 		net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents.END_CLIENT_TICK
 				.register(minecraft -> followDimension());
-		shaper.configure(config);
-		shaper.voice().configure(config.voice(), config.ownVoice());
+		net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents.CLIENT_STOPPING
+				.register(minecraft -> stop());
 		LOGGER.info("Preset {} ({})", config.preset().key(), config.preset().resolve().key());
+	}
+
+	/** Frees what the engine started with, as {@link #stop(NativeBridge, MemorySegment, SoundShaper)}. */
+	private static void stop() {
+		stop(bridge, engine, shaper);
+	}
+
+	/**
+	 * Forgets and frees the engine: the shaper lets go of its sources and voices, then the engine itself goes, which
+	 * must be its last call. Safe to run over whatever of the three got built.
+	 */
+	private static void stop(@Nullable NativeBridge bridge, @Nullable MemorySegment engine,
+			@Nullable SoundShaper shaper) {
+		EarshotClient.bridge = null;
+		EarshotClient.engine = null;
+		EarshotClient.mirror = null;
+		EarshotClient.shaper = null;
+		if (shaper != null) {
+			try {
+				shaper.contextClosing();
+			} catch (Exception | LinkageError e) {
+				LOGGER.error("Earshot: could not close the sound context", e);
+			}
+		}
+		if (bridge != null && engine != null) {
+			try {
+				bridge.destroy(engine);
+			} catch (Exception | LinkageError e) {
+				LOGGER.error("Earshot: could not free the native engine", e);
+			}
+		}
 	}
 }

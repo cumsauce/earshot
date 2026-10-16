@@ -1,9 +1,12 @@
 package io.github.cumsauce.earshot.world;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -46,5 +49,21 @@ class MaterialMapTest {
 		assertThrows(IllegalStateException.class, () -> MaterialMap.packNibble(-1, AcousticMaterial.ROCK));
 		// A full block is 16 sixteenths, but 0 is what fits in the nibble and what the natives read as full.
 		assertEquals((byte) (AcousticMaterial.ROCK.id() & 0x0F), MaterialMap.packNibble(0, AcousticMaterial.ROCK));
+	}
+
+	/**
+	 * A wall's post alone is far under the volume that reads as open air, but the wall fills its opening, so
+	 * it packs to a solid material with some fill instead of a hole in the mirrored world.
+	 */
+	@Test
+	void aWallIsSolidEvenThoughItsPostIsThin() {
+		BlockState[] walls = {Blocks.COBBLESTONE_WALL.defaultBlockState(), Blocks.STONE_BRICK_WALL.defaultBlockState()};
+		for (BlockState wall : walls) {
+			String at = wall + " should fill its opening";
+			assertNotEquals(AcousticMaterial.AIR, MaterialMap.classify(wall), at);
+			byte packed = MaterialMap.pack(wall);
+			assertNotEquals((byte) 0, packed, at);
+			assertTrue((packed >>> 4 & 0x0F) != 0, at + " (fill nibble)");
+		}
 	}
 }

@@ -17,6 +17,7 @@ import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.SnowLayerBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.TrapDoorBlock;
+import net.minecraft.world.level.block.WallBlock;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.level.material.Fluids;
@@ -158,8 +159,10 @@ public final class MaterialMap {
 				|| block instanceof SnowLayerBlock) {
 			return AcousticMaterial.RUG;
 		}
-		// A closed door is thin, but it fills its doorway.
-		boolean panel = block instanceof DoorBlock || block instanceof TrapDoorBlock || block instanceof FenceGateBlock;
+		// A closed door is thin, but it fills its doorway. A wall's post is thin, but the wall
+		// fills its opening, so it stays solid and takes its material from the sound type below.
+		boolean panel = block instanceof DoorBlock || block instanceof TrapDoorBlock || block instanceof FenceGateBlock
+				|| block instanceof WallBlock;
 		if (!panel && volume(shape) < SOLID_VOLUME) return AcousticMaterial.AIR;
 		if (set != null) return set;
 

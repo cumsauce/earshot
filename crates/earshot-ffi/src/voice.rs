@@ -383,6 +383,13 @@ unsafe extern "C" fn stream_end(_user: *mut c_void, uuid: *const u8) {
 /// `user` must be a pointer from [`stream_pointer`], and `data` writable for
 /// `bytes` bytes, as OpenAL guarantees.
 pub unsafe extern "C" fn callback(user: *mut c_void, data: *mut c_void, bytes: i32) -> i32 {
+    // Silence first: the paths that fail to produce samples (a null argument,
+    // or a panic caught below) must leave silence, not the buffer's stale
+    // samples, which OpenAL would re-mix as an audible repeat. The pull below
+    // overwrites this when it runs.
+    // SAFETY: OpenAL hands `data` writable for `bytes` bytes; `silence`
+    // writes nothing when `data` is null or there are no samples.
+    unsafe { silence(data, bytes) };
     // Behind the same barrier as every export: a panic must not unwind
     // through `extern "C"` into OpenAL's mixer thread (it would abort the
     // process). As on the null-argument path, the buffer counts as filled:
@@ -407,6 +414,27 @@ pub unsafe extern "C" fn callback(user: *mut c_void, data: *mut c_void, bytes: i
         },
         bytes.max(0),
     )
+}
+
+/// Fills the `samples` floats `data` points at with silence, for the paths of
+/// [`callback`] that produce none: OpenAL would otherwise re-mix the buffer's
+/// stale samples as an audible repeat. Writes nothing when there is nothing to
+/// write to.
+///
+/// # Safety
+/// `data` must be writable for `bytes` bytes when it is not null, as OpenAL
+/// guarantees for [`callback`].
+unsafe fn silence(data: *mut c_void, bytes: i32) {
+    if data.is_null() {
+        return;
+    }
+    let samples = usize::try_from(bytes).unwrap_or(0) / size_of::<f32>();
+    if samples == 0 {
+        return;
+    }
+    // SAFETY: OpenAL hands `data` writable for `bytes` bytes, float-aligned
+    // for a float format.
+    unsafe { std::slice::from_raw_parts_mut(data.cast::<f32>(), samples) }.fill(0.0);
 }
 
 /// A pointer to `uuid`'s stream for OpenAL's callback; valid for the rest of
@@ -532,6 +560,18 @@ mod tests {
         deliver(uuid, &[0.75; FRAME], 0);
         assert_eq!(play(&mut out), bytes);
         assert_eq!(out, [0.375; 8], "at half volume");
+    }
+
+    #[test]
+    fn the_openal_callback_writes_silence_when_there_is_no_stream() {
+        // A null stream fails to produce samples: the buffer must come back
+        // as silence, not as the stale samples OpenAL would re-mix.
+        let mut out = [1.0f32; 8];
+        let bytes = (out.len() * 4) as i32;
+        // SAFETY: `out` is writable for `bytes` bytes; the null user fails.
+        let filled = unsafe { callback(std::ptr::null_mut(), out.as_mut_ptr().cast(), bytes) };
+        assert_eq!(filled, bytes);
+        assert_eq!(out, [0.0; 8], "silence, not the stale buffer");
     }
 
     #[test]

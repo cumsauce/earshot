@@ -218,12 +218,22 @@ pub fn edge_sources(
             let _ = (point, image, acoustics);
         }
     }
+    // Drop edge sources that fuse with the direct sound: first, so edges that
+    // are dropped don't count towards the cap below and shrink the ones that
+    // stay.
+    // Drop edge sources that fuse with the direct sound: first, so edges that
+    // are dropped don't count towards the cap below and shrink the ones that
+    // stay.
+    edges.retain(|e| e.delay >= EDGE_FUSE_SECONDS as f32);
     // Cap the total edge energy per band at EDGE_TOTAL_CAP of the parent's image-source
     // energy. We use the parent's energy as a proxy: each parent reflection's mid-band
-    // energy is the wall's mirrored share; the edge sum is a fraction of that.
+    // energy is the wall's mirrored share; the edge sum is a fraction of that. With no
+    // parent taps there is no share to take a fraction of, so the edges keep what they
+    // computed: scale against a full energy's worth instead of zero.
     for b in 0..3 {
         let total: f32 = edges.iter().map(|e| e.energy[b]).sum();
         let parent: f32 = taps.iter().map(|t| t.energy).sum();
+        let parent = if parent > 0.0 { parent } else { 1.0 };
         if total > parent * EDGE_TOTAL_CAP && total > 0.0 {
             let scale = parent * EDGE_TOTAL_CAP / total;
             for e in &mut edges {
@@ -231,8 +241,6 @@ pub fn edge_sources(
             }
         }
     }
-    // Drop edge sources that fuse with the direct sound.
-    edges.retain(|e| e.delay >= EDGE_FUSE_SECONDS as f32);
     edges
 }
 
@@ -689,5 +697,57 @@ mod tests {
                 "band {b}: edge sum {total} exceeds 50% of parent {parent}"
             );
         }
+    }
+
+    #[test]
+    fn edges_keep_their_energy_when_no_parent_taps_are_given() {
+        // The impulse-response path asks for edges with no taps at all: the
+        // parent sum is 0, and the edges must keep what they computed
+        // instead of being scaled to nothing.
+        let world = doorway_world();
+        let listener = Vec3::new(-2.0, 0.5, 0.5);
+        let source = Vec3::new(2.0, 0.5, 0.5);
+        let edges = edge_sources(&world, listener, source, &[]);
+        assert!(!edges.is_empty(), "{edges:?}");
+        for e in &edges {
+            let band: f32 = e.energy.iter().sum();
+            assert!(band > 0.0, "an edge scaled to nothing: {edges:?}");
+        }
+    }
+
+    #[test]
+    fn edges_under_the_fuse_do_not_shrink_the_ones_that_stay() {
+        // The same doorway heard from close by: the upper edge of the opening
+        // is within the fuse and dropped, so it must not count towards the cap
+        // on the edges that stay.
+        let world = doorway_world();
+        let listener = Vec3::new(3.9, 0.95, 0.05);
+        let source = Vec3::new(3.9, 0.9, 0.05);
+        // With no taps the cap is half a full energy's worth: the edges' own
+        // sum is under that, so they come back as computed.
+        let raw = edge_sources(&world, listener, source, &[]);
+        assert!(!raw.is_empty(), "{raw:?}");
+        let raw_sum: f32 = raw.iter().map(|e| e.energy[1]).sum();
+        assert!(raw_sum < EDGE_TOTAL_CAP, "{raw:?}");
+        // Taps whose energy puts the cap between the staying edges' sum and
+        // theirs plus the dropped one's: counting only the staying edges
+        // leaves them alone, counting the dropped one too would shrink them.
+        let taps = [Reflection {
+            direction: Vec3::ZERO,
+            delay: 0.0,
+            energy: 4.0 * raw_sum,
+        }];
+        let edges = edge_sources(&world, listener, source, &taps);
+        assert!(
+            edges
+                .iter()
+                .all(|e| f64::from(e.delay) >= EDGE_FUSE_SECONDS),
+            "{edges:?}"
+        );
+        let sum: f32 = edges.iter().map(|e| e.energy[1]).sum();
+        assert!(
+            (sum - raw_sum).abs() <= 1e-6 * raw_sum,
+            "{sum} vs {raw_sum}: {edges:?}"
+        );
     }
 }

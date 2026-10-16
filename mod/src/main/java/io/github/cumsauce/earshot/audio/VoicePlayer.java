@@ -183,8 +183,10 @@ public final class VoicePlayer {
 	private synchronized void offer() {
 		boolean want = enabled && supported && !failed;
 		int version = !want ? 0 : ownVoice && yakvcTakes(2) ? 2 : 1;
-		bridge.setOwnVoice(version == 2);
 		if (version == offeredVersion) return;
+		// Before the share changes: a Yak VC that polls the sink as it is registered must not count towards the baseline.
+		pollsAtOffer = bridge.voicePolls();
+		bridge.setOwnVoice(version == 2);
 		var share = FabricLoader.getInstance().getObjectShare();
 		if (want) {
 			share.put(SINK_KEY, bridge.voiceSink(version));
@@ -194,7 +196,6 @@ public final class VoicePlayer {
 		offered = want;
 		offeredVersion = version;
 		offeredAt = System.nanoTime();
-		pollsAtOffer = bridge.voicePolls();
 		EarshotClient.LOGGER.info(!want ? "Withdrew the voice sink: Yak VC's voice plays through its own speakers"
 				: version == 2 ? "Offered Yak VC a voice sink with own voice: voice plays through Earshot"
 				: "Offered Yak VC a voice sink: voice plays through Earshot");
@@ -217,8 +218,10 @@ public final class VoicePlayer {
 	 */
 	private void checkRefusal() {
 		if (offeredVersion != 2 || System.nanoTime() - offeredAt < REFUSAL_NANOS) return;
-		// A Yak VC that says which versions it takes was offered one it takes.
-		if (FabricLoader.getInstance().getObjectShare().get(SINK_VERSION_KEY) != null) return;
+		// A Yak VC that says which versions it takes was offered one it takes, as long as the version it publishes is
+		// at least the one offered: an older one is below it, and the downgrade can still happen.
+		if (FabricLoader.getInstance().getObjectShare().get(SINK_VERSION_KEY) instanceof Integer newest
+				&& newest >= offeredVersion) return;
 		if (!FabricLoader.getInstance().isModLoaded("yakvc") || bridge.voicePolls() != pollsAtOffer) return;
 		ownVoiceRefused = true;
 		EarshotClient.LOGGER.warn("This Yak VC doesn't send the player's own voice, so Own Voice Echo is off");
