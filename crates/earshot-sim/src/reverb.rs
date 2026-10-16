@@ -806,4 +806,64 @@ mod tests {
         let steep = fit_early_decay(&hist, 9.0);
         assert!((steep - 0.3).abs() < 0.2 * 0.3, "{steep}");
     }
+
+    /// The fallback the fit hands back where there is no slope to fit: a
+    /// curve that never falls 10 dB inside the histogram's 4.096 s horizon
+    /// — flat, or so slow it only slips past −1 dB — has no ISO 3382
+    /// window, and `fit_early_decay` returns the Eyring decay it was given
+    /// (the sentinel `Tally::room` passes in). So does an empty curve with
+    /// no peak at all.
+    #[test]
+    fn a_curve_that_never_drops_ten_decibels_falls_back_to_eyrings_decay() {
+        let fallback = 3.5;
+        let flat = vec![2048.0; HIST_BINS];
+        assert_eq!(fit_early_decay(&flat, fallback), fallback);
+        // −0.434 dB/s: it passes −1 dB at 2.3 s but reaches only −1.8 dB
+        // by the horizon, so the −10 dB end of the fit window never lands.
+        let mut slow = vec![0.0; HIST_BINS];
+        for (bin, e) in slow.iter_mut().enumerate() {
+            *e = 2048.0 * (-0.1 * bin as f64 * HIST_DT).exp();
+        }
+        assert_eq!(fit_early_decay(&slow, fallback), fallback);
+        let empty = vec![0.0; HIST_BINS];
+        assert_eq!(fit_early_decay(&empty, fallback), fallback);
+    }
+
+    /// Open ground with rays escaping over the rim: whatever the histogram
+    /// of hits and escapes comes to, the reported early decay is a real
+    /// EAX-range number — finite and clamped into 0.1..=8.0 s — never a
+    /// NaN or a sentinel outside the band.
+    #[test]
+    fn an_open_ground_rooms_early_decay_stays_sane_where_rays_escape() {
+        let mut ground = World::new();
+        for x in -64..64 {
+            for z in -64..64 {
+                ground.set_block(x, -1, z, Material::Soil);
+            }
+        }
+        let room = measure(&ground, Vec3::new(0.5, 1.6, 0.5), 2048, 8, 64.0, 7);
+        for &early in &room.early_decay {
+            assert!(early.is_finite(), "{room:?}");
+            assert!((0.1..=8.0).contains(&early), "{room:?}");
+        }
+    }
+
+    /// A sealed metal box at a high bounce cap: metal absorbs so little
+    /// that rays reach the cap with per-band energy still riding (mid band
+    /// ≥ 1e-6), so `Tally::add` parks it in the orphan bins and
+    /// `Tally::room` continues it under the room's own decay before the
+    /// fit. The early decay that comes out is sane, and the same seed
+    /// measures the same room twice.
+    #[test]
+    fn a_sealed_metal_box_at_the_bounce_cap_keeps_a_sane_deterministic_early_decay() {
+        let world = closed_box(Material::Metal, 12);
+        let at = Vec3::new(6.0, 6.0, 6.0);
+        let a = measure(&world, at, 2048, 64, 64.0, 5);
+        let b = measure(&world, at, 2048, 64, 64.0, 5);
+        assert_eq!(a, b);
+        for &early in &a.early_decay {
+            assert!(early.is_finite(), "{a:?}");
+            assert!((0.1..=8.0).contains(&early), "{a:?}");
+        }
+    }
 }

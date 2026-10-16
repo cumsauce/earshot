@@ -615,6 +615,99 @@ mod tests {
         assert!((measured / 2.0 - 1.0).abs() < 0.5, "{measured}");
     }
 
+    /// The knee in the inverted sign: `early_decay` 2 s over `decay` 0.5 s
+    /// — the traced early rate slower than the room's own. The tail falls
+    /// gently to the knee at 2/6 ≈ 333 ms (where that slope reaches 10 dB),
+    /// then steeply at the room's rate, continuous across the knee and
+    /// never rising, whatever the sign of early − decay.
+    #[test]
+    fn an_early_decay_slower_than_the_rooms_still_falls_over_the_knee() {
+        let r = Room {
+            decay: [0.5; 3],
+            early_decay: [2.0; 3],
+            mean_free_path: 8.0,
+            enclosure: 1.0,
+            first_reflection: 4.0,
+            scattering: 0.3,
+            volume: 0.0,
+        };
+        let ir = impulse_response(&r, &[], &[], 48_000, 1.5, 8);
+        assert!(ir.iter().all(|s| s.is_finite()));
+        // W-channel energy in 50 ms windows, from just past the tail's
+        // onset (8/343 ≈ 23 ms) to the response's end: nine windows, four
+        // of them under the 333 ms knee and the rest past it. Noise's
+        // share of each window is ~3% while the envelope itself falls 30%
+        // per window before the knee and 75% after it, so a single rise
+        // would be the envelope, not the sampling.
+        let samples = ir.len() / IR_CHANNELS;
+        let start = (0.03 * 48_000.0) as usize;
+        let window = (0.05 * 48_000.0) as usize;
+        let windows: Vec<f32> = (start..samples)
+            .step_by(window)
+            .map(|from| {
+                let to = (from + window).min(samples);
+                ir[from * IR_CHANNELS..to * IR_CHANNELS]
+                    .iter()
+                    .step_by(IR_CHANNELS)
+                    .map(|s| s * s)
+                    .sum()
+            })
+            .collect();
+        assert!(windows.len() >= 8, "{} windows", windows.len());
+        for pair in windows.windows(2) {
+            assert!(
+                pair[1] <= pair[0],
+                "the envelope rose across the knee: {windows:?}"
+            );
+        }
+        // The response stays inside the energy envelope the other tests
+        // hold it to: under MAX_ENERGY even with the slow early slope
+        // lingering on top of the room's rate.
+        let energy = 2.0 * ir.iter().step_by(IR_CHANNELS).map(|s| s * s).sum::<f32>();
+        assert!(energy <= MAX_ENERGY * 1.000_1, "{energy}");
+        let wanted = late_energy(&r);
+        // The slow early slope lingers: the tail's norm is scaled to the
+        // room's own 0.5 s decay, so this two-slope response carries a
+        // few times the single-rate figure — measured 3.69× — and the
+        // MAX_ENERGY rescale still never engages.
+        assert!(
+            (3.0..=4.5).contains(&(energy / wanted)),
+            "{energy} against the room's {wanted}"
+        );
+    }
+
+    /// `impulse_response` clamps `early_decay` to 1.5 × its own
+    /// `max_seconds` before shaping the tail: an absurd input must come
+    /// out identical to one already at the clamp, not flatten the whole
+    /// response into a roar for the MAX_ENERGY rescale to crush.
+    #[test]
+    fn an_absurd_early_decay_is_clamped_to_the_responses_horizon() {
+        let base = Room {
+            decay: [1.0; 3],
+            early_decay: [1.0; 3],
+            mean_free_path: 8.0,
+            enclosure: 1.0,
+            first_reflection: 4.0,
+            scattering: 0.3,
+            volume: 0.0,
+        };
+        let max_seconds = 1.0;
+        let at_the_clamp = Room {
+            early_decay: [1.5 * max_seconds; 3],
+            ..base
+        };
+        let extreme = Room {
+            early_decay: [f32::MAX; 3],
+            ..base
+        };
+        let held = impulse_response(&extreme, &[], &[], 48_000, max_seconds, 9);
+        let clamped = impulse_response(&at_the_clamp, &[], &[], 48_000, max_seconds, 9);
+        assert!(held.iter().all(|s| s.is_finite()));
+        assert_eq!(held, clamped);
+        let energy = 2.0 * held.iter().step_by(IR_CHANNELS).map(|s| s * s).sum::<f32>();
+        assert!(energy <= MAX_ENERGY * 1.000_1, "{energy}");
+    }
+
     #[test]
     fn reflections_ahead_and_above_land_on_their_channels() {
         // B-format with the listener facing -z: what is ahead is +X, what is
