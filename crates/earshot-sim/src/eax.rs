@@ -90,6 +90,7 @@ mod tests {
     fn room(decay: [f32; 3], mean_free_path: f64, enclosure: f32) -> Room {
         Room {
             decay,
+            early_decay: decay,
             mean_free_path,
             enclosure,
             first_reflection: mean_free_path / 2.0,

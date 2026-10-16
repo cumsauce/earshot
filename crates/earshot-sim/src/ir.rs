@@ -64,6 +64,7 @@ pub fn impulse_response(
     // tail steepened to be 40 dB down by then, rather than stopping loud.
     let mut room = *room;
     room.decay = room.decay.map(|t60| t60.min(1.5 * max_seconds));
+    room.early_decay = room.early_decay.map(|t60| t60.min(1.5 * max_seconds));
     let room = &room;
     // Long enough for the room's decay, and for the last echo to be heard.
     let last_echo = early
@@ -77,6 +78,14 @@ pub fn impulse_response(
     // fading at its band's decay, starting after one mean free path.
     let onset = ((room.mean_free_path / SPEED_OF_SOUND) as f32 * rate) as usize;
     let level = late_energy(room).sqrt();
+    // Two slopes: the tail falls at the traced early decay until the knee
+    // — where that slope reaches 10 dB — then at the room's own decay. A
+    // coupled room's fast antechamber gives way to the live space behind
+    // it; equal slopes collapse to the one exponential this has always
+    // been, exp(a) · exp(b) = exp(a + b).
+    let early_t60 = room.early_decay.map(|t60| t60.max(0.05));
+    let late_t60 = room.decay.map(|t60| t60.max(0.05));
+    let knee: [f32; 3] = std::array::from_fn(|band| early_t60[band] / 6.0);
     let mut rng = Rng::new(seed);
     for channel in 0..IR_CHANNELS {
         let weight = if channel == 0 {
@@ -89,7 +98,14 @@ pub fn impulse_response(
             let t = (i - onset) as f32 / rate;
             let noise = gaussian(&mut rng);
             let [low, mid, high] = bands.split(noise);
-            let decays = room.decay.map(|t60| (-6.907_755 * t / t60.max(0.05)).exp());
+            let decays: [f32; 3] = std::array::from_fn(|band| {
+                if t <= knee[band] {
+                    (-6.907_755 * t / early_t60[band]).exp()
+                } else {
+                    (-6.907_755 * knee[band] / early_t60[band]).exp()
+                        * (-6.907_755 * (t - knee[band]) / late_t60[band]).exp()
+                }
+            });
             out[i * IR_CHANNELS + channel] =
                 level * weight * (low * decays[0] + mid * decays[1] + high * decays[2]);
         }
@@ -278,6 +294,7 @@ mod merge_tests {
     fn many_rays_off_one_wall_dont_boost_the_bass() {
         let room = Room {
             decay: [2.0, 2.0, 1.0],
+            early_decay: [2.0, 2.0, 1.0],
             mean_free_path: 6.0,
             enclosure: 1.0,
             first_reflection: 1.0,
@@ -310,6 +327,7 @@ mod tests {
     fn room(t60: [f32; 3], mean_free_path: f64, enclosure: f32) -> Room {
         Room {
             decay: t60,
+            early_decay: t60,
             mean_free_path,
             enclosure,
             first_reflection: mean_free_path / 2.0,
@@ -498,6 +516,7 @@ mod tests {
     fn a_tail_bigger_than_its_room_is_held_to_max_energy() {
         let r = Room {
             decay: [4.0; 3],
+            early_decay: [4.0; 3],
             mean_free_path: 10.0,
             enclosure: 1.0,
             first_reflection: 5.0,
@@ -554,6 +573,46 @@ mod tests {
             measured[0] >= measured[1] && measured[1] >= measured[2],
             "each band decays at its own rate: {measured:?}"
         );
+    }
+
+    #[test]
+    fn the_tail_falls_steeply_for_the_early_decay_then_settles() {
+        let rate = 48_000.0;
+        let r = Room {
+            decay: [2.0; 3],
+            early_decay: [0.3; 3],
+            mean_free_path: 8.0,
+            enclosure: 1.0,
+            first_reflection: 4.0,
+            scattering: 0.3,
+            volume: 0.0,
+        };
+        let ir = impulse_response(&r, &[], &[], 48_000, 1.5, 8);
+        let window = |from: f32, to: f32| {
+            let mut energy = 0.0f32;
+            for (i, &sample) in ir.iter().step_by(IR_CHANNELS).enumerate() {
+                let t = i as f32 / rate;
+                if t >= to {
+                    break;
+                }
+                if t >= from {
+                    energy += sample * sample;
+                }
+            }
+            energy
+        };
+        // The tail starts at the mean free path (8/343 ≈ 23 ms). Under the
+        // 0.3 s early decay it loses 10 dB by 50 ms, so these windows sit
+        // well under 0.4; at the old single 2 s rate the pair would sit
+        // near 0.8 instead.
+        let steep = window(0.030, 0.040);
+        let knee = window(0.060, 0.075);
+        assert!(knee < 0.4 * steep, "{knee} against {steep}");
+        // Past the knee the late rate rules: the windows are half a second
+        // apart, so their drop extrapolates to the 2 s decay.
+        let drop = 10.0 * (window(0.40, 0.50) / window(0.90, 1.00)).log10();
+        let measured = 60.0 * 0.5 / drop;
+        assert!((measured / 2.0 - 1.0).abs() < 0.5, "{measured}");
     }
 
     #[test]
@@ -618,6 +677,7 @@ mod tests {
         let source = Vec3::new(2.0, 0.5, 0.5);
         let room = Room {
             decay: [0.1; 3],
+            early_decay: [0.1; 3],
             mean_free_path: 1.0,
             enclosure: 1.0,
             first_reflection: 1.0,

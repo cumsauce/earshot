@@ -130,6 +130,8 @@ The gametest checks a looping beacon hum in three states:
 **Measuring the room.** The engine's worker thread traces 1024 rays × 12 bounces from the listener every 200 ms (a few ms each).
 - Every reflection costs its surface's absorption per band, and every escape counts as a fully absorbing reflection (the open sky).
 - Eyring's formula over the traced mean free path `l` and mean absorption `a`, `T60 = 6 ln 10 · l / (c · −ln(1 − a))`, gives the decay per band. Unit tests match closed-form Eyring within 20 % in every band for wood, cloth and soil boxes.
+- The trace also leaves an energy-decay curve: each segment drops the ray's per-band energy into 1 ms bins of flight time, and rays stopped by the bounce cap continue under the room's own decay. A least-squares fit over the curve's first −1 to −10 dB gives `early_decay` per band — a dead antechamber opening onto a live hall falls faster than the mean-absorption mix behind it, while a single-material room's fit lands on Eyring's figure.
+- The convolver's tail falls at `early_decay` until that slope reaches −10 dB, then at `decay` after it, so coupled spaces start steep and settle.
 - The result is smoothed (35 % per measurement, decays geometrically) so a doorway is crossed in about half a second.
 
 **Driving EAX reverb.** `eax_reverb` turns the room into EFX's EAX reverb parameters.

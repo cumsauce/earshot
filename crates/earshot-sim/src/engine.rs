@@ -617,6 +617,7 @@ fn blend(from: &Room, to: &Room, t: f32) -> Room {
     let lerp64 = |a: f64, b: f64| a + (b - a) * f64::from(t);
     Room {
         decay: [0, 1, 2].map(|band| geo(from.decay[band], to.decay[band])),
+        early_decay: [0, 1, 2].map(|band| geo(from.early_decay[band], to.early_decay[band])),
         mean_free_path: lerp64(from.mean_free_path, to.mean_free_path),
         enclosure: lerp(from.enclosure, to.enclosure),
         first_reflection: lerp64(from.first_reflection, to.first_reflection),
@@ -627,7 +628,7 @@ fn blend(from: &Room, to: &Room, t: f32) -> Room {
 
 #[cfg(test)]
 mod tests {
-    use earshot_world::Material;
+    use earshot_world::{BANDS, Material};
 
     use super::*;
 
@@ -841,6 +842,7 @@ mod tests {
         let (from, to) = (
             Room {
                 decay: [1.0, 1.0, 1.0],
+                early_decay: [4.0, 4.0, 4.0],
                 mean_free_path: 4.0,
                 enclosure: 0.0,
                 first_reflection: 2.0,
@@ -849,6 +851,7 @@ mod tests {
             },
             Room {
                 decay: [2.0, 4.0, 8.0],
+                early_decay: [16.0, 16.0, 16.0],
                 mean_free_path: 12.0,
                 enclosure: 1.0,
                 first_reflection: 6.0,
@@ -872,6 +875,11 @@ mod tests {
         );
         assert!((half.decay[1] - 2.0).abs() < 1e-6, "{half:?}");
         assert!((half.decay[2] - 8.0f32.sqrt()).abs() < 1e-6, "{half:?}");
+        // The early decay blends geometrically too, off its own values:
+        // 4 → 16 halves to 8, which no blend of the decays above would give.
+        for band in 0..BANDS {
+            assert!((half.early_decay[band] - 8.0).abs() < 1e-6, "{half:?}");
+        }
     }
 
     #[test]

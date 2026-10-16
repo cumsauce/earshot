@@ -18,6 +18,14 @@ const MAX_DECAY: f64 = 8.0;
 /// `S` and `4V/S` is the mean free path. In a big space it shortens the
 /// highs' decay.
 const AIR: [f64; BANDS] = [0.000_25, 0.001_15, 0.005_8];
+/// Seconds per bin of the traced energy decay curve: a millisecond, fine
+/// enough to resolve the early part of a decay (the fit reads the first
+/// 10 dB) while a 4 s horizon covers the longest decay reported.
+const HIST_DT: f64 = 0.001;
+/// Bins in the traced energy decay curve: 4.096 s. The first −10 dB point
+/// of any decay this code reports (≤ 8 s) lands within 1.33 s, so the fit
+/// never runs off the end.
+const HIST_BINS: usize = 4096;
 
 /// What a listener's surroundings do to sound, from a path trace: the input
 /// to the reverb (docs/PLAN.md, M3).
@@ -26,6 +34,11 @@ pub struct Room {
     /// Seconds for the reverb to fall by 60 dB, per band (Eyring's formula
     /// over the traced mean free path and absorption).
     pub decay: Bands,
+    /// Seconds for the early part of the decay — the first 10 dB read off
+    /// the traced energy decay curve — per band. Shorter than [`decay`]
+    /// where the room is coupled: a dead antechamber falls fast before the
+    /// live space behind it takes over the tail.
+    pub early_decay: Bands,
     /// Mean distance between reflections, in blocks: the size of the space.
     pub mean_free_path: f64,
     /// Share of rays whose first leg hits something: 1 shut in, about 0.5 on
@@ -46,6 +59,7 @@ impl Room {
     /// Nothing around at all.
     pub const OPEN_AIR: Room = Room {
         decay: [MIN_DECAY as f32; BANDS],
+        early_decay: [MIN_DECAY as f32; BANDS],
         mean_free_path: 0.0,
         enclosure: 0.0,
         first_reflection: 0.0,
@@ -94,7 +108,7 @@ pub fn measure_with_early(
             .enumerate()
             .map(|(i, part)| {
                 scope.spawn(move || {
-                    let mut tally = Tally::default();
+                    let mut tally = Tally::new(bounces);
                     trace_directions(
                         world,
                         listener,
@@ -113,7 +127,7 @@ pub fn measure_with_early(
         parts
             .into_iter()
             .map(|part| part.join().expect("a room trace thread panicked"))
-            .fold(Tally::default(), Tally::merge)
+            .fold(Tally::new(bounces), Tally::merge)
     });
     tally.room(rays)
 }
@@ -129,7 +143,7 @@ pub fn measure_threads(rays: u32) -> usize {
 }
 
 /// What a room trace adds up, per thread.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Tally {
     early: Vec<Reflection>,
     absorbed: [f64; BANDS],
@@ -141,19 +155,81 @@ struct Tally {
     /// Sum of the first legs' lengths cubed, escapes at full reach.
     cubes: f64,
     scattering: f64,
+    /// The trace's bounce cap: rays reaching it are cut off with energy
+    /// still travelling, which [`Tally::room`] continues analytically.
+    bounces: u32,
+    /// Seconds along the ray being tallied, since it left the listener.
+    elapsed: f64,
+    /// Per-band energy still riding the current ray: 1.0 at birth, dropped
+    /// at each surface by what the surface took.
+    band_energy: [f64; BANDS],
+    /// The energy decay curve: the ray energy present in each one
+    /// millisecond bin, per band — what the early decay is read off.
+    hist: [[f64; HIST_BINS]; BANDS],
+    /// Energy the bounce cap would have carried on, at the bin the ray
+    /// reached the cap: the curve's tail after the trace's horizon.
+    orphan: [[f64; HIST_BINS]; BANDS],
+}
+
+impl Default for Tally {
+    fn default() -> Self {
+        Tally {
+            early: Vec::new(),
+            absorbed: [0.0; BANDS],
+            events: 0,
+            hits: 0,
+            firsts: 0,
+            free_path: 0.0,
+            first: 0.0,
+            cubes: 0.0,
+            scattering: 0.0,
+            bounces: 0,
+            elapsed: 0.0,
+            band_energy: [0.0; BANDS],
+            hist: [[0.0; HIST_BINS]; BANDS],
+            orphan: [[0.0; HIST_BINS]; BANDS],
+        }
+    }
 }
 
 impl Tally {
+    fn new(bounces: u32) -> Tally {
+        Tally {
+            bounces,
+            ..Tally::default()
+        }
+    }
+
     fn add(&mut self, segment: &Segment, rays: u32) {
         self.events += 1;
         let length = (segment.to - segment.from).length();
         if segment.bounce == 0 {
             self.cubes += length.powi(3);
+            self.elapsed = 0.0;
+            self.band_energy = [1.0; BANDS];
         }
+        let leg_start = self.elapsed;
+        let leg_end = leg_start + length / SPEED_OF_SOUND;
         if segment.escaped {
+            // The ray leaves for good: its energy is gone with it, not
+            // deposited anywhere in the room's decay curve.
             self.absorbed.iter_mut().for_each(|a| *a += 1.0);
+            self.elapsed = leg_end;
             return;
         }
+        // Every bin the leg spans holds this ray's energy for its whole
+        // duration: the curve is occupancy, all rays starting in bin 0.
+        let first_bin = (leg_start / HIST_DT) as usize;
+        let last_bin = (leg_end / HIST_DT) as usize;
+        for bin in first_bin..=last_bin {
+            if bin >= HIST_BINS {
+                break;
+            }
+            for (hist, energy) in self.hist.iter_mut().zip(self.band_energy) {
+                hist[bin] += energy;
+            }
+        }
+        self.elapsed = leg_end;
         self.free_path += length;
         self.hits += 1;
         let acoustics = segment.material.acoustics();
@@ -196,9 +272,21 @@ impl Tally {
             } else {
                 0.0
             };
-            *a += absorption + (1.0 - absorption) * through;
+            let loss = absorption + (1.0 - absorption) * through;
+            *a += loss;
+            self.band_energy[band] *= 1.0 - loss;
         }
         self.scattering += f64::from(acoustics.scattering);
+        // At the bounce cap, keep the still-travelling energy: where the
+        // trace stops, the room's own decay continues it (Tally::room).
+        if segment.bounce == self.bounces && self.band_energy[1] >= 1e-6 {
+            let bin = (self.elapsed / HIST_DT) as usize;
+            if bin < HIST_BINS {
+                for (orphan, energy) in self.orphan.iter_mut().zip(self.band_energy) {
+                    orphan[bin] += energy;
+                }
+            }
+        }
     }
 
     fn merge(mut self, other: Tally) -> Tally {
@@ -213,6 +301,12 @@ impl Tally {
         self.first += other.first;
         self.cubes += other.cubes;
         self.scattering += other.scattering;
+        for band in 0..BANDS {
+            for bin in 0..HIST_BINS {
+                self.hist[band][bin] += other.hist[band][bin];
+                self.orphan[band][bin] += other.orphan[band][bin];
+            }
+        }
         self
     }
 
@@ -232,6 +326,23 @@ impl Tally {
         });
         let room = Room {
             decay,
+            early_decay: [0, 1, 2].map(|band| {
+                // Where the bounce cap stopped a ray, continue its energy
+                // under the room's own decay: the tail the trace would have
+                // seen had it gone on.
+                let q = (-SIXTY_DB * HIST_DT / f64::from(decay[band])).exp();
+                let mut carried = 0.0;
+                let mut curve = [0.0; HIST_BINS];
+                for ((curve, hist), orphan) in curve
+                    .iter_mut()
+                    .zip(&self.hist[band])
+                    .zip(&self.orphan[band])
+                {
+                    carried = carried * q + orphan;
+                    *curve = hist + carried;
+                }
+                fit_early_decay(&curve, decay[band])
+            }),
             mean_free_path,
             enclosure: self.firsts as f32 / rays.max(1) as f32,
             first_reflection: if self.firsts > 0 {
@@ -244,6 +355,47 @@ impl Tally {
         };
         (room, self.early)
     }
+}
+
+/// Reads the early decay — seconds for 60 dB at the rate of the curve's
+/// first 10 dB — off an energy decay curve of `HIST_BINS` one-millisecond
+/// bins holding the ray energy at each moment, falling back to `fallback`
+/// where the curve never drops a decibel (or drops so fast no slope can be
+/// fit).
+fn fit_early_decay(hist: &[f64], fallback: f32) -> f32 {
+    let peak = hist.first().copied().unwrap_or(0.0);
+    if peak <= 0.0 {
+        return fallback;
+    }
+    let level = |bin: usize| 10.0 * (hist[bin] / peak).max(f64::MIN_POSITIVE).log10();
+    // The fit runs from the first −1 dB, past the ramp of rays still
+    // starting out, to the first −10 dB: ISO 3382's window for EDT.
+    let (Some(first), Some(last)) = (
+        (0..HIST_BINS).find(|&bin| level(bin) <= -1.0),
+        (0..HIST_BINS).find(|&bin| level(bin) <= -10.0),
+    ) else {
+        return fallback;
+    };
+    let n = (last - first + 1) as f64;
+    let mut sum_t = 0.0;
+    let mut sum_db = 0.0;
+    let mut sum_tt = 0.0;
+    let mut sum_td = 0.0;
+    for bin in first..=last {
+        let t = bin as f64 * HIST_DT;
+        let db = level(bin);
+        sum_t += t;
+        sum_db += db;
+        sum_tt += t * t;
+        sum_td += t * db;
+    }
+    // Least squares: the curve's slope in decibels a second, always down.
+    let denom = n * sum_tt - sum_t * sum_t;
+    let slope = (n * sum_td - sum_t * sum_db) / denom;
+    if !slope.is_finite() || slope >= 0.0 {
+        return fallback;
+    }
+    (60.0 / -slope).clamp(MIN_DECAY, MAX_DECAY) as f32
 }
 
 #[cfg(test)]
@@ -543,5 +695,115 @@ mod tests {
             measure(&World::new(), Vec3::ZERO, 64, 4, 64.0, 1),
             Room::OPEN_AIR
         );
+    }
+
+    /// A dead chamber opening through a wide arch onto a live hall: the
+    /// curve's first 10 dB is the chamber's own steep fall, while the
+    /// mean-absorption Eyring figure behind it is the mix, held up by the
+    /// hall. An `early_decay` that merely repeats `decay` fails the coupled
+    /// case below — that equality is the placeholder this test exists to
+    /// break.
+    #[test]
+    fn a_dead_chamber_falls_faster_than_the_mix_it_opens_onto() {
+        // A rock hall with a cloth chamber inside it; `arch` cuts a wide
+        // opening through the shared wall, so the hall's rays flood in.
+        let couplet = |arch: bool| {
+            let mut world = closed_box(Material::Rock, 20);
+            for a in 3..=12 {
+                for b in 3..=12 {
+                    for w in [3, 12] {
+                        world.set_block(w, a, b, Material::Cloth);
+                        world.set_block(a, w, b, Material::Cloth);
+                        world.set_block(a, b, w, Material::Cloth);
+                    }
+                }
+            }
+            if arch {
+                // Six of the wall's ten rows by eight of its ten columns.
+                for y in 5..=10 {
+                    for z in 4..=11 {
+                        world.set_block(3, y, z, Material::Air);
+                    }
+                }
+            }
+            world
+        };
+        let at = Vec3::new(8.0, 8.0, 8.0);
+        let sealed = measure(&couplet(false), at, 2048, 16, 64.0, 1);
+        // Sealed, one material in sight: a single slope, and the fit lands
+        // on Eyring's figure for it.
+        assert!(
+            f64::from(sealed.early_decay[1]) > 0.8 * f64::from(sealed.decay[1]),
+            "sealed {sealed:?}"
+        );
+        let open = measure(&couplet(true), at, 2048, 16, 64.0, 1);
+        // Open, the cloth drains the early curve while the hall's slow
+        // energy — and Eyring's mean over it — keeps the mix ringing.
+        // Seeded actuals: early 0.530 against decay 0.660 (ratio 0.803),
+        // so the bound sits at 0.85: clear of the placeholder's 1.0, with
+        // the measured separation to spare.
+        assert!(
+            f64::from(open.early_decay[1]) < 0.85 * f64::from(open.decay[1]),
+            "coupled {open:?}"
+        );
+    }
+
+    /// One material everywhere: the traced curve is a single slope, so the
+    /// early fit lands on Eyring's figure — a flat head and sampling noise
+    /// move it only a little.
+    #[test]
+    fn a_uniform_rooms_early_decay_is_its_decay() {
+        let room = measure(
+            &closed_box(Material::Rock, 12),
+            Vec3::new(6.0, 6.0, 6.0),
+            2048,
+            24,
+            64.0,
+            1,
+        );
+        let early = f64::from(room.early_decay[1]);
+        let late = f64::from(room.decay[1]);
+        assert!((early / late - 1.0).abs() < 0.3, "{early} against {late}");
+        for band in 0..BANDS {
+            assert!(
+                (0.1..=8.0).contains(&f64::from(room.early_decay[band])),
+                "{room:?}"
+            );
+        }
+    }
+
+    /// The fit reads the slope of the curve's first ten decibels: of a pure
+    /// curve, its own rate; of a two-slope curve, the steep part before the
+    /// knee, never the tail.
+    #[test]
+    fn the_early_decay_fits_the_first_ten_decibels_of_the_curve() {
+        let rays = 2048.0;
+        let mut hist = vec![0.0; HIST_BINS];
+        let fill = |hist: &mut [f64], curve: &dyn Fn(f64) -> f64| {
+            for (bin, e) in hist.iter_mut().enumerate() {
+                *e = rays * curve(bin as f64 * HIST_DT);
+            }
+        };
+        // A pure 2 s energy curve, read back within a fifth — energy, so
+        // the curve falls `6 ln 10` over the T60, not `3 ln 10`. The
+        // fallback is out of range on purpose, so a stub can't pass by
+        // accident.
+        fill(&mut hist, &|t| (-SIXTY_DB * t / 2.0).exp());
+        let pure = fit_early_decay(&hist, 9.0);
+        assert!((pure - 2.0).abs() < 0.2 * 2.0, "{pure}");
+        // Two slopes: 0.3 s until −10 dB, then 2 s after. The early decay
+        // is the steep part, not the tail.
+        let knee = 0.3 / 6.0;
+        fill(&mut hist, &|t| {
+            let db = if t <= knee {
+                -10.0 * t / knee
+            } else {
+                -10.0 - 60.0 * (t - knee) / 2.0
+            };
+            // Power decibels: e^(db·ln 10 / 10), not e^(db / 10).
+            10.0f64.powf(db / 10.0)
+        });
+        let steep = fit_early_decay(&hist, 9.0);
+        assert!((steep - 0.3).abs() < 0.2 * 0.3, "{steep}");
     }
 }

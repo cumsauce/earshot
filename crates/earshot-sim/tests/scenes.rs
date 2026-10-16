@@ -285,6 +285,7 @@ fn a_short_max_seconds_caps_the_response_at_the_clamped_decay() {
     use earshot_sim::IR_CHANNELS;
     let room = Room {
         decay: [2.0, 1.0, 0.5],
+        early_decay: [2.0, 1.0, 0.5],
         mean_free_path: 8.0,
         enclosure: 1.0,
         first_reflection: 4.0,
@@ -512,6 +513,7 @@ fn rooms_come_out_sane_wherever_they_are_measured() {
             let room = measure(&scene.world, at, 1024, 16, 64.0, 1);
             let Room {
                 decay,
+                early_decay,
                 mean_free_path,
                 enclosure,
                 first_reflection,
@@ -521,11 +523,15 @@ fn rooms_come_out_sane_wherever_they_are_measured() {
             for t60 in decay {
                 assert!((0.1..=8.0).contains(&f64::from(t60)), "{scene:?} {room:?}");
             }
+            for t in early_decay {
+                assert!((0.1..=8.0).contains(&f64::from(t)), "{scene:?} {room:?}");
+            }
             assert!((0.0..=1.0).contains(&f64::from(enclosure)));
             assert!(mean_free_path >= 0.0 && first_reflection >= 0.0);
             assert!((0.0..=1.0).contains(&f64::from(scattering)));
             assert!(volume >= 0.0);
             assert!(decay.iter().all(|t60| t60.is_finite()));
+            assert!(early_decay.iter().all(|t| t.is_finite()));
         }
     }
 }
