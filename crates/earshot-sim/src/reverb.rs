@@ -99,42 +99,108 @@ pub fn measure_with_early(
     reach: f64,
     seed: u64,
 ) -> (Room, Vec<Reflection>) {
+    measure_with_parts(
+        world,
+        listener,
+        rays,
+        bounces,
+        reach,
+        seed,
+        measure_parts(rays),
+    )
+}
+
+/// How many parts a measurement of `rays` is split into: a fixed function
+/// of the ray count alone, never of the machine, so the same world and
+/// seed split the same way on every CPU. Four parts once the trace is
+/// worth splitting, one before it.
+fn measure_parts(rays: u32) -> usize {
+    if rays < 2048 { 1 } else { 4 }
+}
+
+/// [`measure_with_early`], with the ray budget split into `parts` traces
+/// instead of whatever the ray count calls for: the seam the parts
+/// equality test measures through. Each part traces a fixed slice of the
+/// directions with its own seed, derived from the part's index, so what a
+/// part traces depends on neither the thread count nor the core count.
+/// Threads only choose how many parts run at once, and the parts are
+/// always merged in index order, so the room comes out identical whether
+/// the parts run one after another or side by side, on any machine.
+fn measure_with_parts(
+    world: &World,
+    listener: Vec3,
+    rays: u32,
+    bounces: u32,
+    reach: f64,
+    seed: u64,
+    parts: usize,
+) -> (Room, Vec<Reflection>) {
     let directions = sphere_directions(rays, seed);
-    let threads = measure_threads(rays);
-    let chunk = directions.len().div_ceil(threads).max(1);
-    let tally = std::thread::scope(|scope| {
-        let parts: Vec<_> = directions
-            .chunks(chunk)
-            .enumerate()
-            .map(|(i, part)| {
-                scope.spawn(move || {
-                    let mut tally = Tally::new(bounces);
-                    trace_directions(
-                        world,
-                        listener,
-                        part,
-                        bounces,
-                        reach,
-                        seed + i as u64,
-                        |s| {
-                            tally.add(&s, rays);
-                        },
-                    );
-                    tally
+    // Never more parts than rays, and never none: an empty trace is one
+    // part holding nothing.
+    let parts = parts.clamp(1, directions.len().max(1));
+    let chunk = directions.len().div_ceil(parts).max(1);
+    let workers = measure_threads(rays).clamp(1, parts);
+    // Declared outside the scope: the scope body's own locals are dropped
+    // before the scope joins its threads, so what the workers share must
+    // be born outside the body.
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        let next = &next;
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut traced = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(rest) = directions.get(i * chunk..) else {
+                            break;
+                        };
+                        if rest.is_empty() {
+                            break;
+                        }
+                        let part = &rest[..rest.len().min(chunk)];
+                        let mut tally = Tally::new(bounces);
+                        trace_directions(
+                            world,
+                            listener,
+                            part,
+                            bounces,
+                            reach,
+                            // Wrapped so a seed at the top of the range
+                            // measures the same in debug and release
+                            // builds, where overflow panics or not differs.
+                            seed.wrapping_add(i as u64),
+                            |s| {
+                                tally.add(&s, rays);
+                            },
+                        );
+                        traced.push((i, tally));
+                    }
+                    traced
                 })
             })
             .collect();
-        parts
+        let mut traced: Vec<(usize, Tally)> = handles
             .into_iter()
-            .map(|part| part.join().expect("a room trace thread panicked"))
+            .flat_map(|handle| handle.join().expect("a room trace thread panicked"))
+            .collect();
+        // Merging in part order keeps the sum the room is read off free of
+        // any trace of which thread ran which part.
+        traced.sort_by_key(|&(i, _)| i);
+        traced
+            .into_iter()
+            .map(|(_, tally)| tally)
             .fold(Tally::new(bounces), |total, part| total.merge(&part))
-    });
-    tally.room(rays)
+    })
+    .room(rays)
 }
 
-/// How many threads a room measurement of `rays` uses: one for small
-/// traces, where starting threads would cost more than it saves, else up to
-/// four.
+/// How many threads a room measurement of `rays` uses at once: one for
+/// small traces, where starting threads would cost more than it saves,
+/// else up to four. It only picks the pace. The split itself is
+/// [`measure_parts`], fixed by the ray count, so a machine's cores never
+/// change what gets traced or with which seed.
 pub fn measure_threads(rays: u32) -> usize {
     if rays < 2048 {
         return 1;
@@ -150,10 +216,17 @@ struct Tally {
     events: u32,
     hits: u32,
     firsts: u32,
-    free_path: f64,
-    first: f64,
-    /// Sum of the first legs' lengths cubed, escapes at full reach.
-    cubes: f64,
+    /// Every hit leg's length, in the order the legs were traced. Held as
+    /// the ordered list and summed once at the end rather than summed as
+    /// they arrive: a running float sum depends on the order its terms
+    /// were added in, and which part a leg's sum lands in depends on how
+    /// the ray budget was split, which must not change the room measured.
+    legs: Vec<f64>,
+    /// The hit first legs' lengths, in trace order, for the same reason.
+    first_legs: Vec<f64>,
+    /// The first legs' lengths cubed, escapes at full reach, in trace
+    /// order, for the same reason.
+    first_cubes: Vec<f64>,
     scattering: f64,
     /// The trace's bounce cap: rays reaching it are cut off with energy
     /// still travelling, which [`Tally::room`] continues analytically.
@@ -182,9 +255,9 @@ impl Default for Tally {
             events: 0,
             hits: 0,
             firsts: 0,
-            free_path: 0.0,
-            first: 0.0,
-            cubes: 0.0,
+            legs: Vec::new(),
+            first_legs: Vec::new(),
+            first_cubes: Vec::new(),
             scattering: 0.0,
             bounces: 0,
             elapsed: 0.0,
@@ -207,7 +280,7 @@ impl Tally {
         self.events += 1;
         let length = (segment.to - segment.from).length();
         if segment.bounce == 0 {
-            self.cubes += length.powi(3);
+            self.first_cubes.push(length.powi(3));
             self.elapsed = 0.0;
             self.band_energy = [1.0; BANDS];
         }
@@ -251,7 +324,7 @@ impl Tally {
             }
         }
         self.elapsed = leg_end;
-        self.free_path += length;
+        self.legs.push(length);
         self.hits += 1;
         let acoustics = segment.material.acoustics();
         // What a crossing through the surface takes besides the absorption,
@@ -265,7 +338,7 @@ impl Tally {
                 0.0
             };
         if segment.bounce == 0 {
-            self.first += length;
+            self.first_legs.push(length);
             self.firsts += 1;
             let direction = (segment.to - segment.from).normalized();
             let cos = direction.dot(segment.normal).abs() as f32;
@@ -322,9 +395,9 @@ impl Tally {
         self.events += other.events;
         self.hits += other.hits;
         self.firsts += other.firsts;
-        self.free_path += other.free_path;
-        self.first += other.first;
-        self.cubes += other.cubes;
+        self.legs.extend(other.legs.iter().copied());
+        self.first_legs.extend(other.first_legs.iter().copied());
+        self.first_cubes.extend(other.first_cubes.iter().copied());
         self.scattering += other.scattering;
         for band in 0..BANDS {
             for bin in 0..HIST_BINS {
@@ -339,7 +412,13 @@ impl Tally {
         if self.hits == 0 {
             return (Room::OPEN_AIR, self.early);
         }
-        let mean_free_path = self.free_path / f64::from(self.hits);
+        // The held lists sum here, once, in trace order: however the
+        // budget was split into parts, the merged list holds the same
+        // legs in the same order, so these totals are the same numbers.
+        let free_path: f64 = self.legs.iter().sum();
+        let first: f64 = self.first_legs.iter().sum();
+        let cubes: f64 = self.first_cubes.iter().sum();
+        let mean_free_path = free_path / f64::from(self.hits);
         let mut band = 0;
         let decay = self.absorbed.map(|a| {
             let mean = (a / f64::from(self.events)).clamp(1e-4, 1.0 - 1e-9);
@@ -371,12 +450,12 @@ impl Tally {
             mean_free_path,
             enclosure: self.firsts as f32 / rays.max(1) as f32,
             first_reflection: if self.firsts > 0 {
-                self.first / f64::from(self.firsts)
+                first / f64::from(self.firsts)
             } else {
                 0.0
             },
             scattering: (self.scattering / f64::from(self.hits)) as f32,
-            volume: 4.0 / 3.0 * std::f64::consts::PI * self.cubes / f64::from(rays.max(1)),
+            volume: 4.0 / 3.0 * std::f64::consts::PI * cubes / f64::from(rays.max(1)),
         };
         (room, self.early)
     }
@@ -694,6 +773,28 @@ mod tests {
                 (f64::from(c.decay[band] - a.0.decay[band]) / f64::from(a.0.decay[band])).abs();
             assert!(spread < 0.1, "band {band} moved {spread}");
         }
+    }
+
+    /// The parts a measurement's ray budget is split into must not change
+    /// the room it measures: whole or split into four, the same world and
+    /// seed give back the same room, field for field. With no bounces
+    /// every leg is recorded before the scatter and transmission draws
+    /// can steer a ray, so each part traces the same paths either way,
+    /// and what is left to get right is the split and the merge: same
+    /// slices of the directions, same seeds from the part index, same
+    /// sum. The old code split by the thread count, so a two-core and a
+    /// four-core machine measured different rooms; this pins that away.
+    #[test]
+    fn the_parts_of_a_measurement_do_not_change_the_room() {
+        let world = closed_box(Material::Rock, 12);
+        let at = Vec3::new(6.0, 6.0, 6.0);
+        let whole = measure_with_parts(&world, at, 2048, 0, 64.0, 42, 1);
+        let split = measure_with_parts(&world, at, 2048, 0, 64.0, 42, 4);
+        // A sealed box shuts in every ray: the comparison must be between
+        // two real rooms, not two open-air defaults.
+        assert_eq!(whole.0.enclosure, 1.0, "{:?}", whole.0);
+        assert_eq!(whole.0, split.0);
+        assert_eq!(whole.1, split.1);
     }
 
     #[test]
