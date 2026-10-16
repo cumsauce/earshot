@@ -54,6 +54,10 @@ impl Field {
 
     /// The field for a listener at `listener`, `half` blocks each way.
     pub fn build(world: &World, listener: Vec3, half: i32) -> Field {
+        debug_assert!(
+            half >= 0,
+            "field half-extent must not be negative, got {half}"
+        );
         let size = 2 * half + 1;
         let centre = block_of(listener);
         let min = centre.map(|c| c - half);
@@ -262,6 +266,12 @@ fn block_of(point: Vec3) -> [i32; 3] {
 /// modulo the largest step, over a `padded`³ grid whose rim is shut. A
 /// diagonal step needs the blocks it passes beside open too: it never cuts a
 /// corner past a solid block.
+///
+/// Invariant: `start` is always the in-field centre (`half + 1`, with
+/// `half >= 0` asserted in `Field::build`) and the padded rim is never open,
+/// so the signed strides below never reach an out-of-range index; a negative
+/// `half` (size <= -1) is the caller breaking `Field::build`'s contract, not
+/// a bounds case for `flood` to handle.
 fn flood(open: &[bool], padded: i32, start: [i32; 3]) -> Vec<u16> {
     let stride = |[x, y, z]: [i32; 3]| ((x * padded + y) * padded + z) as isize;
     // Each neighbour: its offset, its cost, and the offsets of the face
@@ -612,6 +622,46 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_one_block_field_is_only_the_listeners_own_block() {
+        let world = World::new();
+        let field = Field::build(&world, LISTENER, 0);
+        assert_eq!(field.half(), 0);
+        assert_eq!(field.distance([0, 0, 0]), Some(0.0));
+        // The cube is 1³: a step in any direction is already outside it.
+        for step in FACES {
+            let outside = [step[0], step[1], step[2]];
+            assert_eq!(field.distance(outside), None, "{outside:?}");
+        }
+        // The listener hears itself from itself, with no way to travel.
+        let route = field.route(&world, LISTENER).unwrap();
+        assert_eq!(route.length, 0.0);
+        assert_eq!(route.heard_from, LISTENER);
+        assert_eq!(route.bend, 0.0);
+    }
+
+    #[test]
+    fn a_three_block_field_steps_onto_each_of_its_neighbours() {
+        let world = World::new();
+        let field = Field::build(&world, LISTENER, 1);
+        assert_eq!(field.half(), 1);
+        // The listener's own block, then a face, an edge and a corner step
+        // across the 3³ cube (face, edge and corner costs).
+        assert_eq!(field.distance([0, 0, 0]), Some(0.0));
+        assert_eq!(field.distance([1, 0, 0]), Some(1.0));
+        assert_eq!(field.distance([-1, 0, 0]), Some(1.0));
+        assert_eq!(field.distance([1, 1, 0]), Some(1.4));
+        assert_eq!(field.distance([1, 1, 1]), Some(1.7));
+        assert_eq!(field.distance([-1, -1, -1]), Some(1.7));
+        // One block past the rim: out of the field.
+        assert_eq!(field.distance([2, 0, 0]), None);
+        assert_eq!(field.distance([0, -2, 0]), None);
+        // A source in the neighbouring block is heard one block away, straight.
+        let route = field.route(&world, Vec3::new(1.5, 0.5, 0.5)).unwrap();
+        assert!((route.length - 1.0).abs() < 1e-9, "{route:?}");
+        assert!(route.bend < 1e-9, "{route:?}");
     }
 
     #[test]
