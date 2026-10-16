@@ -45,6 +45,29 @@ const FADE: f32 = 0.05;
 const LOW_MID: f32 = 500.0;
 const MID_HIGH: f32 = 2000.0;
 
+/// The diffuse tail's per-band envelope at `t` seconds past onset: each band
+/// falls at its traced `early_t60` until a *single shared* knee — where that
+/// slope reaches 10 dB, taken from the mid band the room's decay is read off
+/// — then at the room's own `late_t60`. One knee for every band, not one
+/// each: a per-band knee has the bands change slope at three different times,
+/// so in a real room — where the traced early decay runs slower than the
+/// room's own in the high band and the same in the low and mid — the high
+/// band alone takes a mid-tail step against the others, a steady
+/// high-frequency notch heard as a comb. A coupled room's fast antechamber
+/// still gives way to the live space behind it; equal slopes collapse to the
+/// one exponential this has always been, `exp(a) · exp(b) = exp(a + b)`.
+fn tail_envelopes(early_t60: [f32; BANDS], late_t60: [f32; BANDS], t: f32) -> [f32; BANDS] {
+    let knee = early_t60[1] / 6.0;
+    std::array::from_fn(|band| {
+        if t <= knee {
+            (-6.907_755 * t / early_t60[band]).exp()
+        } else {
+            (-6.907_755 * knee / early_t60[band]).exp()
+                * (-6.907_755 * (t - knee) / late_t60[band]).exp()
+        }
+    })
+}
+
 /// A room impulse response to convolve sounds with, for a sound next to the
 /// listener: the early reflections from where the walls are, then a diffuse
 /// tail decaying at the room's per-band rates. Interleaved W, X, Y, Z in
@@ -83,9 +106,16 @@ pub fn impulse_response(
     // coupled room's fast antechamber gives way to the live space behind
     // it; equal slopes collapse to the one exponential this has always
     // been, exp(a) · exp(b) = exp(a + b).
+    //
+    // One knee for every band, not one each: a per-band knee has the bands
+    // change slope at three different times, so in a real room — where the
+    // traced early decay runs slower than the room's own in the high band
+    // and the same in the low and mid — the high band alone takes a mid-tail
+    // step against the others, a steady high-frequency notch heard as a
+    // comb. The shared knee is the mid band's, the one the room's decay is
+    // read off.
     let early_t60 = room.early_decay.map(|t60| t60.max(0.05));
     let late_t60 = room.decay.map(|t60| t60.max(0.05));
-    let knee: [f32; 3] = std::array::from_fn(|band| early_t60[band] / 6.0);
     let mut rng = Rng::new(seed);
     for channel in 0..IR_CHANNELS {
         let weight = if channel == 0 {
@@ -98,14 +128,7 @@ pub fn impulse_response(
             let t = (i - onset) as f32 / rate;
             let noise = gaussian(&mut rng);
             let [low, mid, high] = bands.split(noise);
-            let decays: [f32; 3] = std::array::from_fn(|band| {
-                if t <= knee[band] {
-                    (-6.907_755 * t / early_t60[band]).exp()
-                } else {
-                    (-6.907_755 * knee[band] / early_t60[band]).exp()
-                        * (-6.907_755 * (t - knee[band]) / late_t60[band]).exp()
-                }
-            });
+            let decays = tail_envelopes(early_t60, late_t60, t);
             out[i * IR_CHANNELS + channel] =
                 level * weight * (low * decays[0] + mid * decays[1] + high * decays[2]);
         }
@@ -708,10 +731,53 @@ mod tests {
         assert!(energy <= MAX_ENERGY * 1.000_1, "{energy}");
     }
 
+    /// The three bands must not break at three different times. In a room's
+    /// real numbers the traced early decay runs *slower* than the room's own
+    /// in the high band (`early/decay` around 1.8, the probe's 24-block
+    /// stone hall), near 1.0 in the low and mid. A knee per band then makes
+    /// the high band alone take a slope step at its own, later knee — a
+    /// discontinuity the ear hears as a steady high-frequency notch. The
+    /// room's own per-band rates still differ (its highs die first); what
+    /// must not differ is *when* each band changes slope. Checked on the
+    /// high band's log-envelope: sampled either side of where a per-band
+    /// knee would be (5.99/6 ≈ 1.0 s), its local decay rate must match.
+    #[test]
+    fn the_bands_do_not_step_relative_to_one_another_mid_tail() {
+        let early_t60 = [8.0, 8.0, 5.99];
+        let late_t60 = [8.0, 7.31, 3.32];
+        // The high band's log-envelope slope (dB a second), sampled over a
+        // short window either side of a per-band knee at 5.99/6 s.
+        let slope = |center: f32| {
+            let window = 0.05;
+            let at = |t: f32| tail_envelopes(early_t60, late_t60, t)[2].ln();
+            (at(center + window) - at(center - window)) / (2.0 * window)
+        };
+        let knee = 5.99 / 6.0;
+        let under = slope(knee - 0.2);
+        let over = slope(knee + 0.2);
+        assert!(
+            (over - under).abs() < 0.2 * under.abs(),
+            "the high band's rate stepped across a per-band knee at {knee} s: {under} then {over}"
+        );
+    }
+
+    /// Equal early and late rates still collapse to the one plain exponential
+    /// the two-slope envelope has always been whenever they match — the
+    /// shared knee must not introduce a step of its own.
+    #[test]
+    fn equal_rates_collapse_to_one_exponential() {
+        let rate = 2.0;
+        for t in [0.0f32, 0.1, 0.5, 1.0, 3.0, 8.0] {
+            let [low, mid, high] = tail_envelopes([rate; 3], [rate; 3], t);
+            let plain = (-6.907_755 * t / rate).exp();
+            assert!((low - plain).abs() < 1e-5, "{low} against {plain}");
+            assert!((mid - plain).abs() < 1e-5, "{mid} against {plain}");
+            assert!((high - plain).abs() < 1e-5, "{high} against {plain}");
+        }
+    }
+
     #[test]
     fn reflections_ahead_and_above_land_on_their_channels() {
-        // B-format with the listener facing -z: what is ahead is +X, what is
-        // above is +Z (the +x test, on Y, is above).
         let ahead = Reflection {
             direction: Vec3::new(0.0, 0.0, -1.0),
             delay: 0.02,

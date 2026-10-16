@@ -266,41 +266,37 @@ Five gaps between the voxel sim and the situations players actually build and ex
 Milestones R0-R6, in the order they should land. R0 settles a known suspected defect; R1-R4 are the
 acoustic model's remaining audible gaps, most-audible first; R5-R6 are polish and cleanup.
 
-### R0. Settle the convolution comb (a suspected defect, not a feature)
+### R0. The convolution comb (done)
 
-The steady metallic/high-frequency tint in convolution reverb, always present (user, 2026-10-16),
-narrowed by `docs/convolution-comb-investigation.md` to two candidates that both live behind
-`ReverbMode.CONVOLUTION`:
+The steady metallic/high-frequency tint, always present and only on convolution (user, 2026-10-16),
+was the **per-band knee in the synthesized IR**: the two-slope tail applied three independently-fitted
+slope changes — one per band — at three different times to one broadband signal.
 
-- **A — per-band knee in the synthesized IR** (`ir.rs:86-108`). The two-slope tail applies three
-  independently-fitted slope changes (one per band) at three different times to one broadband signal,
-  each a small gain step in a different frequency slice.
-- **B — early reflections arriving twice.** `ir.rs` bakes the first reflections into the IR, and
-  `SoundShaper` also sends the same source to a separate EAX early-reflections slot
-  (`EarlyReflections.SEND = 3`), so the same echoes arrive twice at different delays.
+A probe settled which candidate it was without needing the user to listen. Measuring the real rooms the
+sim produces (`early_decay / decay` per band, closed boxes of rock, wood, cloth, glass and metal at 6,
+12 and 24 blocks) showed the *low and mid* bands at a ratio near 1.0 but the **high band at 1.1–1.8, and
+always `early_decay > decay`**: because a room's early EDC slope is shallower than its final decay, the
+fit lands on the high band's early decay running *slower* than the room's own. So the high band's knee
+(`early_t60/6`) was the latest and its slope step the largest, and — the low and mid bands having no step
+— the high band alone dropped away mid-tail. A steady, high-frequency-weighted notch: heard as a comb.
+Candidate B (early reflections counted twice) was not needed to explain it and is left as a fallback if a
+residual tint survives.
 
-The A/B the user was offered ("convolution off, settling on") cannot separate them, because both sit
-behind the convolution mode: turning it off removes the IR *and* stops the overlap. The clean
-separator is a code one. Plan:
+**Fix** (`ir.rs`): one shared knee for every band, taken from the mid band the room's decay is read off
+(`early_t60[1] / 6`), extracted as `tail_envelopes(early_t60, late_t60, t)`. No band's slope breaks at a
+different time, so no relative step. The room's own per-band rates still differ (its highs die first) — only
+*when* a band changes slope is now shared. Equal early and late rates still collapse to the one
+exponential, pinned by `equal_rates_collapse_to_one_exponential`.
 
-1. Add a temporary `EarshotConfig` debug flag that forces `early_decay = decay` when off, collapsing
-   A to the plain single exponential while leaving B untouched. Build a dev jar, never released.
-2. User runs it. Tint gone → **A**; tint stays → **B**.
-3. Fix per the result:
-   - **A**: move the two-slope envelope to one shared broadband slope change (single knee, fixed band
-     weights) so no band's derivative steps; or, failing that, cross-fade the two exponentials over a
-     few milliseconds around the knee. Prove it with an `ir.rs` test that takes the magnitude spectrum
-     of the band-summed W channel and asserts no notch deeper than a set bound in the high band away
-     from the room's resonances (the current tests assert only monotone windowed energy, which a comb
-     satisfies).
-   - **B**: gate `sendEarly` so a source served a convolution whose IR already carries the reflections
-     is not also sent to the EAX early slot. `SoundShaper.java:542-572` / `:608-616`, Java only, no ABI
-     change.
-4. Remove the debug flag, release.
+**Tests**: `the_bands_do_not_step_relative_to_one_another_mid_tail` drives `tail_envelopes` at the probe's
+rock-hall figures and asserts the high band's log-envelope rate does not step across where a per-band knee
+would be (it jumps −1.15 → −2.08 a second on the old code, near a doubling). The golden scenes and the
+BRAS seminar room reproduce exactly: the change is confined to the IR's mid-tail shape, not the measured
+room.
 
-Also worth a glance while in there: the intended 5-tick crossfade during a room change
-(`ConvolutionReverb.java:258`) genuinely feeds one source two convolvers for ~250 ms; the user reports
-the tint steady, so this is not it, but it may still be audible on room changes.
+Still worth a glance: the intended 5-tick crossfade during a room change (`ConvolutionReverb.java:258`)
+feeds one source two convolvers for ~250 ms; the tint was steady so this is not it, but it may be audible
+on room changes.
 
 ### R1. Outdoor ground reflection
 
