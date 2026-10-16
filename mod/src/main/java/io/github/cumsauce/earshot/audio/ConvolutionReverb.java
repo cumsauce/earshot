@@ -53,11 +53,20 @@ public final class ConvolutionReverb {
 
 	private final Maker maker;
 	private final Changed changed;
-	private final ExecutorService loader = Executors.newSingleThreadExecutor(task -> {
-		Thread thread = new Thread(task, "earshot-ir");
-		thread.setDaemon(true);
-		return thread;
-	});
+	/**
+	 * Makes impulse responses off the sound thread. Recreated in {@link #contextClosing()}, so it is not
+	 * final: the instance outlives a context, and a shutdown executor would reject the next load.
+	 */
+	private volatile ExecutorService loader = newLoader();
+
+	/** A single daemon thread for making responses, whose pool starts no thread until its first task. */
+	private static ExecutorService newLoader() {
+		return Executors.newSingleThreadExecutor(task -> {
+			Thread thread = new Thread(task, "earshot-ir");
+			thread.setDaemon(true);
+			return thread;
+		});
+	}
 
 	// All of the below is guarded by `this`.
 	private final int[] slots = new int[2];
@@ -138,7 +147,13 @@ public final class ConvolutionReverb {
 			int into = active == 0 ? 1 : 0;
 			int forGeneration = generation;
 			long forSeed = ++seed;
-			loader.execute(() -> load(into, forGeneration, forSeed, from));
+			try {
+				loader.execute(() -> load(into, forGeneration, forSeed, from));
+			} catch (java.util.concurrent.RejectedExecutionException e) {
+				// The context closed and swapped the executor between the check and here: nothing to load
+				// for, and the next tick will retry on the fresh one.
+				loading = false;
+			}
 		}
 	}
 
@@ -167,6 +182,10 @@ public final class ConvolutionReverb {
 	/** The game is closing its context, which frees every object in it: forget them all. */
 	public synchronized void contextClosing() {
 		generation++;
+		// A load in flight or queued would work against the closed context and its result is unreadable:
+		// stop it, then stand up a fresh executor for the next context, since this instance is reused.
+		loader.shutdownNow();
+		loader = newLoader();
 		java.util.Arrays.fill(slots, 0);
 		java.util.Arrays.fill(effects, 0);
 		java.util.Arrays.fill(buffers, 0);
@@ -195,39 +214,51 @@ public final class ConvolutionReverb {
 
 	/**
 	 * On the loader thread: makes a response and loads it into slot {@code into}, then hands it to the sound thread
-	 * to fade in. The OpenAL calls run outside the lock: the sound thread doesn't touch this slot until it is handed
-	 * over.
+	 * to fade in. The OpenAL calls run while holding this object's lock: release() and contextClosing() are
+	 * synchronized on it too, so without the lock they could delete the slot and effect — or the whole context, on a
+	 * context switch — in the gap, and the calls below would hit dead names. The window the lock is held over is
+	 * brief (making the response is the slow part, the 10–20 ms, and that stays outside the lock), it runs on this
+	 * loader thread rather than the sound thread, and the sound thread only ever blocks on the few calls themselves.
 	 */
 	private void load(int into, int forGeneration, long forSeed, double[] from) {
+		int made = 0;
 		try {
 			float[] ir = maker.make(from, forSeed);
-			int slot;
-			int effect;
 			synchronized (this) {
+				// Re-checked as soon as the lock is held, before any AL call: release() or contextClosing() may have
+				// run while the response was being made. There is no separate "context closed" flag — both of them
+				// bump the generation, so this covers a context dying mid-load.
 				if (forGeneration != generation || ir.length == 0) {
 					loading = false;
 					// Nothing to make it from yet: try again next time.
 					if (ir.length == 0) madeFrom = new double[0];
 					return;
 				}
-				slot = slots[into];
-				effect = effects[into];
-			}
-			// OpenAL's error is the context's, shared with the sound thread: clear what it left, so only this load's
-			// own calls are checked below.
-			AL10.alGetError();
-			int buffer = AL10.alGenBuffers();
-			AL10.alBufferData(buffer, AL_FORMAT_BFORMAT3D_FLOAT32, ir, SAMPLE_RATE);
-			// Buffer first, then the effect, as OpenAL Soft's own example does.
-			EXTEfx.alAuxiliaryEffectSloti(slot, AL10.AL_BUFFER, buffer);
-			EXTEfx.alEffectfv(effect, AL_CONVOLUTION_ORIENTATION_SOFT, orientation());
-			EXTEfx.alAuxiliaryEffectSloti(slot, EXTEfx.AL_EFFECTSLOT_EFFECT, effect);
-			int error = AL10.alGetError();
-			synchronized (this) {
+				int slot = slots[into];
+				int effect = effects[into];
+				// OpenAL's error is the context's, shared with the sound thread: clear what it left, so only this load's
+				// own calls are checked below.
+				AL10.alGetError();
+				int buffer = AL10.alGenBuffers();
+				made = buffer;
+				AL10.alBufferData(buffer, AL_FORMAT_BFORMAT3D_FLOAT32, ir, SAMPLE_RATE);
+				// Buffer first, then the effect, as OpenAL Soft's own example does.
+				EXTEfx.alAuxiliaryEffectSloti(slot, AL10.AL_BUFFER, buffer);
+				EXTEfx.alEffectfv(effect, AL_CONVOLUTION_ORIENTATION_SOFT, orientation());
+				EXTEfx.alAuxiliaryEffectSloti(slot, EXTEfx.AL_EFFECTSLOT_EFFECT, effect);
+				int error = AL10.alGetError();
 				loading = false;
-				if (forGeneration != generation) return;
+				if (forGeneration != generation) {
+					// The load was dropped (context closed or released while it ran): it was never stored in
+					// buffers[], so nothing else owns it — delete it here or the dropped load leaks one AL buffer.
+					// If the generation is current instead, it is stored normally just below.
+					AL10.alDeleteBuffers(buffer);
+					made = 0;
+					return;
+				}
 				if (buffers[into] != 0) AL10.alDeleteBuffers(buffers[into]);
 				buffers[into] = buffer;
+				made = 0;
 				if (error != AL10.AL_NO_ERROR) {
 					// Maybe another thread's error, landing between the clear and the check: not a reason to turn
 					// convolution off for good at once. Kept (it's bound) but not faded in; made again next time.
@@ -246,6 +277,8 @@ public final class ConvolutionReverb {
 			synchronized (this) {
 				loading = false;
 			}
+			// A buffer made before the failure is not bound to a live slot: delete it rather than leak it.
+			if (made != 0) AL10.alDeleteBuffers(made);
 			EarshotClient.LOGGER.warn("Making an impulse response failed", e);
 		}
 	}

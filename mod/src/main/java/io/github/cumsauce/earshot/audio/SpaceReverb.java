@@ -42,14 +42,19 @@ final class SpaceReverb {
 	private long seed;
 	/**
 	 * Measures spaces off the sound thread, which also feeds the game's streams: a trace takes about a millisecond.
-	 * Results are applied on the sound thread at the end of the next update.
+	 * Results are applied on the sound thread at the end of the next update. Shut down and replaced by
+	 * {@link #contextClosing()}: this SpaceReverb is reused after a context closes, so the old one's thread must not
+	 * outlive the context its measurements were for.
 	 */
-	private final java.util.concurrent.ExecutorService measurer = java.util.concurrent.Executors
-			.newSingleThreadExecutor(task -> {
-				Thread thread = new Thread(task, "earshot-space");
-				thread.setDaemon(true);
-				return thread;
-			});
+	private volatile java.util.concurrent.ExecutorService measurer = newMeasurer();
+
+	private static java.util.concurrent.ExecutorService newMeasurer() {
+		return java.util.concurrent.Executors.newSingleThreadExecutor(task -> {
+			Thread thread = new Thread(task, "earshot-space");
+			thread.setDaemon(true);
+			return thread;
+		});
+	}
 
 	/** One space and its reverb. */
 	private static final class Space {
@@ -95,6 +100,11 @@ final class SpaceReverb {
 	/** The game closed its context, and every slot and effect with it. */
 	void contextClosing() {
 		java.util.Arrays.fill(spaces, null);
+		// Every space is gone, so its measurements are too: a queued roomAt would run against the engine after
+		// its Space was dropped, so cancel what hasn't started (shutdown() would let it run) and interrupt what
+		// has. A fresh executor takes its place, as this SpaceReverb is reused when the context reopens.
+		measurer.shutdownNow();
+		measurer = newMeasurer();
 	}
 
 	/** Starts an update: no sounds in any space yet. */
@@ -183,7 +193,7 @@ final class SpaceReverb {
 		space.measuring = true;
 		double[] at = {space.centre.x, space.centre.y, space.centre.z};
 		long forSeed = ++seed;
-		measurer.execute(() -> {
+		Runnable measurement = () -> {
 			try {
 				double[] room = new double[NativeBridge.ROOM_DOUBLES];
 				bridge.roomAt(engine, at, RAYS, BOUNCES, forSeed, room);
@@ -193,7 +203,14 @@ final class SpaceReverb {
 			} finally {
 				space.measuring = false;
 			}
-		});
+		};
+		try {
+			measurer.execute(measurement);
+		} catch (java.util.concurrent.RejectedExecutionException e) {
+			// contextClosing shut the old executor down mid-update: nothing was measured, so let the space be
+			// measured again on the fresh one.
+			space.measuring = false;
+		}
 	}
 
 	/** Sets a space's reverb from its latest measurement, if a new one has come in. On the sound thread. */

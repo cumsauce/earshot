@@ -361,7 +361,10 @@ public final class SoundShaper {
 			sources[3 * i + 2] = position.z;
 		}
 		double[] heard = new double[NativeBridge.HEARD_DOUBLES * count];
-		if (!call(() -> bridge.hear(engine, listener, sources, count, heard))) return;
+		if (!call(() -> bridge.hear(engine, listener, sources, count, heard))) {
+			releaseAll(now, ear, axes);
+			return;
+		}
 		// Each source's block is read straight out of heard below (heard[at] … heard[at + 7]), so a count
 		// mismatch stops shaping here, as a failed native call does, instead of throwing part way through.
 		if (!heardHolds(heard, count)) {
@@ -369,6 +372,7 @@ public final class SoundShaper {
 			EarshotClient.LOGGER.error("Sound shaping stopped: hear gave {} doubles for {} sources, needing {}",
 					heard.length, count, (long) NativeBridge.HEARD_DOUBLES * count);
 			voice.fail();
+			releaseAll(now, ear, axes);
 			return;
 		}
 
@@ -426,6 +430,19 @@ public final class SoundShaper {
 		for (int k = 0; k < OWN_REVERBS; k++) {
 			if (unusedOwn[k]) ownReverbs[k].release();
 		}
+	}
+
+	/**
+	 * Lets go of the OpenAL resources an update made when no update will follow to let go of them: every space's
+	 * slot ({@code off}), the early slots, and both own reverbs, kept or not — unlike the end of a normal update,
+	 * where spaces stay while they have sounds, the early slots stay while reflections are on, and only the own
+	 * reverbs no sound kept are released. {@link #failed} has stopped {@link #tick} for good, so anything left
+	 * live here would stay so until the context closes. On the sound thread.
+	 */
+	private void releaseAll(long now, Vec3 ear, Axes axes) {
+		spaces.end(now, true, ear, axes.right(), axes.up(), axes.forward());
+		early.free();
+		for (ConvolutionReverb own : ownReverbs) own.release();
 	}
 
 	/**
