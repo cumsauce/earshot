@@ -1,5 +1,6 @@
 package io.github.cumsauce.earshot.audio;
 
+import io.github.cumsauce.earshot.EarshotClient;
 import io.github.cumsauce.earshot.natives.NativeBridge;
 import java.lang.foreign.MemorySegment;
 import net.minecraft.world.phys.Vec3;
@@ -25,6 +26,11 @@ final class EarlyReflections {
 	private final MemorySegment engine;
 	private final int[] effects = new int[SOURCES];
 	private final int[] slots = new int[SOURCES];
+	/**
+	 * The device refused a slot (its slot cap was reached): no sound gets its own reflections for the rest of this
+	 * context, rather than an effect regenerated and leaked every update. The close clears it.
+	 */
+	private boolean unavailable;
 
 	EarlyReflections(NativeBridge bridge, MemorySegment engine) {
 		this.bridge = bridge;
@@ -35,6 +41,7 @@ final class EarlyReflections {
 	void contextClosing() {
 		java.util.Arrays.fill(effects, 0);
 		java.util.Arrays.fill(slots, 0);
+		unavailable = false;
 	}
 
 	/**
@@ -64,7 +71,11 @@ final class EarlyReflections {
 			int i = which[j];
 			int at = NativeBridge.EARLY_DOUBLES * j;
 			if (early[at + 5] == 0) continue;
-			if (slots[i] == 0) make(i);
+			if (slots[i] == 0) {
+				make(i);
+				// A refused slot leaves nothing to set or send to: leave this sound on no reflections.
+				if (slots[i] == 0) continue;
+			}
 			Vec3 from = new Vec3(early[at + 2], early[at + 3], early[at + 4]);
 			// EAX pans in its own left-handed frame: x right, y up, z forward.
 			float[] pan = {(float) from.dot(right), (float) from.dot(up), (float) from.dot(forward)};
@@ -83,10 +94,13 @@ final class EarlyReflections {
 	/** Lets every slot and effect go, once no source sends to them (at the end of an update). */
 	void free() {
 		for (int i = 0; i < SOURCES; i++) {
-			if (slots[i] == 0) continue;
-			EXTEfx.alAuxiliaryEffectSloti(slots[i], EXTEfx.AL_EFFECTSLOT_EFFECT, EXTEfx.AL_EFFECT_NULL);
-			EXTEfx.alDeleteAuxiliaryEffectSlots(slots[i]);
-			EXTEfx.alDeleteEffects(effects[i]);
+			if (slots[i] != 0) {
+				EXTEfx.alAuxiliaryEffectSloti(slots[i], EXTEfx.AL_EFFECTSLOT_EFFECT, EXTEfx.AL_EFFECT_NULL);
+			}
+			// Each name goes by its own: an effect whose slot was refused (or has already gone) must still be
+			// deleted, or it lives until the context does.
+			SoundShaper.deleteEffectSlot(effects[i], slots[i], EXTEfx::alDeleteEffects,
+					EXTEfx::alDeleteAuxiliaryEffectSlots);
 			slots[i] = 0;
 			effects[i] = 0;
 		}
@@ -94,15 +108,25 @@ final class EarlyReflections {
 
 	/** An EAX reverb with reflections only, no late reverb. Never louder than the sound itself. */
 	private void make(int i) {
-		int effect = EXTEfx.alGenEffects();
-		EXTEfx.alEffecti(effect, EXTEfx.AL_EFFECT_TYPE, EXTEfx.AL_EFFECT_EAXREVERB);
-		// Diffuse: a real wall's echo is smeared a little, and discrete taps would comb.
-		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_DIFFUSION, 1f);
-		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_GAIN, 1f);
-		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_DECAY_TIME, EXTEfx.AL_EAXREVERB_MIN_DECAY_TIME);
-		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_LATE_REVERB_GAIN, 0f);
-		EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_ECHO_DEPTH, 0f);
-		effects[i] = effect;
-		slots[i] = EXTEfx.alGenAuxiliaryEffectSlots();
+		if (unavailable) return;
+		SoundShaper.EffectSlot made = SoundShaper.makeEffectSlot(() -> {
+			int effect = EXTEfx.alGenEffects();
+			EXTEfx.alEffecti(effect, EXTEfx.AL_EFFECT_TYPE, EXTEfx.AL_EFFECT_EAXREVERB);
+			// Diffuse: a real wall's echo is smeared a little, and discrete taps would comb.
+			EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_DIFFUSION, 1f);
+			EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_GAIN, 1f);
+			EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_DECAY_TIME, EXTEfx.AL_EAXREVERB_MIN_DECAY_TIME);
+			EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_LATE_REVERB_GAIN, 0f);
+			EXTEfx.alEffectf(effect, EXTEfx.AL_EAXREVERB_ECHO_DEPTH, 0f);
+			return effect;
+		}, EXTEfx::alGenAuxiliaryEffectSlots, EXTEfx::alDeleteEffects, EXTEfx::alDeleteAuxiliaryEffectSlots);
+		effects[i] = made.effect();
+		slots[i] = made.slot();
+		if (slots[i] == 0) {
+			// The device is out of slots: every later update would fail the same way and spend one effect each,
+			// so no sound gets its own reflections until the context closes.
+			unavailable = true;
+			EarshotClient.LOGGER.warn("Early reflections are off: OpenAL would not give them a slot");
+		}
 	}
 }

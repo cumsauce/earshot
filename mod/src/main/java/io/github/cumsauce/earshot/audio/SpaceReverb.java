@@ -39,6 +39,11 @@ final class SpaceReverb {
 	private final NativeBridge bridge;
 	private final MemorySegment engine;
 	private final @Nullable Space[] spaces = new Space[SPACES];
+	/**
+	 * The device refused a space a slot (its slot cap was reached): no sound gets a space's reverb for the rest of
+	 * this context, rather than an effect regenerated and leaked every claim. The close clears it.
+	 */
+	private boolean unavailable;
 	private long seed;
 	/**
 	 * Measures spaces off the sound thread, which also feeds the game's streams: a trace takes about a millisecond.
@@ -100,6 +105,8 @@ final class SpaceReverb {
 	/** The game closed its context, and every slot and effect with it. */
 	void contextClosing() {
 		java.util.Arrays.fill(spaces, null);
+		// A fresh context gets a fresh chance at a slot, as it does at every other name.
+		unavailable = false;
 		// Every space is gone, so its measurements are too: a queued roomAt would run against the engine after
 		// its Space was dropped, so cancel what hasn't started (shutdown() would let it run) and interrupt what
 		// has. A fresh executor takes its place, as this SpaceReverb is reused when the context reopens.
@@ -173,12 +180,24 @@ final class SpaceReverb {
 	private @Nullable Space claim(Vec3 position, long now) {
 		for (int i = 0; i < SPACES; i++) {
 			if (spaces[i] != null) continue;
-			int effect = EXTEfx.alGenEffects();
-			EXTEfx.alEffecti(effect, EXTEfx.AL_EFFECT_TYPE, EXTEfx.AL_EFFECT_EAXREVERB);
-			int slot = EXTEfx.alGenAuxiliaryEffectSlots();
+			if (unavailable) return null;
+			SoundShaper.EffectSlot made = SoundShaper.makeEffectSlot(() -> {
+				int effect = EXTEfx.alGenEffects();
+				EXTEfx.alEffecti(effect, EXTEfx.AL_EFFECT_TYPE, EXTEfx.AL_EFFECT_EAXREVERB);
+				return effect;
+			}, EXTEfx::alGenAuxiliaryEffectSlots, EXTEfx::alDeleteEffects, EXTEfx::alDeleteAuxiliaryEffectSlots);
+			if (made.slot() == 0) {
+				// The device is out of slots: every later claim would fail the same way and spend one effect
+				// each, so no sound gets a space's reverb until the context closes. Its sound sends nowhere,
+				// as it does when every space is taken.
+				unavailable = true;
+				io.github.cumsauce.earshot.EarshotClient.LOGGER.warn(
+						"Space reverb is off: OpenAL would not give it a slot");
+				return null;
+			}
+			Space space = new Space(made.effect(), made.slot(), position);
 			// Silent until its room is measured, rather than a generic reverb for a moment.
-			EXTEfx.alAuxiliaryEffectSlotf(slot, EXTEfx.AL_EFFECTSLOT_GAIN, 0f);
-			Space space = new Space(effect, slot, position);
+			EXTEfx.alAuxiliaryEffectSlotf(space.slot, EXTEfx.AL_EFFECTSLOT_GAIN, 0f);
 			measure(space, now);
 			spaces[i] = space;
 			return space;
@@ -245,8 +264,12 @@ final class SpaceReverb {
 	private static final float GLIDE = 0.15f;
 
 	private static void free(Space space) {
-		EXTEfx.alAuxiliaryEffectSloti(space.slot, EXTEfx.AL_EFFECTSLOT_EFFECT, EXTEfx.AL_EFFECT_NULL);
-		EXTEfx.alDeleteAuxiliaryEffectSlots(space.slot);
-		EXTEfx.alDeleteEffects(space.effect);
+		if (space.slot != 0) {
+			EXTEfx.alAuxiliaryEffectSloti(space.slot, EXTEfx.AL_EFFECTSLOT_EFFECT, EXTEfx.AL_EFFECT_NULL);
+		}
+		// Each name goes by its own: an effect whose slot was refused (or has already gone) must still be
+		// deleted, or it lives until the context does.
+		SoundShaper.deleteEffectSlot(space.effect, space.slot, EXTEfx::alDeleteEffects,
+				EXTEfx::alDeleteAuxiliaryEffectSlots);
 	}
 }

@@ -11,6 +11,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.IntConsumer;
+import java.util.function.IntSupplier;
 import java.util.stream.Stream;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
@@ -99,6 +101,11 @@ public final class SoundShaper {
 	private final Object reverbLock = new Object();
 	private int effect;
 	private int slot;
+	/**
+	 * The device refused the EAX reverb a slot (its slot cap was reached): off for the rest of this context, so no
+	 * tick spends an effect on a slot that will not come. The close clears it, as it clears the names.
+	 */
+	private boolean eaxOff;
 	private final double[] room = new double[NativeBridge.ROOM_DOUBLES];
 	/**
 	 * The reverb as heard, gliding each tick towards the room as last measured: measured every fifth of a second or
@@ -240,6 +247,8 @@ public final class SoundShaper {
 			effect = 0;
 			slot = 0;
 			heardEax = null;
+			// A fresh context gets a fresh chance at a slot, as it does at every other name.
+			eaxOff = false;
 		}
 		// A fresh context gets a fresh chance: what failed against the old one says nothing about the new.
 		failed = false;
@@ -582,16 +591,63 @@ public final class SoundShaper {
 	}
 
 	/**
+	 * An EFX effect and the auxiliary effect slot that plays it. Either name is 0 where OpenAL would not give one,
+	 * which leaves nothing a source can send to.
+	 */
+	record EffectSlot(int effect, int slot) {
+	}
+
+	/**
+	 * Makes an EFX pair the only way the two can be kept together: the effect first, then the slot that plays it. A
+	 * device whose slots are all used gives 0 back for the slot, and an effect with no slot to play in is nothing but
+	 * a leak, regenerated on every later tick by a caller that tries again. So a half-made pair is deleted at once,
+	 * each name by its own, and the caller is told 0, no send at all, instead of a slot name OpenAL never handed out.
+	 * The OpenAL calls are taken as parameters so the pairing itself can be tested without a live context.
+	 *
+	 * @return the pair made, both names 0 where either would not be
+	 */
+	static EffectSlot makeEffectSlot(IntSupplier genEffect, IntSupplier genSlot, IntConsumer deleteEffect,
+			IntConsumer deleteSlot) {
+		int effect = genEffect.getAsInt();
+		int slot = genSlot.getAsInt();
+		if (effect == 0 || slot == 0) {
+			deleteEffectSlot(effect, slot, deleteEffect, deleteSlot);
+			return new EffectSlot(0, 0);
+		}
+		return new EffectSlot(effect, slot);
+	}
+
+	/**
+	 * Lets an effect and its slot go, each name deleted by its own: an effect whose slot never came (or has already
+	 * gone) must still be deleted, or it stays live until the context closes.
+	 */
+	static void deleteEffectSlot(int effect, int slot, IntConsumer deleteEffect, IntConsumer deleteSlot) {
+		if (slot != 0) deleteSlot.accept(slot);
+		if (effect != 0) deleteEffect.accept(effect);
+	}
+
+	/**
 	 * Sets the EAX reverb from the room (or EFX's underwater preset), making the effect and slot first if this
-	 * context has none yet. Returns the slot.
+	 * context has none yet. Returns the slot, or 0 where the device would not give one, which leaves the send empty.
 	 */
 	private int updateEax(boolean underwater) {
 		synchronized (reverbLock) {
-			if (slot == 0) {
-				effect = EXTEfx.alGenEffects();
-				EXTEfx.alEffecti(effect, EXTEfx.AL_EFFECT_TYPE, EXTEfx.AL_EFFECT_EAXREVERB);
-				slot = EXTEfx.alGenAuxiliaryEffectSlots();
+			if (slot == 0 && !eaxOff) {
+				EffectSlot made = makeEffectSlot(() -> {
+					int effect = EXTEfx.alGenEffects();
+					EXTEfx.alEffecti(effect, EXTEfx.AL_EFFECT_TYPE, EXTEfx.AL_EFFECT_EAXREVERB);
+					return effect;
+				}, EXTEfx::alGenAuxiliaryEffectSlots, EXTEfx::alDeleteEffects, EXTEfx::alDeleteAuxiliaryEffectSlots);
+				effect = made.effect();
+				slot = made.slot();
+				if (slot == 0) {
+					// The device is out of slots: every later tick would fail the same way and spend one effect
+					// each, so the reverb stays off until the context closes and hands out a fresh chance.
+					eaxOff = true;
+					EarshotClient.LOGGER.warn("EAX reverb is off: OpenAL would not give it a slot");
+				}
 			}
+			if (slot == 0) return 0;
 			boolean jump = heardEax == null || underwater != heardUnderwater;
 			if (heardEax == null) heardEax = new float[EAX_PARAMETERS.length];
 			heardUnderwater = underwater;

@@ -159,12 +159,16 @@ public final class ConvolutionReverb {
 	 * convolution still costs its share of the mixer. The next tick makes them again.
 	 */
 	public synchronized void release() {
-		if (slots[0] == 0) return;
+		if (slots[0] == 0 && effects[0] == 0 && buffers[0] == 0) return;
 		for (int i = 0; i < 2; i++) {
-			EXTEfx.alAuxiliaryEffectSloti(slots[i], EXTEfx.AL_EFFECTSLOT_EFFECT, EXTEfx.AL_EFFECT_NULL);
-			EXTEfx.alAuxiliaryEffectSloti(slots[i], AL10.AL_BUFFER, 0);
-			EXTEfx.alDeleteAuxiliaryEffectSlots(slots[i]);
-			EXTEfx.alDeleteEffects(effects[i]);
+			if (slots[i] != 0) {
+				EXTEfx.alAuxiliaryEffectSloti(slots[i], EXTEfx.AL_EFFECTSLOT_EFFECT, EXTEfx.AL_EFFECT_NULL);
+				EXTEfx.alAuxiliaryEffectSloti(slots[i], AL10.AL_BUFFER, 0);
+			}
+			// Each name goes by its own: an effect whose slot was refused (or has already gone) must still be
+			// deleted, or it lives until the context does.
+			SoundShaper.deleteEffectSlot(effects[i], slots[i], EXTEfx::alDeleteEffects,
+					EXTEfx::alDeleteAuxiliaryEffectSlots);
 			if (buffers[i] != 0) AL10.alDeleteBuffers(buffers[i]);
 		}
 		int error = AL10.alGetError();
@@ -213,19 +217,45 @@ public final class ConvolutionReverb {
 	private boolean make() {
 		AL10.alGetError();
 		for (int i = 0; i < 2; i++) {
-			effects[i] = EXTEfx.alGenEffects();
-			EXTEfx.alEffecti(effects[i], EXTEfx.AL_EFFECT_TYPE, AL_EFFECT_CONVOLUTION_SOFT);
-			slots[i] = EXTEfx.alGenAuxiliaryEffectSlots();
-			EXTEfx.alAuxiliaryEffectSlotf(slots[i], EXTEfx.AL_EFFECTSLOT_GAIN, 0f);
+			SoundShaper.EffectSlot made = SoundShaper.makeEffectSlot(() -> {
+				int effect = EXTEfx.alGenEffects();
+				EXTEfx.alEffecti(effect, EXTEfx.AL_EFFECT_TYPE, AL_EFFECT_CONVOLUTION_SOFT);
+				return effect;
+			}, EXTEfx::alGenAuxiliaryEffectSlots, EXTEfx::alDeleteEffects, EXTEfx::alDeleteAuxiliaryEffectSlots);
+			effects[i] = made.effect();
+			slots[i] = made.slot();
+			if (slots[i] != 0) EXTEfx.alAuxiliaryEffectSlotf(slots[i], EXTEfx.AL_EFFECTSLOT_GAIN, 0f);
 		}
 		int error = AL10.alGetError();
-		if (error != AL10.AL_NO_ERROR) {
+		if (error != AL10.AL_NO_ERROR || slots[0] == 0 || slots[1] == 0) {
+			// Whatever this made is not usable: let it go now rather than leave a pair live with nothing sending
+			// to it. failed stops every later tick until the context closes, whose forgetNames clears it.
+			forgetMade();
 			failed = true;
-			EarshotClient.LOGGER.warn("Convolution reverb is off: making its slots failed (OpenAL error 0x{})",
-					Integer.toHexString(error));
+			if (error != AL10.AL_NO_ERROR) {
+				EarshotClient.LOGGER.warn("Convolution reverb is off: making its slots failed (OpenAL error 0x{})",
+						Integer.toHexString(error));
+			} else {
+				EarshotClient.LOGGER.warn("Convolution reverb is off: OpenAL would not give it a slot");
+			}
 			return false;
 		}
 		return true;
+	}
+
+	/** Lets go of whatever this still names, each by its own, then forgets them: for a make that failed part way. */
+	private void forgetMade() {
+		for (int i = 0; i < 2; i++) {
+			if (slots[i] != 0) {
+				EXTEfx.alAuxiliaryEffectSloti(slots[i], EXTEfx.AL_EFFECTSLOT_EFFECT, EXTEfx.AL_EFFECT_NULL);
+			}
+			SoundShaper.deleteEffectSlot(effects[i], slots[i], EXTEfx::alDeleteEffects,
+					EXTEfx::alDeleteAuxiliaryEffectSlots);
+			if (buffers[i] != 0) AL10.alDeleteBuffers(buffers[i]);
+			slots[i] = 0;
+			effects[i] = 0;
+			buffers[i] = 0;
+		}
 	}
 
 	/**
