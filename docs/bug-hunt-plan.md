@@ -6,14 +6,26 @@ listed in section 1; complements `docs/PLAN.md` (which holds the R0-R6 feature m
 
 ## Execution status (living)
 
-- **Wave A (independent, small): DONE.** F7, F8, F10, F11, F12, F13, F14, T1, T3, T4, T5.
-- **Wave B (Java audio, serial): F1 -> F2 -> F4 -> F3 -> F9.**
-- **Wave C (reverb numerics, serial, one golden move per commit): F5 -> F6 -> T2.**
-- **Wave D (structure, after B and C): R1 -> R2, R3 in parallel.**
+All findings land; no ABI change; version lockstep untouched.
 
-Commits landed so far: `f66d889` (F11+T3 ir), `f17956c` (F12 early), `1089394` (T1 reverb),
-`dee3d4d` (F8 MaterialMap), `cefc332` (F13 SoundShaper), `440391a` (F10+F14 VoicePlayer),
-`ab9c86f` (T4+T5 Java tests), plus F7 (ffi reach cap, committed separately).
+- **Wave A: DONE** (F7, F8, F10, F11, F12, F13, F14, T1, T3, T4, T5).
+- **Wave B: DONE** (F1, F2, F4, F3, F9).
+- **Wave C: DONE** (F5, F6, T2).
+- **Wave D: R3 DONE. R1 and R2 largely satisfied by F4 and F1.** F4 factored the paired
+  EFX lifetime into `SoundShaper.makeEffectSlot`/`deleteEffectSlot`, used by all four sites
+  (the "Efx helper" lives on `SoundShaper` rather than a new class), and F1 split `update()`
+  into a guarded shell plus `shape()`. The remaining mechanical split of `shape()` (R2) is
+  deferred: it is behaviour-preserving with no test beyond the CI-only client gametest, so it
+  should ride with a change that can be verified in one.
+
+Verified green: `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --locked -- -D
+warnings`; `cargo test --locked --workspace` (27 ffi, 114 sim, 1 bras, 9 scenes, 28 world);
+`cd mod && ./gradlew :test` (Java 33 tests).
+
+Commits (oldest first): `f66d889` F11+T3, `f17956c` F12, `1089394` T1, `dee3d4d` F8, `cefc332`
+F13, `440391a` F10+F14, `ab9c86f` T4+T5, `2989963` F7, `2448986` this plan, `4163b6d` F1,
+`1581e29` F9, `f696a38` F5, `c012ce7` F2, `f9390e9` F6, `1627633` F4, `91421e0` F3, `02c05ef` T2.
+
 
 ## 1. What was read, and confidence
 
