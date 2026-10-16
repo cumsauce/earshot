@@ -1,5 +1,20 @@
 use std::time::Duration;
 
+/// Which curve diffraction round an edge follows, when sound takes the long
+/// way round an obstacle.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DiffractionStandard {
+    /// ISO 9613-2's barrier attenuation, `10 log10(3 + 20·detour/λ)` dB,
+    /// capped at 25 dB. The default.
+    #[default]
+    Iso9613_2,
+    /// HJ 2.4-2021's Maekawa curve: `min(24, 13·N^0.187)` dB, where
+    /// `N = 2·detour/λ` is Maekawa's Fresnel number. About 3 dB steeper than
+    /// ISO around `N = 1`, so a doorway lets a little more sound round at
+    /// grazing angles, and a lot less at deep shadow.
+    Hj24,
+}
+
 /// How much the engine traces: what a preset sets (docs/PLAN.md,
 /// "Performance budget").
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -23,6 +38,8 @@ pub struct Quality {
     /// The share of one core the room measurement may take on average.
     /// Above it, the measurement uses fewer rays, down to a sixteenth.
     pub budget: f32,
+    /// Which diffraction curve the way round an edge follows.
+    pub diffraction: DiffractionStandard,
 }
 
 impl Quality {
@@ -35,6 +52,7 @@ impl Quality {
         field_half: 24,
         room_reach: 64.0,
         budget: 1.0,
+        diffraction: DiffractionStandard::Iso9613_2,
     };
 
     /// Whether every value is one the engine can work with.

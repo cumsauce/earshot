@@ -21,6 +21,6 @@ pub use crate::hear::{Heard, hear, occlusion};
 pub use crate::ir::{EdgeSource, IR_CHANNELS, Reflection, impulse_response, late_energy};
 pub use crate::pathing::{Field, MAX_APERTURE, Route};
 pub use crate::paths::{Segment, TraceStats, sphere_directions, trace_directions, trace_paths};
-pub use crate::quality::{Quality, Stats};
+pub use crate::quality::{DiffractionStandard, Quality, Stats};
 pub use crate::reverb::{Room, SPEED_OF_SOUND, measure, measure_threads, measure_with_early};
 pub use crate::rng::Rng;

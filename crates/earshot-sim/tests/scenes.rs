@@ -9,7 +9,7 @@
 //! models but tight enough to catch a regression — a decay that jumps by
 //! half, a room that stops being enclosed, a doorway that stops routing.
 
-use earshot_sim::{MAX_APERTURE, Room, hear, impulse_response, measure};
+use earshot_sim::{DiffractionStandard, MAX_APERTURE, Room, hear, impulse_response, measure};
 use earshot_world::{Material, Vec3, World};
 
 /// How a scene's numbers are expected to come out.
@@ -238,6 +238,7 @@ fn the_scenes_measure_as_recorded() {
             scene.outside,
             5,
             room.enclosure,
+            DiffractionStandard::Iso9613_2,
         );
         check(
             "outside mid gain",
@@ -312,8 +313,24 @@ fn the_doorway_routes_the_sound_and_the_sealed_wall_does_not() {
     for (door, routed) in [(true, true), (false, false)] {
         let world = hut(7, door);
         let field = earshot_sim::Field::build(&world, listener, 12);
-        let heard = hear(&world, Some(&field), listener, outside, 5, 1.0);
-        let through = hear(&world, None, listener, outside, 5, 1.0);
+        let heard = hear(
+            &world,
+            Some(&field),
+            listener,
+            outside,
+            5,
+            1.0,
+            DiffractionStandard::Iso9613_2,
+        );
+        let through = hear(
+            &world,
+            None,
+            listener,
+            outside,
+            5,
+            1.0,
+            DiffractionStandard::Iso9613_2,
+        );
         assert!(
             heard.heard_from.x > 4.0 && heard.heard_from.z < listener.z || !routed,
             "door: heard from {:?}, not from the doorway at x = 5",
@@ -387,13 +404,29 @@ fn an_ocean_carries_sound_and_the_surface_shuts_it_in() {
     let far = Vec3::new(30.5, 2.5, 0.5);
     // Thirty blocks of open water, both ends under: what air carries,
     // water carries. The old per-block table killed this outright.
-    let under = hear(&world, None, deep, far, 5, 0.0);
+    let under = hear(
+        &world,
+        None,
+        deep,
+        far,
+        5,
+        0.0,
+        DiffractionStandard::Iso9613_2,
+    );
     assert!(under.gains[1] > 0.9, "{under:?}");
 
     // A listener in the air above hears it through the surface once: about
     // the impedance toll, lows a little better than highs.
     let above = Vec3::new(30.5, 14.5, 0.5);
-    let out = hear(&world, None, deep, above, 5, 0.0);
+    let out = hear(
+        &world,
+        None,
+        deep,
+        above,
+        5,
+        0.0,
+        DiffractionStandard::Iso9613_2,
+    );
     assert!(
         (1e-4..1e-2).contains(&f64::from(out.gains[1])),
         "{} through the surface",
@@ -405,8 +438,24 @@ fn an_ocean_carries_sound_and_the_surface_shuts_it_in() {
 #[test]
 fn a_slab_walled_hut_leaks_more_than_a_solid_one() {
     let (listener, outside) = (Vec3::new(3.5, 1.5, 3.5), Vec3::new(3.5, 1.5, -6.0));
-    let solid = hear(&hut(7, false), None, listener, outside, 5, 1.0);
-    let slab = hear(&hut_of(7, false, 0.5), None, listener, outside, 5, 1.0);
+    let solid = hear(
+        &hut(7, false),
+        None,
+        listener,
+        outside,
+        5,
+        1.0,
+        DiffractionStandard::Iso9613_2,
+    );
+    let slab = hear(
+        &hut_of(7, false, 0.5),
+        None,
+        listener,
+        outside,
+        5,
+        1.0,
+        DiffractionStandard::Iso9613_2,
+    );
     // The mass law end to end: half the wall, the square root of the loss.
     assert!(
         (f64::from(slab.gains[1]) - f64::from(solid.gains[1]).sqrt()).abs()

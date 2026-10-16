@@ -17,7 +17,9 @@ mod voice;
 
 use std::ffi::c_void;
 
-use earshot_sim::{Engine, Heard, Quality, Room, early_reflections, eax_reverb, trace_paths};
+use earshot_sim::{
+    DiffractionStandard, Engine, Heard, Quality, Room, early_reflections, eax_reverb, trace_paths,
+};
 use earshot_world::{BANDS, Material, SECTION_BLOCKS, SectionPos, Vec3, World};
 
 use crate::guard::{FfiError, array_arg, guard, out_arg, slice_arg, slice_mut_arg};
@@ -39,7 +41,8 @@ use crate::guard::{FfiError, array_arg, guard, out_arg, slice_arg, slice_mut_arg
 /// 12: `earshot_impulse_response_for`.
 /// 13: `earshot_hear` adds the opening's size.
 /// 14: section and block bytes pack the fill fraction into the high nibble.
-pub const EARSHOT_ABI_VERSION: u32 = 14;
+/// 15: `earshot_set_quality` takes the diffraction standard.
+pub const EARSHOT_ABI_VERSION: u32 = 15;
 
 pub const EARSHOT_OK: i32 = 0;
 /// A null pointer, unknown material or out-of-range value.
@@ -78,8 +81,10 @@ pub const EARSHOT_VOICE_DOUBLES: usize = 10;
 /// source (0, 1, 5 or 9; 0 turns occlusion off); how far the pathing field
 /// reaches each way in blocks (0 to 64; 0 turns sound round corners off);
 /// the share of one core the room measurement may take, above which it
-/// uses fewer rays; and how far room rays reach in blocks (8 to 256).
-pub const EARSHOT_QUALITY_DOUBLES: usize = 7;
+/// uses fewer rays; how far room rays reach in blocks (8 to 256); and
+/// which diffraction curve the way round an edge follows (0 for ISO 9613-2,
+/// 1 for HJ 2.4's Maekawa curve).
+pub const EARSHOT_QUALITY_DOUBLES: usize = 8;
 
 /// Doubles from `earshot_stats`: rays in the latest room measurement (after
 /// the budget), its share of one core (smoothed), the latest pathing field's
@@ -878,14 +883,32 @@ pub unsafe extern "C" fn earshot_set_quality(
         with_engine(engine, |e| {
             // SAFETY: the caller guarantees `quality` points to
             // `EARSHOT_QUALITY_DOUBLES` doubles.
-            let [rays, bounces, every, occlusion, half, budget, reach] =
-                array_arg::<f64, EARSHOT_QUALITY_DOUBLES>(quality, "quality")?;
+            let [
+                rays,
+                bounces,
+                every,
+                occlusion,
+                half,
+                budget,
+                reach,
+                diffraction,
+            ] = array_arg::<f64, EARSHOT_QUALITY_DOUBLES>(quality, "quality")?;
             let whole = |v: f64| v.is_finite() && v >= 0.0 && v.fract() == 0.0 && v <= 1e6;
             if !(whole(rays) && whole(bounces) && whole(occlusion) && whole(half))
                 || !(every.is_finite() && budget.is_finite() && reach.is_finite())
+                || !(diffraction.is_finite() && diffraction.fract() == 0.0 && diffraction >= 0.0)
             {
                 return Err(FfiError::invalid("quality values out of range"));
             }
+            let diffraction = match diffraction as u32 {
+                0 => DiffractionStandard::Iso9613_2,
+                1 => DiffractionStandard::Hj24,
+                _ => {
+                    return Err(FfiError::invalid(format!(
+                        "diffraction standard {diffraction} not in 0..=1"
+                    )));
+                }
+            };
             let quality = Quality {
                 room_rays: rays as u32,
                 room_bounces: bounces as u32,
@@ -894,6 +917,7 @@ pub unsafe extern "C" fn earshot_set_quality(
                 field_half: half as i32,
                 room_reach: reach,
                 budget: budget as f32,
+                diffraction,
             };
             if !quality.is_valid() {
                 return Err(FfiError::invalid(format!(
@@ -1255,8 +1279,9 @@ mod tests {
     #[test]
     fn quality_is_checked_and_stats_follow_it() {
         let engine = engine();
-        let off = [0.0, 0.0, 0.1, 0.0, 0.0, 0.25, 64.0];
-        let bad = [1024.0, 8.0, 0.1, 3.0, 24.0, 0.25, 64.0];
+        let off = [0.0, 0.0, 0.1, 0.0, 0.0, 0.25, 64.0, 0.0];
+        let bad = [1024.0, 8.0, 0.1, 3.0, 24.0, 0.25, 64.0, 0.0];
+        let unknown_diffraction = [0.0, 0.0, 0.1, 0.0, 0.0, 0.25, 64.0, 2.0];
         let mut stats = [f64::NAN; EARSHOT_STATS_DOUBLES];
         // SAFETY: `engine` is live and every buffer is valid for its length.
         unsafe {
@@ -1264,6 +1289,11 @@ mod tests {
             assert_eq!(
                 earshot_set_quality(engine, bad.as_ptr()),
                 EARSHOT_ERR_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                earshot_set_quality(engine, unknown_diffraction.as_ptr()),
+                EARSHOT_ERR_INVALID_ARGUMENT,
+                "diffraction standard must be 0 (ISO) or 1 (HJ 2.4)"
             );
             assert_eq!(earshot_stats(engine, stats.as_mut_ptr()), EARSHOT_OK);
             earshot_destroy(engine);

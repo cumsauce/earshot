@@ -25,8 +25,9 @@
  * 12: `earshot_impulse_response_for`.
  * 13: `earshot_hear` adds the opening's size.
  * 14: section and block bytes pack the fill fraction into the high nibble.
+ * 15: `earshot_set_quality` takes the diffraction standard.
  */
-#define EARSHOT_ABI_VERSION 14
+#define EARSHOT_ABI_VERSION 15
 
 #define EARSHOT_OK 0
 
@@ -83,9 +84,11 @@
  * source (0, 1, 5 or 9; 0 turns occlusion off); how far the pathing field
  * reaches each way in blocks (0 to 64; 0 turns sound round corners off);
  * the share of one core the room measurement may take, above which it
- * uses fewer rays; and how far room rays reach in blocks (8 to 256).
+ * uses fewer rays; how far room rays reach in blocks (8 to 256); and
+ * which diffraction curve the way round an edge follows (0 for ISO 9613-2,
+ * 1 for HJ 2.4's Maekawa curve).
  */
-#define EARSHOT_QUALITY_DOUBLES 7
+#define EARSHOT_QUALITY_DOUBLES 8
 
 /**
  * Doubles from `earshot_stats`: rays in the latest room measurement (after

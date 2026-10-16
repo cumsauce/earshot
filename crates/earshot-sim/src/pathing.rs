@@ -638,7 +638,15 @@ mod tests {
         let world = wall(Some(4));
         let field = Field::build(&world, LISTENER, 16);
         assert_eq!(field.route(&world, SOURCE).unwrap().aperture, 2.0);
-        let heard = crate::hear(&world, Some(&field), LISTENER, SOURCE, 5, 1.0);
+        let heard = crate::hear(
+            &world,
+            Some(&field),
+            LISTENER,
+            SOURCE,
+            5,
+            1.0,
+            crate::quality::DiffractionStandard::Iso9613_2,
+        );
         assert_eq!(heard.aperture, 2.0, "{heard:?}");
     }
 }
