@@ -60,6 +60,8 @@ public final class VoicePlayer {
 	private static final double IDLE_SECONDS = 2;
 	/** Voice is at full volume this close, as Yak VC's speakers play it by default. */
 	private static final float FULL_VOLUME_DISTANCE = 4;
+	/** How far a voice fades out when Yak VC supplies no usable range (the default range elsewhere in Earshot). */
+	private static final float DEFAULT_MAX_DISTANCE = 16;
 	private static final int SAMPLE_RATE = 48_000;
 
 	private final NativeBridge bridge;
@@ -254,8 +256,6 @@ public final class VoicePlayer {
 			Voice voice = voices.get(stream.speaker());
 			if (voice == null) {
 				voice = start(stream.speaker());
-				// OpenAL refused for good: everything's gone back to Yak VC.
-				if (failed) return List.of();
 				// Out of sources for now: this one waits, the others carry on (stopping early would cut them off).
 				if (voice == null) continue;
 				voices.put(stream.speaker(), voice);
@@ -299,7 +299,12 @@ public final class VoicePlayer {
 		status = List.copyOf(out);
 	}
 
-	/** A source playing {@code speaker}'s stream, or null (and voice withdrawn) if OpenAL won't make one. */
+	/**
+	 * A source playing {@code speaker}'s stream, or null (and voice withdrawn) if OpenAL won't make one.
+	 *
+	 * <p>It never latches {@link #failed}: the AL error window is ambiguous (another thread's error in the gap is
+	 * indistinguishable from our own), so an error is logged and null is returned instead of failing every voice.
+	 */
 	private @Nullable Voice start(UUID speaker) {
 		// Java-only work stays outside the error window: from the drain to the check below this thread makes
 		// OpenAL calls and nothing else, so no call of ours outside the window can be blamed on it.
@@ -338,8 +343,17 @@ public final class VoicePlayer {
 			AL10.alSourcef(voice.source, AL10.AL_ROLLOFF_FACTOR, 1);
 			voice.centred = false;
 		}
-		AL10.alSourcef(voice.source, AL10.AL_MAX_DISTANCE, Math.max(range, FULL_VOLUME_DISTANCE + 1));
+		AL10.alSourcef(voice.source, AL10.AL_MAX_DISTANCE, maxDistance(range));
 		voice.position = eye;
+	}
+
+	/**
+	 * How far {@code range} fades the voice out, or 16 when Yak VC sends no usable range: a NaN would raise
+	 * AL_INVALID_VALUE into the context's shared error state, where a later bracketed caller could blame its own
+	 * window for it.
+	 */
+	static float maxDistance(float range) {
+		return Float.isFinite(range) && range > 0 ? Math.max(range, FULL_VOLUME_DISTANCE + 1) : DEFAULT_MAX_DISTANCE;
 	}
 
 	/** Points a voice the way its speaker faces, or all round when that isn't known. */
