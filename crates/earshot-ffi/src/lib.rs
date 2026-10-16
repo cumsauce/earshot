@@ -404,24 +404,14 @@ pub unsafe extern "C" fn earshot_hear(
                 .checked_mul(EARSHOT_HEARD_DOUBLES)
                 .ok_or_else(|| FfiError::invalid("count is too large"))?;
             // SAFETY: the caller guarantees `sources` points to `3 * count`
-            // doubles (`3 * count` fits, being less than `len`).
-            let xyz = slice_arg(sources, 3 * count, "sources")?;
-            // SAFETY: the caller guarantees `out` is writable for `len` doubles.
-            let out = slice_mut_arg(out, len, "out")?;
-            if !xyz
-                .as_chunks::<3>()
-                .0
-                .iter()
-                .all(|&p| Vec3::new(p[0], p[1], p[2]).is_usable())
-            {
-                return Err(FfiError::invalid("sources are not finite or out of range"));
-            }
-            let points: Vec<Vec3> = xyz
-                .as_chunks::<3>()
-                .0
+            // doubles (`3 * count` fits, being less than `len`), each a
+            // usable point.
+            let points: Vec<Vec3> = points_arg(sources, count, "sources")?
                 .iter()
                 .map(|&[x, y, z]| Vec3::new(x, y, z))
                 .collect();
+            // SAFETY: the caller guarantees `out` is writable for `len` doubles.
+            let out = slice_mut_arg(out, len, "out")?;
             let mut heard = vec![
                 Heard {
                     aperture: earshot_sim::MAX_APERTURE,
@@ -503,22 +493,13 @@ pub unsafe extern "C" fn earshot_early(
                 .checked_mul(EARSHOT_EARLY_DOUBLES)
                 .ok_or_else(|| FfiError::invalid("count is too large"))?;
             // SAFETY: the caller guarantees `sources` points to `3 * count`
-            // doubles (which fits, being less than `len`).
-            let xyz = slice_arg(sources, 3 * count, "sources")?;
+            // doubles (which fits, being less than `len`), each a usable
+            // point.
+            let points = points_arg(sources, count, "sources")?;
             // SAFETY: the caller guarantees `out` is writable for `len` doubles.
             let out = slice_mut_arg(out, len, "out")?;
-            if !xyz
-                .as_chunks::<3>()
-                .0
-                .iter()
-                .all(|&p| Vec3::new(p[0], p[1], p[2]).is_usable())
-            {
-                return Err(FfiError::invalid("sources are not finite or out of range"));
-            }
             e.world(|world| {
-                for (&[x, y, z], out) in xyz
-                    .as_chunks::<3>()
-                    .0
+                for (&[x, y, z], out) in points
                     .iter()
                     .zip(out.as_chunks_mut::<EARSHOT_EARLY_DOUBLES>().0)
                 {
@@ -1016,6 +997,29 @@ unsafe fn point_arg(ptr: *const f64, what: &str) -> Result<Vec3, FfiError> {
         )));
     }
     Ok(point)
+}
+
+/// The `count` source points at `ptr`, each a finite, in-range `[x, y, z]`:
+/// the same check [`point_arg`] makes of one listener, over a whole list, so
+/// one bad point from any mod fails the call rather than reaching the engine.
+///
+/// # Safety
+/// `ptr` must be null or point to `3 * count` doubles.
+unsafe fn points_arg<'a>(
+    ptr: *const f64,
+    count: usize,
+    what: &str,
+) -> Result<&'a [[f64; 3]], FfiError> {
+    // SAFETY: forwarded from the caller.
+    let xyz = unsafe { slice_arg(ptr, 3 * count, what) }?;
+    let points = xyz.as_chunks::<3>().0;
+    if !points
+        .iter()
+        .all(|&[x, y, z]| Vec3::new(x, y, z).is_usable())
+    {
+        return Err(FfiError::invalid("sources are not finite or out of range"));
+    }
+    Ok(points)
 }
 
 #[cfg(test)]
