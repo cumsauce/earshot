@@ -81,9 +81,6 @@ public final class ConvolutionReverb {
 	private long checkedAt;
 	/** The room the response playing (or loading) was made from. */
 	private double[] madeFrom = new double[0];
-	/** Loads failed in a row; past {@link #TRIES}, it's off. */
-	private int failures;
-	private static final int TRIES = 3;
 	/** Bumped when the game closes its context, so a load in flight for the old one is dropped. */
 	private int generation;
 	private final float[] orientation = {0, 0, -1, 0, 1, 0};
@@ -139,7 +136,7 @@ public final class ConvolutionReverb {
 		}
 		long now = System.nanoTime();
 		if (!loading && incoming < 0 && now - checkedAt >= CHECK_EVERY_NANOS
-				&& (madeFrom.length == 0 ? room.length > 0 && maker != null : changed.changed(madeFrom, room))) {
+				&& (madeFrom.length == 0 ? room.length > 0 : changed.changed(madeFrom, room))) {
 			checkedAt = now;
 			loading = true;
 			madeFrom = room.clone();
@@ -176,25 +173,41 @@ public final class ConvolutionReverb {
 			EarshotClient.LOGGER.warn("Releasing a convolution reverb failed (OpenAL error 0x{})",
 					Integer.toHexString(error));
 		}
-		contextClosing();
+		forgetNames();
 	}
 
-	/** The game is closing its context, which frees every object in it: forget them all. */
+	/**
+	 * The game is closing its context, which frees every object in it: forget them all, and stand up a fresh loader,
+	 * since this instance is reused and a shutdown executor would reject the next load.
+	 */
 	public synchronized void contextClosing() {
+		forgetNames();
+		// A load in flight or queued would work against the closed context and its result is unreadable:
+		// stop it, then a fresh executor for the next context.
+		loader.shutdownNow();
+		loader = newLoader();
+	}
+
+	/**
+	 * Forgets the OpenAL names (they were just deleted, or die with the context) and bumps the generation, so any load
+	 * in flight is dropped. Separate from {@link #contextClosing()}'s executor swap: releasing a reverb keeps its
+	 * loader, which is perfectly good for the next response.
+	 */
+	private void forgetNames() {
 		generation++;
 		// A fresh context gets a fresh chance: what failed against the old one says nothing about the new.
 		failed = false;
-		failures = 0;
-		// A load in flight or queued would work against the closed context and its result is unreadable:
-		// stop it, then stand up a fresh executor for the next context, since this instance is reused.
-		loader.shutdownNow();
-		loader = newLoader();
 		java.util.Arrays.fill(slots, 0);
 		java.util.Arrays.fill(effects, 0);
 		java.util.Arrays.fill(buffers, 0);
 		active = -1;
 		incoming = -1;
 		madeFrom = new double[0];
+	}
+
+	/** The executor responses are made on, for tests: {@link #release()} keeps it, {@link #contextClosing()} swaps it. */
+	synchronized ExecutorService loader() {
+		return loader;
 	}
 
 	private boolean make() {
@@ -268,14 +281,12 @@ public final class ConvolutionReverb {
 				if (error != AL10.AL_NO_ERROR) {
 					// The window holds only this thread's own calls, but OpenAL's error state is the context's:
 					// an error another thread raised in the gap is indistinguishable from our own here. So an
-					// ambiguous window does not count toward TRIES — one foreign error must never march
-					// convolution toward the permanent latch — it is logged, and made again next time.
-					EarshotClient.LOGGER.warn("Loading a convolution response failed (OpenAL error 0x{}){}",
-							Integer.toHexString(error), failed ? "; convolution reverb is off" : "; trying again");
+					// ambiguous window is never latched: it is logged, and the response is made again next time.
+					EarshotClient.LOGGER.warn("Loading a convolution response failed (OpenAL error 0x{}); trying again",
+							Integer.toHexString(error));
 					madeFrom = new double[0];
 					return;
 				}
-				failures = 0;
 				incoming = into;
 				fade = 0;
 				loads++;
