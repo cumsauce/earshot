@@ -1085,4 +1085,39 @@ mod tests {
             assert!((0.1..=8.0).contains(&early), "{a:?}");
         }
     }
+
+    /// A leg deposits its energy in the decay curve once, spread over the bins it covers: the shares of the bins a
+    /// leg spans add up to the leg's time in bins, not to one whole bin per bin touched. The old count put the
+    /// leg's whole energy in every bin it touched, so a leg ending where the next begins was counted twice in the
+    /// shared bin, and short legs (small rooms, a listener against a wall) were boosted the most.
+    #[test]
+    fn a_leg_deposits_its_energy_in_the_bins_it_covers_once() {
+        for length in [0.05, 0.343, 5.0] {
+            let mut tally = Tally::new(1);
+            // The ray's energy as it arrives at this leg: one from the listener, less after each surface crossed.
+            tally.band_energy = [1.0; BANDS];
+            tally.add(
+                &Segment {
+                    from: Vec3::new(0.0, 0.0, 0.0),
+                    to: Vec3::new(0.0, 0.0, length),
+                    energy: 1.0,
+                    escaped: false,
+                    material: Material::Rock,
+                    fill: 1.0,
+                    leaky: false,
+                    bounce: 1,
+                    normal: Vec3::new(0.0, 0.0, 1.0),
+                },
+                1,
+            );
+            let leg_bins = (length / SPEED_OF_SOUND) / HIST_DT;
+            for band in 0..BANDS {
+                let deposited: f64 = tally.hist[band].iter().sum();
+                assert!(
+                    (deposited - leg_bins).abs() < 1e-9,
+                    "a {length} m leg in band {band} is {leg_bins} bins long but deposited {deposited}"
+                );
+            }
+        }
+    }
 }
