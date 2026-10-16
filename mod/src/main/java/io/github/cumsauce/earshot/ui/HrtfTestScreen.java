@@ -2,6 +2,7 @@ package io.github.cumsauce.earshot.ui;
 
 import io.github.cumsauce.earshot.EarshotClient;
 import io.github.cumsauce.earshot.openal.ContextAttributes;
+import io.github.cumsauce.earshot.openal.HrtfFiles;
 import io.github.cumsauce.earshot.openal.OpenAlProbe;
 import java.util.ArrayList;
 import java.util.List;
@@ -105,7 +106,11 @@ public final class HrtfTestScreen extends OptionsSubScreen {
 		if (pending == null) return;
 		OpenAlProbe.Report report = OpenAlProbe.last();
 		String wanted = pending.isEmpty() ? ContextAttributes.BUILT_IN_HRTF : pending;
-		if (report == null || !report.hrtf().equals(wanted)) return;
+		// A bare SADIE II name falls back to the bundled 64-tap MHR when its SOFA isn't on disk yet; that
+		// is the set loaded, so it counts as the one wanted.
+		if (report == null
+				|| !(report.hrtf().equals(wanted) || report.hrtf().equals(wanted + HrtfFiles.MHR_SUFFIX)))
+			return;
 		var sounds = Minecraft.getInstance().getSoundManager();
 		for (int i = 0; i < AROUND.length; i++) {
 			double[] at = AROUND[i];

@@ -82,9 +82,11 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 			throw new UncheckedIOException(e);
 		}
 		if (!report.efx()) throw new AssertionError("the game's OpenAL has no EFX");
-		// The HRTFs Earshot ships were unpacked before the sound engine started, so OpenAL lists them.
+		// The HRTFs Earshot ships were unpacked before the sound engine started, so OpenAL lists them —
+		// by their MHR file names, which carry the 64-tap suffix (the bare names wait for a SOFA fetch).
 		for (String hrtf : io.github.cumsauce.earshot.openal.HrtfFiles.NAMES) {
-			if (!report.hrtfs().contains(hrtf)) throw new AssertionError(hrtf + " isn't listed: " + report.hrtfs());
+			String shipped = hrtf + io.github.cumsauce.earshot.openal.HrtfFiles.MHR_SUFFIX;
+			if (!report.hrtfs().contains(shipped)) throw new AssertionError(shipped + " isn't listed: " + report.hrtfs());
 		}
 
 		WorldMirror mirror = EarshotClient.mirror();
@@ -299,13 +301,17 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 			context.setScreen(() -> null);
 
 			// With Directional Audio on, the HRTF picked is the one OpenAL loads: here a shipped SADIE II set, which
-			// takes restarting the sound engine.
+			// takes restarting the sound engine. The SOFA isn't downloaded in tests, so the loaded set is the
+			// bundled 64-tap MHR that the bare name falls back to.
 			context.runOnClient(mc -> {
 				mc.options.directionalAudio().set(true);
 				EarshotClient.apply(EarshotClient.config().withHrtf("SADIE II KU100"));
 			});
+			String mhr = "SADIE II KU100" + io.github.cumsauce.earshot.openal.HrtfFiles.MHR_SUFFIX;
 			try {
-				context.waitFor(mc -> OpenAlProbe.last() != null && OpenAlProbe.last().hrtf().equals("SADIE II KU100"),
+				context.waitFor(mc -> OpenAlProbe.last() != null
+						&& (OpenAlProbe.last().hrtf().equals("SADIE II KU100")
+								|| OpenAlProbe.last().hrtf().equals(mhr)),
 						10 * 20);
 			} catch (RuntimeException | AssertionError e) {
 				throw new AssertionError("the KU100 HRTF isn't in use: " + OpenAlProbe.last().describe(), e);

@@ -33,6 +33,13 @@ public final class HrtfFiles {
 	/** The data sets, as the HRTF setting lists them. */
 	public static final List<String> NAMES = List.of("SADIE II KU100", "SADIE II KEMAR");
 
+	/**
+	 * The suffix on the bundled 64-tap MHRs' file names, and on the names OpenAL lists them under. The bare names in
+	 * {@link #NAMES} are reserved for the 256-tap SOFAs fetched on first use; without the suffix the MHR would
+	 * shadow the SOFA in OpenAL Soft's search path.
+	 */
+	public static final String MHR_SUFFIX = " 64-tap";
+
 	/** Where each SOFA comes from. The SHA-256 is the in-jar / on-disk fingerprint. */
 	public record SofaSource(String url, String sha256) {}
 
@@ -60,14 +67,14 @@ public final class HrtfFiles {
 	public static void install() {
 		Path dir = Path.of("").toAbsolutePath();
 		for (String name : NAMES) {
-			String resource = "/earshot/hrtf/" + name + " 64-tap.mhr";
+			String resource = "/earshot/hrtf/" + name + MHR_SUFFIX + ".mhr";
 			try (InputStream in = HrtfFiles.class.getResourceAsStream(resource)) {
 				if (in == null) {
 					EarshotClient.LOGGER.warn("The jar has no {}", resource);
 					continue;
 				}
 				byte[] data = in.readAllBytes();
-				Path file = dir.resolve(name + " 64-tap.mhr");
+				Path file = dir.resolve(name + MHR_SUFFIX + ".mhr");
 				if (Files.isRegularFile(file) && Arrays.equals(Files.readAllBytes(file), data)) continue;
 				Files.write(file, data);
 				EarshotClient.LOGGER.info("Unpacked the {} HRTF (64-tap MHR) to {}", name, file);
