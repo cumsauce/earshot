@@ -119,8 +119,12 @@ fn scenes() -> Vec<Scene> {
                 order: ["high", "mid", "low"],
                 // Straight through rock, with no field to route by: five
                 // rays of rock transmission, whatever the door. The way
-                // round the doorway is the routing test's business.
-                outside_mid_gain: (1e-5, 1e-3),
+                // round the doorway is the routing test's business. The
+                // five rays hit the same single rock block at z = −1, so
+                // the mean is rock's per-block mid transmission, 10⁻⁴·⁵ ≈
+                // 3.16 × 10⁻⁵; the band is tight enough to catch a 1 dB
+                // drift in rock's mid-band loss.
+                outside_mid_gain: (2.5e-5, 1e-3),
             },
         },
         Scene {
@@ -248,8 +252,15 @@ fn the_scenes_measure_as_recorded() {
         // holding no more energy than the room sent in.
         let ir = impulse_response(&room, &[], 48_000, 2.0, 1);
         let seconds = ir.len() as f32 / 48_000.0;
+        // `impulse_response` clamps the room's decay to `1.5 * max_seconds`
+        // and caps the response length at `max_seconds`. With max_seconds =
+        // 2.0 the response is at least `room.decay[1].min(2.0)` long, and
+        // for a 48 kHz IR that's a whole number of samples — the
+        // construction cannot produce a length shorter than the clamped
+        // decay by more than a single sample. The +1 / 48_000 term covers
+        // that rounding.
         assert!(
-            seconds + 0.05 >= room.decay[1].min(2.0),
+            seconds + 1.0 / 48_000.0 >= room.decay[1].min(2.0),
             "{}: response {} s against a decay of {}",
             scene.name,
             seconds,
@@ -262,6 +273,36 @@ fn the_scenes_measure_as_recorded() {
             scene.name
         );
     }
+}
+
+/// `impulse_response` shortens the IR when `max_seconds` is below the room's
+/// decay, by clamping the decay to `1.5 * max_seconds` and capping the
+/// length. The cap should hold exactly (to within one sample), not drift
+/// past it.
+#[test]
+fn a_short_max_seconds_caps_the_response_at_the_clamped_decay() {
+    use earshot_sim::IR_CHANNELS;
+    let room = Room {
+        decay: [2.0, 1.0, 0.5],
+        mean_free_path: 8.0,
+        enclosure: 1.0,
+        first_reflection: 4.0,
+        scattering: 0.3,
+        volume: 1.0,
+    };
+    let max = 0.4;
+    let ir = impulse_response(&room, &[], 48_000, max, 1);
+    // The IR is interleaved across `IR_CHANNELS` (W, X, Y, Z); divide by
+    // both to get seconds. With `max = 0.4`, the response is one sample per
+    // channel per 1/48_000 s, capped to 0.4 s.
+    let seconds = (ir.len() / IR_CHANNELS) as f32 / 48_000.0;
+    assert!(
+        (seconds - max).abs() <= 1.0 / 48_000.0,
+        "response {seconds} s, max {max}"
+    );
+    // And it is no longer than the unclamped decay would imply: a 1 s decay
+    // would normally give a 1 s response, not 0.4 s.
+    assert!(seconds < room.decay[1], "{seconds} s vs {}", room.decay[1]);
 }
 
 #[test]
