@@ -877,6 +877,28 @@ mod tests {
         assert_eq!(fit_early_decay(&empty, fallback), fallback);
     }
 
+    /// A decay that is flat and then falls off a cliff: 60 dB inside one
+    /// histogram bin. Both ends of the fit's window land on the same bin,
+    /// so the least squares slope there is 0/0, and the answer must still
+    /// be a usable number: finite, positive, and no shorter than the bin
+    /// it was read off.
+    #[test]
+    fn the_early_decay_of_a_one_bin_cliff_is_finite() {
+        let fallback = 0.5;
+        let mut hist = vec![2048.0; HIST_BINS];
+        let cliff = HIST_BINS / 2;
+        for (bin, e) in hist.iter_mut().enumerate().skip(cliff) {
+            // 60 dB down in the one bin, and nothing after it.
+            *e = if bin == cliff { 2048.0 * 1e-6 } else { 0.0 };
+        }
+        let fitted = fit_early_decay(&hist, fallback);
+        assert!(fitted.is_finite() && fitted > 0.0, "{fitted}");
+        assert!(
+            f64::from(fitted) >= HIST_DT,
+            "{fitted} against a bin of {HIST_DT}"
+        );
+    }
+
     /// Open ground with rays escaping over the rim: whatever the histogram
     /// of hits and escapes comes to, the reported early decay is a real
     /// EAX-range number — finite and clamped into 0.1..=8.0 s — never a
