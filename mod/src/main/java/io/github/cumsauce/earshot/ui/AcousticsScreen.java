@@ -8,18 +8,25 @@ import io.github.cumsauce.earshot.config.EarshotConfig.Preset;
 import io.github.cumsauce.earshot.config.EarshotConfig.Reverb;
 import io.github.cumsauce.earshot.natives.NativeBridge;
 import io.github.cumsauce.earshot.openal.ContextAttributes;
+import io.github.cumsauce.earshot.openal.HrtfFiles;
 import io.github.cumsauce.earshot.openal.OpenAlProbe;
+import java.io.IOException;
 import java.lang.foreign.MemorySegment;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.OptionInstance;
 import net.minecraft.client.Options;
 import net.minecraft.client.gui.components.AbstractWidget;
+import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.MultiLineTextWidget;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.AlertScreen;
@@ -56,6 +63,12 @@ public final class AcousticsScreen extends OptionsSubScreen {
 	private @Nullable MultiLineTextWidget qualityStatus;
 	private @Nullable MultiLineTextWidget reverbStatus;
 	private int ticks;
+	/** While a SOFA is downloading, the file path being downloaded, or null when idle. */
+	private @Nullable String sofaDownload;
+	/** Cancel flag for the in-flight SOFA download (checked from the read loop). */
+	private final AtomicBoolean sofaCancel = new AtomicBoolean(false);
+	/** The HRTF value to roll back to if the download fails. */
+	private String previousHrtf = "";
 
 	/** The settings over {@code parent}, or an alert if the engine isn't running. */
 	public static Screen open(Screen parent) {
@@ -92,7 +105,7 @@ public final class AcousticsScreen extends OptionsSubScreen {
 				OptionInstance.cachedConstantTooltip(Component.translatable("earshot.settings.hrtf.tooltip")),
 				(caption, value) -> value.isEmpty() ? Component.translatable("earshot.settings.hrtf.default")
 						: Component.literal(value),
-				new OptionInstance.Enum<>(hrtfs, Codec.STRING), config.hrtf(), OptionInstance.NO_ACTION);
+				new OptionInstance.Enum<>(hrtfs, Codec.STRING), config.hrtf(), this::onHrtfPicked);
 		voice = toggle("earshot.settings.voice", config.voice());
 		ownVoice = toggle("earshot.settings.own_voice", config.ownVoice());
 	}
@@ -228,6 +241,52 @@ public final class AcousticsScreen extends OptionsSubScreen {
 	/** Scrolls to the end of the list. For the client gametest's screenshot. */
 	public void scrollToEnd() {
 		list.setScrollAmount(Double.MAX_VALUE);
+	}
+
+	/**
+	 * The user picked an HRTF dataset from the dropdown. For a SOFA dataset that's not yet on
+	 * disk, downloads it asynchronously before applying the new setting. The dropdown stays
+	 * set to the new value visually; on download failure the value is rolled back and the
+	 * engine stays on the previous HRTF.
+	 */
+	private void onHrtfPicked(String newValue) {
+		previousHrtf = hrtf.get().equals(newValue) ? previousHrtf : hrtf.get();
+		if (sofaDownload != null) return; // a download is in flight; ignore
+		if (newValue.isEmpty() || !HrtfFiles.SOFAS.containsKey(newValue)) {
+			EarshotClient.apply(EarshotClient.config().withHrtf(newValue));
+			return;
+		}
+		Path target = Path.of("").toAbsolutePath().resolve(newValue + ".sofa");
+		if (Files.isRegularFile(target)) {
+			EarshotClient.apply(EarshotClient.config().withHrtf(newValue));
+			return;
+		}
+		sofaDownload = newValue;
+		sofaCancel.set(false);
+		rebuildWidgets(); // shows the progress bar
+		String captured = newValue;
+		CompletableFuture.runAsync(() -> {
+			try {
+				HrtfFiles.ensure(target, captured, (read, total) -> {
+					// Progress callback. The UI re-reads the file size on tick(); we just
+					// flag that bytes have arrived by storing the read count via a
+					// re-render. A simpler approach: do nothing here, since the file
+					// grows on disk and the byte count is informational.
+				}, sofaCancel::get);
+				Minecraft.getInstance().execute(() -> {
+					sofaDownload = null;
+					rebuildWidgets();
+					EarshotClient.apply(EarshotClient.config().withHrtf(captured));
+				});
+			} catch (IOException | RuntimeException e) {
+				EarshotClient.LOGGER.warn("SOFA download failed for {}", captured, e);
+				Minecraft.getInstance().execute(() -> {
+					sofaDownload = null;
+					hrtf.set(previousHrtf);
+					rebuildWidgets();
+				});
+			}
+		});
 	}
 
 	@Override

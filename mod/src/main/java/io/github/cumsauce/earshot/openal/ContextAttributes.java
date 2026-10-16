@@ -69,6 +69,13 @@ public final class ContextAttributes {
 		for (int i = 0; i < count; i++) {
 			if (name.equals(SOFTHRTF.alcGetStringiSOFT(device, SOFTHRTF.ALC_HRTF_SPECIFIER_SOFT, i))) return i;
 		}
+		// Fall back to the MHR (named "SADIE II KU100 64-tap" since the MHRs are renamed so
+		// the bare name is reserved for the SOFA). The SOFA, if picked, is downloaded on
+		// first use by HrtfFiles.ensure() before the device is opened.
+		String fallback = name + " 64-tap";
+		for (int i = 0; i < count; i++) {
+			if (fallback.equals(SOFTHRTF.alcGetStringiSOFT(device, SOFTHRTF.ALC_HRTF_SPECIFIER_SOFT, i))) return i;
+		}
 		return -1;
 	}
 }

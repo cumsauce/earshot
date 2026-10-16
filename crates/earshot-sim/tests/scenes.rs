@@ -250,7 +250,7 @@ fn the_scenes_measure_as_recorded() {
 
         // The scene's response: long enough for its decay, at its rate, and
         // holding no more energy than the room sent in.
-        let ir = impulse_response(&room, &[], 48_000, 2.0, 1);
+        let ir = impulse_response(&room, &[], &[], 48_000, 2.0, 1);
         let seconds = ir.len() as f32 / 48_000.0;
         // `impulse_response` clamps the room's decay to `1.5 * max_seconds`
         // and caps the response length at `max_seconds`. With max_seconds =
@@ -291,7 +291,7 @@ fn a_short_max_seconds_caps_the_response_at_the_clamped_decay() {
         volume: 1.0,
     };
     let max = 0.4;
-    let ir = impulse_response(&room, &[], 48_000, max, 1);
+    let ir = impulse_response(&room, &[], &[], 48_000, max, 1);
     // The IR is interleaved across `IR_CHANNELS` (W, X, Y, Z); divide by
     // both to get seconds. With `max = 0.4`, the response is one sample per
     // channel per 1/48_000 s, capped to 0.4 s.
@@ -357,7 +357,7 @@ fn a_ravine_answers_in_echoes_and_its_room_stays_open() {
     let listener = Vec3::new(10.0, 1.5, 0.5);
     let room = measure(&world, listener, 1024, 16, 64.0, 1);
     assert!(room.enclosure < 0.7, "{room:?}");
-    let ir = impulse_response(&room, &[], 48_000, 1.5, 1);
+    let ir = impulse_response(&room, &[], &[], 48_000, 1.5, 1);
     // Energy well after the direct sound, where the cliff answers.
     let window = |from: f32, to: f32| {
         ir[(from * 48_000.0) as usize * 4..(to * 48_000.0) as usize * 4]
@@ -479,4 +479,83 @@ fn rooms_come_out_sane_wherever_they_are_measured() {
             assert!(decay.iter().all(|t60| t60.is_finite()));
         }
     }
+}
+
+/// A doorway's edges leak high-band energy into the next room: the wired
+/// `impulse_response_for` must include `edge_sources` in its IR. A regression
+/// that drops the `&edge` argument (passes `&[]` instead) breaks this test:
+/// the wired IR's energy at the edge delay collapses to the no-edge
+/// baseline, and the comparison below fails.
+#[test]
+fn a_doorway_leaks_high_band_around_its_edges() {
+    use earshot_sim::{Engine, IR_CHANNELS, early_taps, edge_sources, impulse_response, measure};
+    // A 3×3 rock wall at x=4 (in the +x direction from the source, so the
+    // wall is *behind* the source relative to the listener). A 1×1 doorway
+    // at (4, 1, 0) lets the source's reflection back to the listener pass
+    // through; the upper vertical edges of the doorway's frame are visible
+    // and leak high-band energy around the wall.
+    let mut world = World::new();
+    for y in 0..=2 {
+        for z in -1..=1 {
+            if y == 1 && z == 0 {
+                continue;
+            }
+            world.set_block(4, y, z, Material::Rock);
+        }
+    }
+    let listener = Vec3::new(-2.0, 0.5, 0.5);
+    let source = Vec3::new(2.0, 0.5, 0.5);
+
+    // The wired entry point: same path `impulse_response_for` takes.
+    let room = measure(&world, source, 256, 8, 32.0, 1);
+    let taps = early_taps(&world, listener, source);
+    let edges = edge_sources(&world, listener, source, &taps);
+    assert!(
+        !edges.is_empty(),
+        "test setup: the doorway should have at least one edge source"
+    );
+
+    // And a sanity check that the Engine's wired path agrees.
+    let engine = Engine::start();
+    engine.world_change(|w| {
+        for y in 0..=2 {
+            for z in -1..=1 {
+                if y == 1 && z == 0 {
+                    continue;
+                }
+                w.set_block(4, y, z, Material::Rock);
+            }
+        }
+        true
+    });
+    engine.set_listener(listener);
+    let wired = engine
+        .impulse_response_for(source, 256, 8, 48_000, 0.05, 1)
+        .expect("listener is set");
+
+    // The energy in a 1 ms window around the first edge's delay, on W.
+    // With edges, the window has the edge's tap; without, it does not.
+    let energy_window = |ir: &[f32]| -> f32 {
+        let delay = edges[0].delay;
+        let start = ((delay - 0.0005).max(0.0) * 48_000.0) as usize * IR_CHANNELS;
+        let end = (((delay + 0.0005) * 48_000.0) as usize + 1) * IR_CHANNELS;
+        ir[start..end.min(ir.len())]
+            .iter()
+            .step_by(IR_CHANNELS)
+            .map(|x| x * x)
+            .sum()
+    };
+    let direct_with_edges = impulse_response(&room, &taps, &edges, 48_000, 0.05, 1);
+    let direct_without_edges = impulse_response(&room, &taps, &[], 48_000, 0.05, 1);
+    let direct_with = energy_window(&direct_with_edges);
+    let direct_without = energy_window(&direct_without_edges);
+    let wired_at = energy_window(&wired);
+    assert!(
+        direct_with > direct_without,
+        "the IR with edges has more energy at the edge delay: {direct_with} vs {direct_without}"
+    );
+    assert!(
+        wired_at > direct_without,
+        "the wired engine path matches a hand-built IR with edges: {wired_at} vs {direct_without}"
+    );
 }

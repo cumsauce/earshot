@@ -70,5 +70,5 @@
 	"earshot.hrtf_test.kept": "Keeping %s",
 	"earshot.settings.hrtf": "HRTF",
 	"earshot.settings.hrtf.default": "Built-In",
-	"earshot.settings.hrtf.tooltip": "The head-related transfer function used when Directional Audio is on: OpenAL Soft's built-in one, or a dummy head measured for the SADIE II database (University of York), the Neumann KU100 or the KEMAR. Try each with headphones: the one that places sounds best for you is right for your ears. Changing it restarts the sound engine."
+	"earshot.settings.hrtf.tooltip": "The head-related transfer function used when Directional Audio is on: OpenAL Soft's built-in one, or a dummy head measured for the SADIE II database (University of York), the Neumann KU100 or the KEMAR. The 'SADIE II KU100' and 'SADIE II KEMAR' entries are 256-tap SOFA files downloaded on first use (~36 MB each, Apache 2.0 from Zenodo); the '... 64-tap' entries are the bundled 64-tap MHR conversions. Try each with headphones: the one that places sounds best for you is right for your ears. Changing it restarts the sound engine."
 }

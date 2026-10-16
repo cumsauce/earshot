@@ -1,4 +1,4 @@
-use earshot_world::{BANDS, Vec3};
+use earshot_world::{BANDS, Bands, Vec3};
 
 use crate::{Rng, Room, SPEED_OF_SOUND};
 
@@ -12,6 +12,19 @@ pub struct Reflection {
     pub delay: f32,
     /// Its energy relative to the direct sound at one block, mid band.
     pub energy: f32,
+}
+
+/// A sound's secondary source at a doorway's edge: the small share of the sound that
+/// bends around the wall's vertical edge (Maekawa / ISO 9613-2 edge correction). Per-band
+/// energy, relative to the direct sound at one block.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EdgeSource {
+    /// Where it comes from, a unit vector in world coordinates.
+    pub direction: Vec3,
+    /// When it arrives, in seconds.
+    pub delay: f32,
+    /// Its per-band energy relative to the direct sound at one block.
+    pub energy: Bands,
 }
 
 /// Channels in the impulse response: first-order ambisonics, FuMa order and
@@ -41,6 +54,7 @@ const MID_HIGH: f32 = 2000.0;
 pub fn impulse_response(
     room: &Room,
     early: &[Reflection],
+    edge: &[EdgeSource],
     sample_rate: u32,
     max_seconds: f32,
     seed: u64,
@@ -95,6 +109,25 @@ pub fn impulse_response(
         }
         let a = reflection.energy.sqrt();
         let d = reflection.direction;
+        let at = i * IR_CHANNELS;
+        out[at] += a * std::f32::consts::FRAC_1_SQRT_2;
+        out[at + 1] += a * -d.z as f32;
+        out[at + 2] += a * -d.x as f32;
+        out[at + 3] += a * d.y as f32;
+    }
+
+    // The edge sources: small taps at the wall's diffracting edges, in
+    // the same form as the early reflections (broadband click, B-format
+    // from the edge's direction). Per-band energy summed; the diffuse
+    // tail provides the per-band decay. Fused with the direct sound by
+    // `edge_sources()` itself (drop below EDGE_FUSE_SECONDS).
+    for source in edge {
+        let i = (source.delay * rate) as usize;
+        if i >= length {
+            continue;
+        }
+        let a = source.energy.iter().sum::<f32>().sqrt();
+        let d = source.direction;
         let at = i * IR_CHANNELS;
         out[at] += a * std::f32::consts::FRAC_1_SQRT_2;
         out[at + 1] += a * -d.z as f32;
@@ -259,7 +292,7 @@ mod merge_tests {
                 energy: 0.2 / 4000.0,
             })
             .collect();
-        let ir = impulse_response(&room, &early, 48_000, 1.5, 1);
+        let ir = impulse_response(&room, &early, &[], 48_000, 1.5, 1);
         let w: Vec<f32> = ir.iter().step_by(IR_CHANNELS).copied().collect();
         let energy: f32 = w.iter().map(|s| s * s).sum();
         // The response's gain at 0 Hz against its overall (energy) gain.
@@ -295,7 +328,7 @@ mod tests {
     #[test]
     fn the_tail_decays_at_the_rooms_rate() {
         let rate = 48_000;
-        let ir = impulse_response(&room([1.0, 1.0, 1.0], 8.0, 1.0), &[], rate, 2.0, 1);
+        let ir = impulse_response(&room([1.0, 1.0, 1.0], 8.0, 1.0), &[], &[], rate, 2.0, 1);
         assert_eq!(ir.len(), rate as usize * IR_CHANNELS);
         // 60 dB in a second: about 6 dB per 100 ms window.
         let windows = envelope(&ir, 4800);
@@ -306,7 +339,7 @@ mod tests {
     #[test]
     fn highs_die_first_when_the_room_absorbs_them() {
         let rate = 48_000;
-        let ir = impulse_response(&room([2.0, 1.0, 0.3], 8.0, 1.0), &[], rate, 1.0, 2);
+        let ir = impulse_response(&room([2.0, 1.0, 0.3], 8.0, 1.0), &[], &[], rate, 1.0, 2);
         // Low and high band energy of W early (50–250 ms) and late (500–900 ms).
         let mut bands = Bands3::new(rate as f32);
         let mut energy = [[0.0f32; 2]; 2];
@@ -339,7 +372,7 @@ mod tests {
             delay: 0.4,
             energy: 0.01,
         };
-        let ir = impulse_response(&room([0.1; 3], 4.0, 0.2), &[echo], 48_000, 1.5, 4);
+        let ir = impulse_response(&room([0.1; 3], 4.0, 0.2), &[echo], &[], 48_000, 1.5, 4);
         let at = (0.4 * 48_000.0) as usize * IR_CHANNELS;
         assert!(
             ir.len() > at + IR_CHANNELS,
@@ -383,7 +416,7 @@ mod tests {
         // Short enough to fit the response whole, so none is cut off.
         for (t60, mfp) in [(0.6, 3.0), (0.8, 8.0), (1.0, 20.0)] {
             let r = room([t60; 3], mfp, 1.0);
-            let ir = impulse_response(&r, &[], 48_000, 1.5, 1);
+            let ir = impulse_response(&r, &[], &[], 48_000, 1.5, 1);
             // Energy in W is half the field's (FuMa's 1/√2).
             let energy = 2.0 * ir.iter().step_by(IR_CHANNELS).map(|s| s * s).sum::<f32>();
             let wanted = late_energy(&r).min(MAX_ENERGY);
@@ -404,6 +437,7 @@ mod tests {
         let ir = impulse_response(
             &room([0.5, 0.5, 0.5], 4.0, 1.0),
             &[reflection],
+            &[],
             48_000,
             1.0,
             3,
@@ -431,10 +465,10 @@ mod tests {
     #[test]
     fn the_same_seed_makes_the_same_response_and_a_different_one_rebalances() {
         let r = room([1.5, 1.0, 0.6], 6.0, 1.0);
-        let a = impulse_response(&r, &[], 48_000, 1.5, 5);
-        let b = impulse_response(&r, &[], 48_000, 1.5, 5);
+        let a = impulse_response(&r, &[], &[], 48_000, 1.5, 5);
+        let b = impulse_response(&r, &[], &[], 48_000, 1.5, 5);
         assert_eq!(a, b);
-        let c = impulse_response(&r, &[], 48_000, 1.5, 6);
+        let c = impulse_response(&r, &[], &[], 48_000, 1.5, 6);
         assert_ne!(a, c);
         let energy = |ir: &[f32]| 2.0 * ir.iter().step_by(IR_CHANNELS).map(|s| s * s).sum::<f32>();
         assert!(
@@ -448,11 +482,11 @@ mod tests {
     #[test]
     fn every_sample_is_finite_the_length_bounded_and_the_end_faded() {
         let r = room([2.0, 1.0, 0.5], 8.0, 1.0);
-        let ir = impulse_response(&r, &[], 48_000, 1.5, 1);
+        let ir = impulse_response(&r, &[], &[], 48_000, 1.5, 1);
         assert!(ir.iter().all(|s| s.is_finite()));
         // The mid decay of a second sets the length.
         assert_eq!(ir.len(), 48_000 * IR_CHANNELS);
-        let short = impulse_response(&r, &[], 48_000, 0.25, 1);
+        let short = impulse_response(&r, &[], &[], 48_000, 0.25, 1);
         assert_eq!(short.len(), 12_000 * IR_CHANNELS);
         // The fade-out at the end lands near silence.
         let peak = ir.iter().fold(0.0f32, |peak, s| peak.max(s.abs()));
@@ -471,7 +505,7 @@ mod tests {
             volume: 1.0,
         };
         assert!(late_energy(&r) >= 4.0, "the formula caps at 4 itself");
-        let ir = impulse_response(&r, &[], 48_000, 1.5, 1);
+        let ir = impulse_response(&r, &[], &[], 48_000, 1.5, 1);
         let energy = 2.0 * ir.iter().step_by(IR_CHANNELS).map(|s| s * s).sum::<f32>();
         assert!(energy <= MAX_ENERGY * 1.000_1, "{energy}");
     }
@@ -480,7 +514,7 @@ mod tests {
     fn each_band_of_the_tail_decays_at_its_own_measured_rate() {
         let rate = 48_000.0;
         let r = room([3.0, 1.5, 0.75], 8.0, 1.0);
-        let ir = impulse_response(&r, &[], 48_000, 1.5, 8);
+        let ir = impulse_response(&r, &[], &[], 48_000, 1.5, 8);
         // Band energies of W early (100–200 ms) and late (600–700 ms); the
         // windows are half a second apart.
         let mut bands = Bands3::new(rate);
@@ -536,7 +570,14 @@ mod tests {
             delay: 0.03,
             energy: 0.25,
         };
-        let ir = impulse_response(&room([0.5; 3], 4.0, 1.0), &[ahead, above], 48_000, 1.0, 3);
+        let ir = impulse_response(
+            &room([0.5; 3], 4.0, 1.0),
+            &[ahead, above],
+            &[],
+            48_000,
+            1.0,
+            3,
+        );
         let tap = |delay: f32| {
             let at = (delay * 48_000.0) as usize * IR_CHANNELS;
             [ir[at], ir[at + 1], ir[at + 2], ir[at + 3]]
@@ -552,6 +593,66 @@ mod tests {
         assert!(
             above[3] > 4.0 * above[1].abs().max(above[2].abs()),
             "above is Z: {above:?}"
+        );
+    }
+
+    #[test]
+    fn impulse_response_with_edge_sources_adds_a_tap() {
+        // Doorway geometry: a 3x3 rock wall with a doorway at (4, 1, 0).
+        // The first reflection is the image source off x=4; the edge
+        // sources are the upper vertical edges of the wall block at
+        // (4, 0, 0), visible through the doorway. The same geometry the
+        // early.rs tests use, so the test setup is known to produce at
+        // least one edge.
+        use crate::early::{early_taps, edge_sources};
+        let mut world = earshot_world::World::new();
+        for y in 0..3 {
+            for z in 0..3 {
+                if y == 1 && z == 0 {
+                    continue;
+                }
+                world.set_block(4, y, z, earshot_world::Material::Rock);
+            }
+        }
+        let listener = Vec3::new(-2.0, 0.5, 0.5);
+        let source = Vec3::new(2.0, 0.5, 0.5);
+        let room = Room {
+            decay: [0.1; 3],
+            mean_free_path: 1.0,
+            enclosure: 1.0,
+            first_reflection: 1.0,
+            scattering: 0.3,
+            volume: 0.0,
+        };
+        let taps = early_taps(&world, listener, source);
+        let edges = edge_sources(&world, listener, source, &taps);
+        assert!(
+            !edges.is_empty(),
+            "test setup: doorway should have at least one edge source"
+        );
+        let with_edges = impulse_response(&room, &taps, &edges, 48_000, 0.05, 1);
+        let without_edges = impulse_response(&room, &taps, &[], 48_000, 0.05, 1);
+        // Sum W channel energy in a 1 ms window around the first edge's
+        // delay. With edges the window has the edge's tap; without, it
+        // has only the diffuse tail (which is small at 0.02 s with a
+        // 100 ms decay).
+        let edge_delay = edges[0].delay;
+        let window_start = ((edge_delay - 0.0005).max(0.0) * 48_000.0) as usize;
+        let window_end = ((edge_delay + 0.0005) * 48_000.0) as usize;
+        let energy = |ir: &[f32]| -> f32 {
+            let start = window_start * IR_CHANNELS;
+            let end = (window_end + 1) * IR_CHANNELS;
+            ir[start..end.min(ir.len())]
+                .iter()
+                .step_by(IR_CHANNELS)
+                .map(|x| x * x)
+                .sum()
+        };
+        let with = energy(&with_edges);
+        let without = energy(&without_edges);
+        assert!(
+            with > without,
+            "with edges should add energy at the edge delay: {with} vs {without}"
         );
     }
 }

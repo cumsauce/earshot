@@ -1,6 +1,6 @@
 use earshot_world::{Material, Vec3, World, transmission};
 
-use crate::{Reflection, SPEED_OF_SOUND};
+use crate::{EdgeSource, Reflection, SPEED_OF_SOUND};
 
 /// How far from the source a wall may be to give a first reflection, in
 /// blocks.
@@ -13,6 +13,19 @@ const CLEAR: f32 = 0.5;
 const FUSE: f32 = 0.005;
 /// Steps a point this far off a wall face, to test the block either side.
 const NUDGE: f64 = 0.01;
+/// The narrowest gap an edge source is heard in: past it the edges of a doorway
+/// fuse into a continuous leak.
+const EDGE_FUSE_SECONDS: f64 = 0.001;
+/// The most edge energy, summed across all edges of one parent reflection, per band:
+/// a doorway with two clear vertical edges caps at 50% of the parent image source's
+/// energy per band (Svensson's correction to the Svensson-edge sum).
+const EDGE_TOTAL_CAP: f32 = 0.5;
+/// The wavelengths used by the edge attenuation formula, in blocks (metres). About
+/// 250 Hz, 1 kHz, 4 kHz at 343 m/s — same as `hear::WAVELENGTH`, but inlined here so
+/// the formula doesn't depend on the hear module's privates.
+const WAVELENGTH: [f64; 3] = [343.0 / 250.0, 343.0 / 1000.0, 343.0 / 4000.0];
+/// The most edge attenuation, dB, applied per band (ISO 9613-2 cap).
+const MAX_DIFFRACTION_DB: f32 = 25.0;
 
 /// A sound's first reflections off the walls around it, as the listener
 /// hears them, summed: for an early-reflections effect per source.
@@ -113,6 +126,114 @@ pub fn early_taps(world: &World, listener: Vec3, source: Vec3) -> Vec<Reflection
         }
     }
     taps
+}
+
+/// For each first-order reflection in `taps`, gather up to 4 secondary sources at the
+/// wall block's vertical edges (the doorway's doorframe). Each edge source is per-band,
+/// with energy attenuated by the ISO 9613-2 excess-length formula (capped at 25 dB) and
+/// weighted by the projection of the incoming and outgoing rays onto the wall's face
+/// plane. The summed edge energy per band is capped at 50% of the parent image source's
+/// energy (Svensson's edge sum).
+pub fn edge_sources(
+    world: &World,
+    listener: Vec3,
+    source: Vec3,
+    taps: &[Reflection],
+) -> Vec<EdgeSource> {
+    let direct = (source - listener).length().max(0.5);
+    let mut edges = Vec::new();
+    for axis in 0..3 {
+        for sign in [-1i32, 1] {
+            let Some(plane) = wall_along(world, source, axis, sign) else {
+                continue;
+            };
+            let (s, l) = (get(source, axis), get(listener, axis));
+            if (l - plane) * (s - plane) <= 0.0 {
+                continue;
+            }
+            let image = with(source, axis, 2.0 * plane - s);
+            let t = (plane - l) / (get(image, axis) - l);
+            let point = listener + (image - listener) * t;
+            let behind = with(point, axis, plane + f64::from(sign) * NUDGE);
+            let cell = [behind.x, behind.y, behind.z].map(|v| v.floor() as i32);
+            let wall = world.block(cell[0], cell[1], cell[2]);
+            if !wall.is_solid() {
+                continue;
+            }
+            // The face normal points away from the wall (towards the listener).
+            let mut normal = [0.0f64; 3];
+            normal[axis] = -f64::from(sign);
+            let normal = Vec3::new(normal[0], normal[1], normal[2]);
+            let acoustics = wall.acoustics();
+            // The wall block's 4 vertical edges: the corners of the block at the face
+            // plane. For a face on the -x side (axis=0, sign=+1), the corners are at
+            // x = behind.x, y ∈ {cell[1], cell[1]+1}, z ∈ {cell[2], cell[2]+1}. The
+            // wall's x is `behind`; only the y and z corners vary.
+            let cy = cell[1] as f64;
+            let cz = cell[2] as f64;
+            let corners_y = [cy, cy + 1.0];
+            let corners_z = [cz, cz + 1.0];
+            for &ey in &corners_y {
+                for &ez in &corners_z {
+                    let edge = with(behind, 1, ey);
+                    let edge = with(edge, 2, ez);
+                    // The line from listener to edge, and edge to source, must be clear.
+                    if transmission(world, listener, edge)[1] < CLEAR {
+                        continue;
+                    }
+                    if transmission(world, edge, source)[1] < CLEAR {
+                        continue;
+                    }
+                    let two_way = (listener - edge).length() + (source - edge).length();
+                    let detour = (two_way - direct).max(0.0);
+                    // Per-band attenuation by the ISO 9613-2 excess-length formula.
+                    let mut energy = [0.0f32; 3];
+                    for b in 0..3 {
+                        let wavelength = WAVELENGTH[b];
+                        let db = (10.0 * (3.0 + 20.0 * detour / wavelength).log10()) as f32;
+                        let db = db.min(MAX_DIFFRACTION_DB);
+                        let factor = 10f32.powf(-db / 10.0);
+                        // Cosines from the wall face: the projection of the propagation
+                        // direction onto the face plane. For a listener directly in
+                        // front of the wall, both cosines are 1 and the edge contributes
+                        // maximally; at 90° (parallel to the wall), both are 0 and the
+                        // edge contributes nothing.
+                        let in_dir = (listener - edge).normalized();
+                        let out_dir = (source - edge).normalized();
+                        let cos_in = (in_dir.dot(normal)).abs() as f32;
+                        let cos_out = (out_dir.dot(normal)).abs() as f32;
+                        // 0.5 = half the energy goes around each side of the edge.
+                        energy[b] =
+                            0.5 * (1.0 - acoustics.absorption[1]) * cos_in * cos_out * factor;
+                    }
+                    edges.push(EdgeSource {
+                        direction: (edge - listener).normalized(),
+                        delay: (two_way / SPEED_OF_SOUND) as f32,
+                        energy,
+                    });
+                }
+            }
+            // Also include the parent reflection's image source as an upper bound on
+            // summed edge energy per band. Cap below.
+            let _ = (point, image, acoustics);
+        }
+    }
+    // Cap the total edge energy per band at EDGE_TOTAL_CAP of the parent's image-source
+    // energy. We use the parent's energy as a proxy: each parent reflection's mid-band
+    // energy is the wall's mirrored share; the edge sum is a fraction of that.
+    for b in 0..3 {
+        let total: f32 = edges.iter().map(|e| e.energy[b]).sum();
+        let parent: f32 = taps.iter().map(|t| t.energy).sum();
+        if total > parent * EDGE_TOTAL_CAP && total > 0.0 {
+            let scale = parent * EDGE_TOTAL_CAP / total;
+            for e in &mut edges {
+                e.energy[b] *= scale;
+            }
+        }
+    }
+    // Drop edge sources that fuse with the direct sound.
+    edges.retain(|e| e.delay >= EDGE_FUSE_SECONDS as f32);
+    edges
 }
 
 /// How far echoes are looked for, in blocks: as far as the world is copied.
@@ -509,5 +630,64 @@ mod tests {
         // ECHO_REACH is 128: a wall there answers, one farther doesn't.
         assert!(!echoes(&wall_at(128), Vec3::new(0.5, 0.5, 0.5), 0.0).is_empty());
         assert!(echoes(&wall_at(129), Vec3::new(0.5, 0.5, 0.5), 0.0).is_empty());
+    }
+
+    /// A 3×3 rock wall in the YZ plane at x=4, with a 1×1 doorway in the middle
+    /// (y=1, z=0). The source sits at (2, 0.5, 0.5), so the wall is behind it
+    /// (in the +x direction); the doorway's two upper vertical edges are visible
+    /// to a listener at (-2, 0.5, 0.5) and leak high-band energy.
+    fn doorway_world() -> World {
+        let mut world = World::new();
+        for y in 0..=2 {
+            for z in -1..=1 {
+                if y == 1 && z == 0 {
+                    continue;
+                } // doorway at y=1, z=0
+                world.set_block(4, y, z, Material::Rock);
+            }
+        }
+        world
+    }
+
+    #[test]
+    fn a_doorway_has_high_band_edge_diffraction() {
+        let world = doorway_world();
+        let listener = Vec3::new(-2.0, 0.5, 0.5);
+        let source = Vec3::new(2.0, 0.5, 0.5);
+        let taps = early_taps(&world, listener, source);
+        let edges = edge_sources(&world, listener, source, &taps);
+        let high: f32 = edges.iter().map(|e| e.energy[2]).sum();
+        assert!(
+            high > 0.0,
+            "the doorway's edges leak high-band energy: {edges:?}"
+        );
+    }
+
+    #[test]
+    fn edge_sources_are_capped_at_half_the_image_source() {
+        // A wider doorway: 5-tall wall at x=4, with a 3-block opening in the
+        // middle (y ∈ {0, 1, 2} at z=0). The 4 visible edges sum to at most
+        // 50% of the parent reflection's energy per band.
+        let mut world = World::new();
+        for y in 0..=4 {
+            for z in -1..=1 {
+                if (1..=3).contains(&y) {
+                    continue;
+                } // 3-block opening
+                world.set_block(4, y, z, Material::Rock);
+            }
+        }
+        let listener = Vec3::new(-2.0, 0.5, 0.5);
+        let source = Vec3::new(2.0, 0.5, 0.5);
+        let taps = early_taps(&world, listener, source);
+        let edges = edge_sources(&world, listener, source, &taps);
+        for b in 0..3 {
+            let total: f32 = edges.iter().map(|e| e.energy[b]).sum();
+            let parent: f32 = taps.iter().map(|t| t.energy).sum();
+            assert!(
+                total <= parent * EDGE_TOTAL_CAP + 1e-6,
+                "band {b}: edge sum {total} exceeds 50% of parent {parent}"
+            );
+        }
     }
 }

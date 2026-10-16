@@ -14,11 +14,11 @@ mod quality;
 mod reverb;
 mod rng;
 
-pub use crate::early::{ECHO_REACH, Early, early_reflections, early_taps, echoes};
+pub use crate::early::{ECHO_REACH, Early, early_reflections, early_taps, echoes, edge_sources};
 pub use crate::eax::{EaxReverb, eax_reverb};
 pub use crate::engine::Engine;
 pub use crate::hear::{Heard, hear, occlusion};
-pub use crate::ir::{IR_CHANNELS, Reflection, impulse_response, late_energy};
+pub use crate::ir::{EdgeSource, IR_CHANNELS, Reflection, impulse_response, late_energy};
 pub use crate::pathing::{Field, MAX_APERTURE, Route};
 pub use crate::paths::{Segment, TraceStats, sphere_directions, trace_directions, trace_paths};
 pub use crate::quality::{Quality, Stats};
