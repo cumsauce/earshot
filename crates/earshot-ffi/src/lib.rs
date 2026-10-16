@@ -22,7 +22,7 @@ use earshot_sim::{
 };
 use earshot_world::{BANDS, Material, SECTION_BLOCKS, SectionPos, Vec3, World};
 
-use crate::guard::{FfiError, array_arg, guard, out_arg, slice_arg, slice_mut_arg};
+use crate::guard::{FfiError, array_arg, guard, guard_value, out_arg, slice_arg, slice_mut_arg};
 
 /// Version of this C ABI. Java refuses to use a library whose version differs
 /// from the one it was built against. Bump on any incompatible change.
@@ -134,7 +134,9 @@ unsafe fn with_engine(
 /// Returns [`EARSHOT_ABI_VERSION`]. Safe to call before anything else.
 #[unsafe(no_mangle)]
 pub extern "C" fn earshot_abi_version() -> u32 {
-    EARSHOT_ABI_VERSION
+    // Infallible today, but held behind the barrier like every other export
+    // so a later edit cannot unwind through `extern "C"` into Java's FFM call.
+    guard_value(|| EARSHOT_ABI_VERSION, 0)
 }
 
 /// Starts an engine with an empty world, and its pathing thread.
@@ -167,16 +169,18 @@ pub unsafe extern "C" fn earshot_create(abi_version: u32, out: *mut *mut Earshot
 /// `engine` must come from `earshot_create` and not be used afterwards.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn earshot_destroy(engine: *mut EarshotEngine) {
-    if engine.is_null() {
-        return;
-    }
-    // SAFETY: `engine` came from `Box::into_raw` in `earshot_create`, and the
-    // caller never uses it again.
-    let engine = unsafe { Box::from_raw(engine) };
-    guard(|| {
-        drop(engine);
-        Ok(())
-    });
+    guard_value(
+        || {
+            if engine.is_null() {
+                return;
+            }
+            // SAFETY: `engine` came from `Box::into_raw` in `earshot_create`,
+            // and the caller never uses it again.
+            let engine = unsafe { Box::from_raw(engine) };
+            drop(engine);
+        },
+        (),
+    );
 }
 
 /// Writes the material names in id order as a JSON array of strings, for
@@ -758,11 +762,16 @@ pub unsafe extern "C" fn earshot_trace_paths(
 /// audio thread at any time.
 #[unsafe(no_mangle)]
 pub extern "C" fn earshot_voice_sink(version: u32) -> *const c_void {
-    match version {
-        1 => std::ptr::from_ref(&voice::SINK.0).cast(),
-        2 => std::ptr::from_ref(&voice::SINK_WITH_OWN_VOICE.0).cast(),
-        _ => std::ptr::null(),
-    }
+    // Static addresses only, but held behind the barrier like every export:
+    // unwinding through `extern "C"` aborts the process.
+    guard_value(
+        || match version {
+            1 => std::ptr::from_ref(&voice::SINK.0).cast(),
+            2 => std::ptr::from_ref(&voice::SINK_WITH_OWN_VOICE.0).cast(),
+            _ => std::ptr::null(),
+        },
+        std::ptr::null(),
+    )
 }
 
 /// How often Yak VC has asked a sink for a frame. It asks every few
@@ -770,14 +779,14 @@ pub extern "C" fn earshot_voice_sink(version: u32) -> *const c_void {
 /// offering a sink means Yak VC refused it.
 #[unsafe(no_mangle)]
 pub extern "C" fn earshot_voice_polls() -> u64 {
-    voice::polls()
+    guard_value(voice::polls, 0)
 }
 
 /// Keeps the player's own voice (`YAKVC_VOICE_SELF` frames) as a stream
 /// from now on, or drops it as it comes.
 #[unsafe(no_mangle)]
 pub extern "C" fn earshot_voice_own(keep: bool) {
-    voice::set_own_voice(keep);
+    guard_value(|| voice::set_own_voice(keep), ());
 }
 
 /// The address of the OpenAL buffer callback (`ALBUFFERCALLBACKTYPESOFT`)
@@ -785,8 +794,14 @@ pub extern "C" fn earshot_voice_own(keep: bool) {
 /// at 48 kHz and the stream's pointer from `earshot_voice_stream`.
 #[unsafe(no_mangle)]
 pub extern "C" fn earshot_voice_callback() -> *const c_void {
-    let callback: unsafe extern "C" fn(*mut c_void, *mut c_void, i32) -> i32 = voice::callback;
-    callback as *const c_void
+    guard_value(
+        || {
+            let callback: unsafe extern "C" fn(*mut c_void, *mut c_void, i32) -> i32 =
+                voice::callback;
+            callback as *const c_void
+        },
+        std::ptr::null(),
+    )
 }
 
 /// Writes to `*out` the pointer that `earshot_voice_callback` plays the
@@ -964,13 +979,21 @@ pub unsafe extern "C" fn earshot_stats(engine: *mut EarshotEngine, out: *mut f64
 /// `buf` must be writable for `cap` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn earshot_last_error(buf: *mut u8, cap: usize) -> usize {
-    let message = guard::last_error();
-    // SAFETY: the caller guarantees `buf` is writable for `cap` bytes.
-    if let Ok(buf) = unsafe { slice_mut_arg(buf, cap, "buf") } {
-        let n = message.floor_char_boundary(buf.len());
-        buf[..n].copy_from_slice(&message.as_bytes()[..n]);
-    }
-    message.len()
+    // The one export that reads rather than reports a code: its length
+    // return cannot be an error code, so a panic falls back to 0 ("no
+    // message") instead of unwinding into the FFM call.
+    guard_value(
+        || {
+            let message = guard::last_error();
+            // SAFETY: the caller guarantees `buf` is writable for `cap` bytes.
+            if let Ok(buf) = unsafe { slice_mut_arg(buf, cap, "buf") } {
+                let n = message.floor_char_boundary(buf.len());
+                buf[..n].copy_from_slice(&message.as_bytes()[..n]);
+            }
+            message.len()
+        },
+        0,
+    )
 }
 
 /// A finite point from 3 doubles, within the range the sim's block
@@ -1312,6 +1335,35 @@ mod tests {
         unsafe {
             assert_eq!(
                 earshot_set_listener(engine, huge.as_ptr()),
+                EARSHOT_ERR_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                earshot_hear(
+                    engine,
+                    listener.as_ptr(),
+                    sources.as_ptr(),
+                    2,
+                    out.as_mut_ptr()
+                ),
+                EARSHOT_ERR_INVALID_ARGUMENT
+            );
+            // The engine still takes work afterwards.
+            assert_eq!(earshot_set_listener(engine, listener.as_ptr()), EARSHOT_OK);
+            earshot_destroy(engine);
+        }
+    }
+
+    #[test]
+    fn nan_coordinates_are_refused_and_nothing_breaks() {
+        let engine = engine();
+        let nan = [f64::NAN, 0.0, 0.0];
+        let listener = [0.5, 0.5, 0.5];
+        let sources = [0.5, 0.5, 0.5, f64::NAN, 0.0, 0.0];
+        let mut out = [0.0; 2 * EARSHOT_HEARD_DOUBLES];
+        // SAFETY: `engine` is live and every buffer is valid for its length.
+        unsafe {
+            assert_eq!(
+                earshot_set_listener(engine, nan.as_ptr()),
                 EARSHOT_ERR_INVALID_ARGUMENT
             );
             assert_eq!(

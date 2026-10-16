@@ -15,6 +15,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering}
 use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use crate::guard::guard_value;
+
 /// yakvc's `YAKVC_VOICE_SELF`: a frame of the player's own voice, which
 /// only a version 2 sink gets.
 pub(crate) const VOICE_SELF: u32 = 1 << 2;
@@ -297,8 +299,16 @@ pub fn pull(stream: &Stream, out: &mut [f32]) {
 
 /// Whether yakvc should play the next 20 ms now.
 unsafe extern "C" fn wants_frame(_user: *mut c_void) -> bool {
-    POLLS.fetch_add(1, Ordering::Relaxed);
-    lock(&VOICE.clock).due(Instant::now())
+    // Behind the same barrier as every export: a panic must not unwind
+    // through `extern "C"` into yakvc (it would abort the process). Not due
+    // is the safe answer.
+    guard_value(
+        || {
+            POLLS.fetch_add(1, Ordering::Relaxed);
+            lock(&VOICE.clock).due(Instant::now())
+        },
+        false,
+    )
 }
 
 /// Queues one speaker's frame, at the volume yakvc gives it.
@@ -307,31 +317,38 @@ unsafe extern "C" fn wants_frame(_user: *mut c_void) -> bool {
 /// `frame` must point to a valid frame whose `pcm` holds `samples` floats
 /// (yakvc's contract).
 unsafe extern "C" fn frame(_user: *mut c_void, frame: *const YakVcVoiceFrame) {
-    // SAFETY: yakvc passes a valid frame for the length of the call.
-    let Some(frame) = (unsafe { frame.as_ref() }) else {
-        return;
-    };
-    if frame.flags & VOICE_SELF != 0 && !OWN_VOICE.load(Ordering::Relaxed) {
-        return;
-    }
-    let pcm = if frame.pcm.is_null() || frame.samples > FRAME * 4 {
-        &[][..]
-    } else {
-        // SAFETY: yakvc's contract: `pcm` holds `samples` floats during the
-        // call.
-        unsafe { std::slice::from_raw_parts(frame.pcm, frame.samples) }
-    };
-    let stream = stream(frame.uuid);
-    stream.queue.push(pcm, frame.volume);
-    *lock(&stream.info) = Info {
-        flags: frame.flags,
-        range: frame.range,
-        volume: frame.volume,
-        occlusion: frame.occlusion,
-        heard_from: frame.heard_from,
-        last_frame: Some(Instant::now()),
-        ended: false,
-    };
+    // Behind the same barrier as every export: a panic must not unwind
+    // through `extern "C"` into yakvc (it would abort the process).
+    guard_value(
+        || {
+            // SAFETY: yakvc passes a valid frame for the length of the call.
+            let Some(frame) = (unsafe { frame.as_ref() }) else {
+                return;
+            };
+            if frame.flags & VOICE_SELF != 0 && !OWN_VOICE.load(Ordering::Relaxed) {
+                return;
+            }
+            let pcm = if frame.pcm.is_null() || frame.samples > FRAME * 4 {
+                &[][..]
+            } else {
+                // SAFETY: yakvc's contract: `pcm` holds `samples` floats
+                // during the call.
+                unsafe { std::slice::from_raw_parts(frame.pcm, frame.samples) }
+            };
+            let stream = stream(frame.uuid);
+            stream.queue.push(pcm, frame.volume);
+            *lock(&stream.info) = Info {
+                flags: frame.flags,
+                range: frame.range,
+                volume: frame.volume,
+                occlusion: frame.occlusion,
+                heard_from: frame.heard_from,
+                last_frame: Some(Instant::now()),
+                ended: false,
+            };
+        },
+        (),
+    )
 }
 
 /// A speaker's link is gone: Java lets its source go.
@@ -339,15 +356,23 @@ unsafe extern "C" fn frame(_user: *mut c_void, frame: *const YakVcVoiceFrame) {
 /// # Safety
 /// `uuid` must point to 16 bytes (yakvc's contract).
 unsafe extern "C" fn stream_end(_user: *mut c_void, uuid: *const u8) {
-    if uuid.is_null() {
-        return;
-    }
-    // SAFETY: yakvc passes 16 readable bytes for the length of the call.
-    let uuid: [u8; 16] = unsafe { std::ptr::read_unaligned(uuid.cast()) };
-    if let Some(stream) = lock(&VOICE.streams).get(&uuid) {
-        lock(&stream.info).ended = true;
-        stream.queue.clear.store(true, Ordering::Release);
-    }
+    // Behind the same barrier as every export: a panic must not unwind
+    // through `extern "C"` into yakvc (it would abort the process).
+    guard_value(
+        || {
+            if uuid.is_null() {
+                return;
+            }
+            // SAFETY: yakvc passes 16 readable bytes for the length of the
+            // call.
+            let uuid: [u8; 16] = unsafe { std::ptr::read_unaligned(uuid.cast()) };
+            if let Some(stream) = lock(&VOICE.streams).get(&uuid) {
+                lock(&stream.info).ended = true;
+                stream.queue.clear.store(true, Ordering::Release);
+            }
+        },
+        (),
+    )
 }
 
 /// OpenAL's callback-buffer callback (`ALBUFFERCALLBACKTYPESOFT`): fills
@@ -358,21 +383,30 @@ unsafe extern "C" fn stream_end(_user: *mut c_void, uuid: *const u8) {
 /// `user` must be a pointer from [`stream_pointer`], and `data` writable for
 /// `bytes` bytes, as OpenAL guarantees.
 pub unsafe extern "C" fn callback(user: *mut c_void, data: *mut c_void, bytes: i32) -> i32 {
-    let samples = usize::try_from(bytes).unwrap_or(0) / size_of::<f32>();
-    if user.is_null() || data.is_null() || samples == 0 {
-        return bytes.max(0);
-    }
-    // SAFETY: `user` came from `stream_pointer`, whose stream lives for the
-    // process; OpenAL hands `data` writable for `bytes` bytes, float-aligned
-    // for a float format.
-    let (stream, out) = unsafe {
-        (
-            &*user.cast::<Stream>(),
-            std::slice::from_raw_parts_mut(data.cast::<f32>(), samples),
-        )
-    };
-    pull(stream, out);
-    bytes
+    // Behind the same barrier as every export: a panic must not unwind
+    // through `extern "C"` into OpenAL's mixer thread (it would abort the
+    // process). As on the null-argument path, the buffer counts as filled:
+    // fewer bytes would end the source.
+    guard_value(
+        || {
+            let samples = usize::try_from(bytes).unwrap_or(0) / size_of::<f32>();
+            if user.is_null() || data.is_null() || samples == 0 {
+                return bytes.max(0);
+            }
+            // SAFETY: `user` came from `stream_pointer`, whose stream lives
+            // for the process; OpenAL hands `data` writable for `bytes`
+            // bytes, float-aligned for a float format.
+            let (stream, out) = unsafe {
+                (
+                    &*user.cast::<Stream>(),
+                    std::slice::from_raw_parts_mut(data.cast::<f32>(), samples),
+                )
+            };
+            pull(stream, out);
+            bytes
+        },
+        bytes.max(0),
+    )
 }
 
 /// A pointer to `uuid`'s stream for OpenAL's callback; valid for the rest of

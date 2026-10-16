@@ -41,27 +41,46 @@ fn fail(error: FfiError) -> i32 {
     error.code
 }
 
-/// Runs `f` and returns its result as a code. A panic must never unwind into
-/// Java (it would abort the game), so it is caught and reported as
-/// [`EARSHOT_ERR_PANIC`].
+/// Runs `f` and returns its result as a code. A panic must never unwind
+/// through `extern "C"` into Java's FFM call — the JVM aborts, taking the
+/// game with it — so it is caught and reported as [`EARSHOT_ERR_PANIC`].
 pub(crate) fn guard(f: impl FnOnce() -> Result<(), FfiError>) -> i32 {
     // Unwind safety: the world is only ever replaced section by section, so
     // a panic leaves it whole.
     match panic::catch_unwind(AssertUnwindSafe(f)) {
         Ok(Ok(())) => EARSHOT_OK,
         Ok(Err(error)) => fail(error),
+        Err(payload) => fail(panicked(payload)),
+    }
+}
+
+/// Like [`guard`], for an export that returns `fallback` rather than an
+/// error code. The panic must not unwind through `extern "C"` into Java's
+/// FFM call (the JVM would abort), so it is caught and `fallback` returned;
+/// the message is kept for `earshot_last_error` all the same.
+pub(crate) fn guard_value<T>(f: impl FnOnce() -> T, fallback: T) -> T {
+    match panic::catch_unwind(AssertUnwindSafe(f)) {
+        Ok(value) => value,
         Err(payload) => {
-            let message = payload
-                .downcast_ref::<&str>()
-                .copied()
-                .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-                .unwrap_or("unknown panic");
-            fail(FfiError::new(
-                EARSHOT_ERR_PANIC,
-                format!("engine panicked: {message}"),
-            ))
+            fail(panicked(payload));
+            fallback
         }
     }
+}
+
+/// What a panicking `payload` becomes: [`EARSHOT_ERR_PANIC`] with its
+/// message, kept for `earshot_last_error`.
+///
+/// Takes the box by value: `&Box<dyn Any + Send>` coerced to `&dyn Any` loses
+/// the payload's concrete `TypeId`, so `downcast_ref` would always come back
+/// empty and every panic would report "unknown panic".
+fn panicked(payload: Box<dyn std::any::Any + Send>) -> FfiError {
+    let message = payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("unknown panic");
+    FfiError::new(EARSHOT_ERR_PANIC, format!("engine panicked: {message}"))
 }
 
 /// `len` elements at `ptr`.
@@ -82,9 +101,21 @@ pub(crate) unsafe fn slice_arg<'a, T>(
     if !ptr.is_aligned() {
         return Err(FfiError::invalid(format!("{what} is misaligned")));
     }
+    check_len::<T>(len, what)?;
     // SAFETY: non-null and aligned (checked above), readable for `len`
     // elements (caller's contract).
     Ok(unsafe { std::slice::from_raw_parts(ptr, len) })
+}
+
+/// Refuses a `len` whose elements would not fit in one slice: a slice may
+/// not exceed `isize::MAX` bytes, and a length Java could hand over that
+/// breaks this would otherwise be undefined behaviour, or a panic inside
+/// `guard` (reported as [`EARSHOT_ERR_PANIC`]) in debug builds.
+fn check_len<T>(len: usize, what: &str) -> Result<(), FfiError> {
+    match len.checked_mul(std::mem::size_of::<T>()) {
+        Some(bytes) if bytes <= isize::MAX as usize => Ok(()),
+        _ => Err(FfiError::invalid(format!("{what} is too large"))),
+    }
 }
 
 /// `N` elements at `ptr`, as an array.
@@ -97,6 +128,10 @@ pub(crate) unsafe fn array_arg<T: Copy, const N: usize>(
 ) -> Result<[T; N], FfiError> {
     // SAFETY: forwarded from the caller.
     let slice = unsafe { slice_arg(ptr, N, what) }?;
+    // Cannot fire: `slice_arg` returns exactly the `N` elements it was asked
+    // for (a compile-time constant Java cannot alter), or an error. And every
+    // caller sits inside `guard`/`with_engine`, so even here a panic would be
+    // caught as [`EARSHOT_ERR_PANIC`] rather than unwinding into Java.
     Ok(slice.try_into().expect("slice_arg returns N elements"))
 }
 
@@ -118,6 +153,7 @@ pub(crate) unsafe fn slice_mut_arg<'a, T>(
     if !ptr.is_aligned() {
         return Err(FfiError::invalid(format!("{what} is misaligned")));
     }
+    check_len::<T>(len, what)?;
     // SAFETY: non-null and aligned (checked above), writable for `len`
     // elements (caller's contract).
     Ok(unsafe { std::slice::from_raw_parts_mut(ptr, len) })
@@ -144,6 +180,29 @@ mod tests {
     fn panics_become_codes_with_a_message() {
         assert_eq!(guard(|| panic!("boom")), EARSHOT_ERR_PANIC);
         assert_eq!(last_error(), "engine panicked: boom");
+    }
+
+    #[test]
+    fn absurd_lengths_are_refused() {
+        let words = [0u64; 4];
+        // SAFETY: refused before anything is read: a byte length past
+        // isize::MAX is one no slice can describe.
+        let err = unsafe {
+            slice_arg(
+                words.as_ptr().cast::<u8>(),
+                (isize::MAX as usize) + 1,
+                "xyz",
+            )
+        }
+        .unwrap_err();
+        assert_eq!(err.message, "xyz is too large");
+        // SAFETY: as above; the byte size overflows usize entirely.
+        let err = unsafe { slice_arg(words.as_ptr(), usize::MAX, "xyz") }.unwrap_err();
+        assert_eq!(err.message, "xyz is too large");
+        let mut words = words;
+        // SAFETY: as above, for a writable slice; nothing is written.
+        let err = unsafe { slice_mut_arg(words.as_mut_ptr(), usize::MAX, "xyz") }.unwrap_err();
+        assert_eq!(err.message, "xyz is too large");
     }
 
     #[test]
