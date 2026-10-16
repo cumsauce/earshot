@@ -261,17 +261,101 @@ Five gaps between the voxel sim and the situations players actually build and ex
 
 - **The room trace fit on a Java thread's stack (done):** client gametests had died intermittently inside `earshot_room_at`, sigsegv with frames smeared past the guard page and none in Java above. The cause was the trace's tally: its two energy-decay histograms were inline (3 bands × 4096 one-millisecond bins each, 192 KB a tally), and `measure_with_early` moved them *by value* through `Tally::merge` in a fold, so a Java thread measuring a space with the JVM's default stack (a fraction of a megabyte) ran off the end. They are boxed now, `merge` takes `&Tally`, and two tests hold the line: one pins `size_of::<Tally>()` under 4 KB so the histograms can never creep back onto the stack, and one measures a room on a deliberately 256 KB stack, which overflows the old code and fits the new. The room traces themselves are unchanged: the golden scenes and the BRAS seminar room reproduce exactly.
 
-## Research agenda (2026-10-15)
+## Remaining work (2026-10-16)
 
-After alpha.43, what is left of the acoustic model that a listener could name, in the order it is likely to be heard.
+Milestones R0-R6, in the order they should land. R0 settles a known suspected defect; R1-R4 are the
+acoustic model's remaining audible gaps, most-audible first; R5-R6 are polish and cleanup.
 
-- **Outdoor ground reflection.** Open ground is dry today: the reverb's gain is enclosure², so outside it almost vanishes, and the direct path takes the ground as one more occluder. Real ground over grass, soil or water reflects coherently, and the interference between that reflection and the direct wave puts a deep null in the low band, moving with the source's and the listener's heights (Attenborough's ground-effect model, with a Delany–Bazley / Miki impedance curve for the porous surface). A shout across a flat field comes back hollower and boomier than the same shout indoors, and it is much of the cue that you are out in the open with nothing around. The sim is energy-based per band, so the interference itself cannot be traced; the practical route is a per-band ground-loss curve from the ground's impedance, the reflected path's excess length and the two heights, folded into the direct path wherever source and listener stand over one absorbing surface. The most audible gap left for outdoor play.
+### R0. Settle the convolution comb (a suspected defect, not a feature)
 
-- **Temperature-dependent speed of sound.** The plan fixes c at 343 m/s, while alpha.13 already reads a temperature from the biome for air absorption. c ≈ 331.3 + 0.606 · T °C, so a desert's warm air carries echoes a couple of per cent faster than a snowy biome's, and the Nether's heat again. Echo and early-reflection delays, the mean free path behind the decay, and Doppler's base frequency all shift with it: one parameter threaded from the biome sample into the timing. Audibly a slight change of pitch and echo timing between climates, so it belongs in an A/B listening pass rather than a test.
+The steady metallic/high-frequency tint in convolution reverb, always present (user, 2026-10-16),
+narrowed by `docs/convolution-comb-investigation.md` to two candidates that both live behind
+`ReverbMode.CONVOLUTION`:
 
-- **SOFA personalization.** Alpha.42 downloads named SOFA files and converts them with makemhr; what it cannot yet do is take a player's own measured file. OpenAL Soft lists SOFA datasets from its hrtf directory by itself, so the work is to let a player drop a `.sofa` into `config/earshot/hrtf`, show it beside the bundled and downloaded sets in the HRTF picker and the listening test, and keep Earshot's own folder first in the search order so a personal file overrides a same-named download. Mostly Java IO and screen work; the sim is untouched.
+- **A — per-band knee in the synthesized IR** (`ir.rs:86-108`). The two-slope tail applies three
+  independently-fitted slope changes (one per band) at three different times to one broadband signal,
+  each a small gain step in a different frequency slice.
+- **B — early reflections arriving twice.** `ir.rs` bakes the first reflections into the IR, and
+  `SoundShaper` also sends the same source to a separate EAX early-reflections slot
+  (`EarlyReflections.SEND = 3`), so the same echoes arrive twice at different delays.
 
-Per-frequency transmission was left alone after #5, since the material table already carries coincidence's flattening; what is still missing there is flanking leakage, sound that leaves one room through a shared structure and reaches another without crossing either room's air. Voxel rays partly follow it already through wall transmission.
+The A/B the user was offered ("convolution off, settling on") cannot separate them, because both sit
+behind the convolution mode: turning it off removes the IR *and* stops the overlap. The clean
+separator is a code one. Plan:
+
+1. Add a temporary `EarshotConfig` debug flag that forces `early_decay = decay` when off, collapsing
+   A to the plain single exponential while leaving B untouched. Build a dev jar, never released.
+2. User runs it. Tint gone → **A**; tint stays → **B**.
+3. Fix per the result:
+   - **A**: move the two-slope envelope to one shared broadband slope change (single knee, fixed band
+     weights) so no band's derivative steps; or, failing that, cross-fade the two exponentials over a
+     few milliseconds around the knee. Prove it with an `ir.rs` test that takes the magnitude spectrum
+     of the band-summed W channel and asserts no notch deeper than a set bound in the high band away
+     from the room's resonances (the current tests assert only monotone windowed energy, which a comb
+     satisfies).
+   - **B**: gate `sendEarly` so a source served a convolution whose IR already carries the reflections
+     is not also sent to the EAX early slot. `SoundShaper.java:542-572` / `:608-616`, Java only, no ABI
+     change.
+4. Remove the debug flag, release.
+
+Also worth a glance while in there: the intended 5-tick crossfade during a room change
+(`ConvolutionReverb.java:258`) genuinely feeds one source two convolvers for ~250 ms; the user reports
+the tint steady, so this is not it, but it may still be audible on room changes.
+
+### R1. Outdoor ground reflection
+
+Open ground is dry today: reverb gain is enclosure², so outside it almost vanishes, and the direct
+path takes the ground as one more occluder. Real ground over grass, soil or water reflects coherently,
+and the interference between that reflection and the direct wave puts a deep null in the low band,
+moving with the source's and the listener's heights. This is the most audible gap left for outdoor
+play. The sim is energy-based per band, so the interference cannot be traced; the route is a per-band
+ground-loss curve folded into the direct path wherever source and listener stand over one absorbing
+surface.
+
+**Design first (the user asked for a full design doc):** read Attenborough's ground-effect model and a
+Delany-Bazley / Miki impedance curve for the porous surface; write the formulas, where each input comes
+from (the ground's material, the two heights, the excess length, the band), the fold into the direct
+path, and the test plan (an `earshot-sim` test pinning the null's depth and frequency against the
+model at known heights). Then implement. No FFI/Java change expected — it is one more per-band direct
+path factor.
+
+### R2. SOFA personalization
+
+Alpha.42 downloads named SOFA files and converts them with makemhr; it cannot yet take a player's own
+measured file. OpenAL Soft lists SOFA datasets from its hrtf directory by itself, so the work is to let
+a player drop a `.sofa` into `config/earshot/hrtf`, show it beside the bundled and downloaded sets in
+the HRTF picker and the listening test, and keep Earshot's own folder first in the search order so a
+personal file overrides a same-named download. Mostly Java IO and screen work; the sim is untouched.
+
+### R3. Temperature-dependent speed of sound
+
+The plan fixes c at 343 m/s, while alpha.13 already reads a temperature from the biome for air
+absorption. `c ≈ 331.3 + 0.606 · T °C`, so a desert's warm air carries echoes a couple of per cent
+faster than a snowy biome's, and the Nether's heat again. Echo and early-reflection delays, the mean
+free path behind the decay, and Doppler's base frequency all shift with it: one parameter threaded from
+the biome sample into the timing. Audibly a slight change of pitch and echo timing between climates, so
+it belongs in an A/B listening pass rather than a test.
+
+### R4. Flanking leakage
+
+Per-frequency transmission was left alone after #5, since the material table already carries
+coincidence's flattening; what is still missing there is flanking leakage, sound that leaves one room
+through a shared structure and reaches another without crossing either room's air. Voxel rays partly
+follow it already through wall transmission. Needs a concrete design: where a shared structure is
+detected, and how its transmission adds a path the room trace cannot see.
+
+### R5. Modrinth publishing
+
+The release workflow already POSTs to Modrinth (`project_id: GnuooDgr`) gated on a `MODRINTH_TOKEN`
+secret that is not set, so only the GitHub release happens. Add the token and the next tag publishes
+there too. Ops, not code.
+
+### R6. Tidy-up
+
+- `v0.1.0-alpha.42` is a dangling tag: it points at a commit whose subject says alpha.42 but which is
+  one commit before that version's bump. Delete it, or leave it.
+- The `docs/convolution-comb-investigation.md` retained while R0 is open; fold its conclusion into this
+  list and delete it once the comb is settled.
 
 ## Approaches considered
 
