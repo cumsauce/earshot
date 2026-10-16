@@ -1,5 +1,6 @@
 package io.github.cumsauce.earshot.audio;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -37,5 +38,21 @@ class SoundShaperTest {
 				() -> SoundShaper.requireRoom(new double[NativeBridge.ROOM_DOUBLES + 1]));
 		assertTrue(longRoom.getMessage().contains(Integer.toString(NativeBridge.ROOM_DOUBLES + 1)),
 				longRoom.getMessage());
+	}
+
+	/** A context's close frees its slots, so the source ids recorded on them must not survive into the next. */
+	@Test
+	void theContextCloseForgetsTheSourceOwners() {
+		int[] ownOwners = {11, 0};
+		int[] earlyOwners = new int[EarlyReflections.SOURCES];
+		earlyOwners[0] = 7;
+		earlyOwners[1] = 3;
+		boolean[] unusedOwn = {true, false};
+
+		SoundShaper.forgetOwners(ownOwners, earlyOwners, unusedOwn);
+
+		assertArrayEquals(new int[2], ownOwners);
+		assertArrayEquals(new int[EarlyReflections.SOURCES], earlyOwners);
+		assertArrayEquals(new boolean[2], unusedOwn);
 	}
 }

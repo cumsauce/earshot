@@ -247,6 +247,7 @@ public final class SoundShaper {
 		spaces.contextClosing();
 		early.contextClosing();
 		for (ConvolutionReverb own : ownReverbs) own.contextClosing();
+		forgetOwners(ownOwners, earlyOwners, unusedOwn);
 		voice.contextClosing();
 	}
 
@@ -475,6 +476,17 @@ public final class SoundShaper {
 		spaces.end(now, true, ear, axes.right(), axes.up(), axes.forward());
 		early.free();
 		for (ConvolutionReverb own : ownReverbs) own.release();
+	}
+
+	/**
+	 * Forgets which sources held the own-reverb and early-reflections slots (and which own reverbs went unused),
+	 * as {@link #contextClosing} does: the close frees every slot, and the source ids a fresh context hands out
+	 * start over, so an id that comes again would otherwise be given the old owner's slot by id alone.
+	 */
+	static void forgetOwners(int[] ownOwners, int[] earlyOwners, boolean[] unusedOwn) {
+		java.util.Arrays.fill(ownOwners, 0);
+		java.util.Arrays.fill(earlyOwners, 0);
+		java.util.Arrays.fill(unusedOwn, false);
 	}
 
 	/** Whether {@code source} is among {@code targets}, still being shaped. */
