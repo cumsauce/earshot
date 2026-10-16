@@ -48,15 +48,47 @@ pub struct TraceStats {
 }
 
 /// `count` unit directions spread evenly over the sphere (a Fibonacci
-/// lattice).
-pub fn sphere_directions(count: u32) -> Vec<Vec3> {
+/// lattice), turned by a rotation derived from `seed`: a fixed lattice
+/// would line up with the same world axes every trace, so the same wall
+/// would always get the same ray pattern. Turning it with the seed
+/// decorrelates the pattern from the room, which cuts the variance of an
+/// average over traces.
+pub fn sphere_directions(count: u32, seed: u64) -> Vec<Vec3> {
     let golden = std::f64::consts::PI * (3.0 - 5f64.sqrt());
+    // Splitmix64: three uniforms from the seed, no dependency on the sim's
+    // integer RNG (which seeds itself differently).
+    let mut h = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut next = move || {
+        h = h.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = h;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        (z >> 11) as f64 / (1u64 << 53) as f64
+    };
+    // A random axis (by the uniform-in-square sphere map) and angle turn
+    // the lattice as one rigid pattern — the balance survives.
+    let (u, v) = (next(), next());
+    let axis_z = 1.0 - 2.0 * u;
+    let radius = (1.0 - axis_z * axis_z).max(0.0).sqrt();
+    let angle = 2.0 * std::f64::consts::PI * v;
+    let axis = Vec3::new(radius * angle.cos(), radius * angle.sin(), axis_z);
+    let turn = 2.0 * std::f64::consts::PI * next();
+    let (c, s) = (turn.cos(), turn.sin());
     (0..count)
         .map(|i| {
             let y = 1.0 - 2.0 * (f64::from(i) + 0.5) / f64::from(count);
             let radius = (1.0 - y * y).sqrt();
             let angle = golden * f64::from(i);
-            Vec3::new(angle.cos() * radius, y, angle.sin() * radius)
+            let d = Vec3::new(angle.cos() * radius, y, angle.sin() * radius);
+            // Rodrigues' rotation of `d` about `axis` by `turn`.
+            let cross = Vec3::new(
+                axis.y * d.z - axis.z * d.y,
+                axis.z * d.x - axis.x * d.z,
+                axis.x * d.y - axis.y * d.x,
+            );
+            let dot = axis.dot(d);
+            axis * (dot * (1.0 - c)) + d * c + cross * s
         })
         .collect()
 }
@@ -79,7 +111,7 @@ pub fn trace_paths(
     trace_directions(
         world,
         origin,
-        &sphere_directions(rays),
+        &sphere_directions(rays, seed),
         bounces,
         reach,
         seed,
@@ -268,13 +300,30 @@ mod tests {
 
     #[test]
     fn directions_are_unit_and_balanced() {
-        let directions = sphere_directions(1000);
+        let directions = sphere_directions(1000, 1);
         let mut sum = Vec3::ZERO;
         for d in &directions {
             assert!((d.length() - 1.0).abs() < 1e-9);
             sum = sum + *d;
         }
         assert!(sum.length() < 1.0, "{sum:?}");
+    }
+
+    /// The lattice turns with the seed, so two traces with different seeds
+    /// sample different parts of the room: the same wall doesn't get the
+    /// same ray pattern every measurement.
+    #[test]
+    fn a_seed_turns_the_lattice_and_stays_balanced() {
+        let (a, b) = (sphere_directions(256, 1), sphere_directions(256, 2));
+        assert!(
+            a.iter().zip(&b).any(|(p, q)| (*p - *q).length() > 0.1),
+            "different seeds gave the same lattice"
+        );
+        // And each is still balanced: the rotation can't have skewed it.
+        for lattice in [&a, &b] {
+            let sum: Vec3 = lattice.iter().copied().fold(Vec3::ZERO, |s, d| s + d);
+            assert!(sum.length() < 1.0, "unbalanced lattice: {sum:?}");
+        }
     }
 
     #[test]

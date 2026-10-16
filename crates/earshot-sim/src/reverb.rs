@@ -85,7 +85,7 @@ pub fn measure_with_early(
     reach: f64,
     seed: u64,
 ) -> (Room, Vec<Reflection>) {
-    let directions = sphere_directions(rays);
+    let directions = sphere_directions(rays, seed);
     let threads = measure_threads(rays);
     let chunk = directions.len().div_ceil(threads).max(1);
     let tally = std::thread::scope(|scope| {
