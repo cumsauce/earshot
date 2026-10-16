@@ -118,15 +118,24 @@ jobs:
       # card, so OpenAL Soft's null backend stands in for one. libSegFault makes
       # a SIGSEGV print the dying thread's stack: the client has been known to
       # die with the shell's bare "Segmentation fault" and no HotSpot report,
-      # which names no frame at all.
+      # which names no frame at all. The .so is not at a fixed path on this
+      # image, so it is hunted down first.
       - name: Client gametest
         working-directory: mod
         env:
           ALSOFT_DRIVERS: "null"
-          LD_PRELOAD: /lib/x86_64-linux-gnu/libSegFault.so
-          SEGFAULT_SIGNALS: all
-          SEGFAULT_USE_ALTSTACK: "1"
         run: |
+          libseg=$(find /lib /usr/lib -name libSegFault.so 2>/dev/null | head -n1)
+          if [ -z "$libseg" ]; then
+            sudo apt-get install -y libc6-dev > /dev/null 2>&1 || true
+            libseg=$(find /lib /usr/lib -name libSegFault.so 2>/dev/null | head -n1)
+          fi
+          if [ -n "$libseg" ]; then
+            export LD_PRELOAD="$libseg" SEGFAULT_SIGNALS=all SEGFAULT_USE_ALTSTACK=1
+            echo "libSegFault: $libseg"
+          else
+            echo "libSegFault.so not found; no stack on a crash"
+          fi
           echo "kernel: $(uname -r)"
           ./gradlew runClientGameTest -Pearshot.prebuiltNatives="$GITHUB_WORKSPACE/target/dist/natives"
       - name: Report the OpenAL probe
