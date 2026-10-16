@@ -241,6 +241,8 @@ public final class SoundShaper {
 			slot = 0;
 			heardEax = null;
 		}
+		// A fresh context gets a fresh chance: what failed against the old one says nothing about the new.
+		failed = false;
 		convolution.contextClosing();
 		spaces.contextClosing();
 		early.contextClosing();
@@ -362,17 +364,17 @@ public final class SoundShaper {
 		}
 		double[] heard = new double[NativeBridge.HEARD_DOUBLES * count];
 		if (!call(() -> bridge.hear(engine, listener, sources, count, heard))) {
-			releaseAll(now, ear, axes);
+			releaseAll(targets, now, ear, axes);
 			return;
 		}
 		// Each source's block is read straight out of heard below (heard[at] … heard[at + 7]), so a count
 		// mismatch stops shaping here, as a failed native call does, instead of throwing part way through.
 		if (!heardHolds(heard, count)) {
 			failed = true;
-			EarshotClient.LOGGER.error("Sound shaping stopped: hear gave {} doubles for {} sources, needing {}",
+			EarshotClient.LOGGER.error("Sound shaping stopped: hear broke its contract, {} for {} sources, needing {}",
 					heard.length, count, (long) NativeBridge.HEARD_DOUBLES * count);
 			voice.fail();
-			releaseAll(now, ear, axes);
+			releaseAll(targets, now, ear, axes);
 			return;
 		}
 
@@ -436,13 +438,51 @@ public final class SoundShaper {
 	 * Lets go of the OpenAL resources an update made when no update will follow to let go of them: every space's
 	 * slot ({@code off}), the early slots, and both own reverbs, kept or not — unlike the end of a normal update,
 	 * where spaces stay while they have sounds, the early slots stay while reflections are on, and only the own
-	 * reverbs no sound kept are released. {@link #failed} has stopped {@link #tick} for good, so anything left
+	 * reverbs no sound kept are released. {@link #failed} has stopped {@link #tick} for now, so anything left
 	 * live here would stay so until the context closes. On the sound thread.
+	 *
+	 * <p>Every tracked source's sends come off first: OpenAL won't free a slot a source still sends to, so the
+	 * frees below would fail and leave the slots mixing until the context closes.
 	 */
-	private void releaseAll(long now, Vec3 ear, Axes axes) {
+	private void releaseAll(List<Target> targets, long now, Vec3 ear, Axes axes) {
+		for (Target target : targets) {
+			int source = target.source();
+			SourceState state = target.state();
+			if (state.spaceSent) {
+				AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, EXTEfx.AL_EFFECTSLOT_NULL,
+						SpaceReverb.SEND, EXTEfx.AL_FILTER_NULL);
+				state.spaceSent = false;
+			}
+			if (state.earlySent) {
+				AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, EXTEfx.AL_EFFECTSLOT_NULL,
+						EarlyReflections.SEND, EXTEfx.AL_FILTER_NULL);
+				state.earlySent = false;
+			}
+		}
+		for (int k = 0; k < OWN_REVERBS; k++) {
+			// An own reverb's slots sit on sends 0 and 1 of the one sound given it; one that has gone
+			// since took its sends away with its source.
+			int source = ownOwners[k];
+			if (source != 0 && plays(targets, source)) {
+				AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, EXTEfx.AL_EFFECTSLOT_NULL, 0,
+						EXTEfx.AL_FILTER_NULL);
+				AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, EXTEfx.AL_EFFECTSLOT_NULL, 1,
+						EXTEfx.AL_FILTER_NULL);
+			}
+			ownOwners[k] = 0;
+		}
+		java.util.Arrays.fill(earlyOwners, 0);
 		spaces.end(now, true, ear, axes.right(), axes.up(), axes.forward());
 		early.free();
 		for (ConvolutionReverb own : ownReverbs) own.release();
+	}
+
+	/** Whether {@code source} is among {@code targets}, still being shaped. */
+	private static boolean plays(List<Target> targets, int source) {
+		for (Target target : targets) {
+			if (target.source() == source) return true;
+		}
+		return false;
 	}
 
 	/**
@@ -698,10 +738,32 @@ public final class SoundShaper {
 
 	/** Frees a source's filters when the game destroys the source. Called on the sound thread. */
 	public static void release(ShapedChannel channel) {
-		releaseFilters(channel.earshot$state());
+		releaseFilters(channel.earshot$source(), channel.earshot$state());
 	}
 
-	/** Frees the filters made for a source. Called on the sound thread. */
+	/**
+	 * Takes a source's filters off it, then frees them: OpenAL won't delete a filter its source still holds, so
+	 * the attachments are cleared while the source is still alive. Called on the sound thread.
+	 */
+	static void releaseFilters(int source, SourceState state) {
+		if (state.filter != 0) {
+			AL10.alSourcei(source, EXTEfx.AL_DIRECT_FILTER, EXTEfx.AL_FILTER_NULL);
+		}
+		if (state.sendFilter != 0) {
+			// The send filter is on the listener's reverb sends, 0 and 1.
+			AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, EXTEfx.AL_EFFECTSLOT_NULL, 0,
+					EXTEfx.AL_FILTER_NULL);
+			AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, EXTEfx.AL_EFFECTSLOT_NULL, 1,
+					EXTEfx.AL_FILTER_NULL);
+		}
+		if (state.spaceFilter != 0) {
+			AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, EXTEfx.AL_EFFECTSLOT_NULL, SpaceReverb.SEND,
+					EXTEfx.AL_FILTER_NULL);
+		}
+		releaseFilters(state);
+	}
+
+	/** Frees the filters made for a source, once nothing holds them. Called on the sound thread. */
 	static void releaseFilters(SourceState state) {
 		if (state.filter != 0) {
 			EXTEfx.alDeleteFilters(state.filter);
@@ -715,6 +777,9 @@ public final class SoundShaper {
 			EXTEfx.alDeleteFilters(state.spaceFilter);
 			state.spaceFilter = 0;
 		}
+		// A delete that failed leaves its error in the context's shared state, where the next call could
+		// misread it as its own: drain it here.
+		AL10.alGetError();
 	}
 
 	private boolean call(Runnable call) {

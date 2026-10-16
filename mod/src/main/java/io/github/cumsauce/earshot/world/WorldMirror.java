@@ -206,6 +206,8 @@ public final class WorldMirror {
 		this.level = level;
 		pending.clear();
 		mirrored.clear();
+		// Starting over gives a fresh chance: what failed in the old world says nothing about the new one.
+		failed = false;
 		call(() -> bridge.clearWorld(engine));
 	}
 

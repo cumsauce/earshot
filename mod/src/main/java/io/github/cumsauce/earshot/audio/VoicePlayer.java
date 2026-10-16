@@ -174,6 +174,12 @@ public final class VoicePlayer {
 	public synchronized void contextClosing() {
 		voices.clear();
 		status = List.of();
+		// A fresh context gets a fresh chance: what failed against the old one says nothing about the new.
+		failed = false;
+		// And what was offered to the old context must be offered again: the sink handle from it is dead, so the
+		// next openAlOpened() has to republish rather than early-return on the version it already had.
+		offeredVersion = -1;
+		offered = false;
 	}
 
 	/**
@@ -295,10 +301,14 @@ public final class VoicePlayer {
 
 	/** A source playing {@code speaker}'s stream, or null (and voice withdrawn) if OpenAL won't make one. */
 	private @Nullable Voice start(UUID speaker) {
+		// Java-only work stays outside the error window: from the drain to the check below this thread makes
+		// OpenAL calls and nothing else, so no call of ours outside the window can be blamed on it.
+		long stream = bridge.voiceStream(speaker);
+		// OpenAL's error is the context's, shared with the sound thread: clear what it left.
 		AL10.alGetError();
 		int buffer = AL10.alGenBuffers();
 		SOFTCallbackBuffer.nalBufferCallbackSOFT(buffer, EXTFloat32.AL_FORMAT_MONO_FLOAT32, SAMPLE_RATE, callback,
-				bridge.voiceStream(speaker));
+				stream);
 		int source = AL10.alGenSources();
 		AL10.alSourcei(source, AL10.AL_BUFFER, buffer);
 		AL10.alSourcePlay(source);
@@ -311,11 +321,11 @@ public final class VoicePlayer {
 			// Out of sources: the game has them all for now. Try again next tick.
 			return null;
 		}
-		failed = true;
+		// The window holds only this thread's own calls, but OpenAL's error state is the context's: an error
+		// another thread raised in the gap is indistinguishable from our own. One such ambiguous error must
+		// not stop every voice for the rest of the session — it is logged, and this speaker tries again next tick.
 		EarshotClient.LOGGER.warn("Yak VC's voice goes back to its own speakers: OpenAL won't play it (error 0x{})",
 				Integer.toHexString(error));
-		stopAll();
-		offer();
 		return null;
 	}
 

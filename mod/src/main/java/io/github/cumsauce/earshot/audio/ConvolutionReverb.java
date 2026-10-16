@@ -182,6 +182,9 @@ public final class ConvolutionReverb {
 	/** The game is closing its context, which frees every object in it: forget them all. */
 	public synchronized void contextClosing() {
 		generation++;
+		// A fresh context gets a fresh chance: what failed against the old one says nothing about the new.
+		failed = false;
+		failures = 0;
 		// A load in flight or queued would work against the closed context and its result is unreadable:
 		// stop it, then stand up a fresh executor for the next context, since this instance is reused.
 		loader.shutdownNow();
@@ -236,6 +239,9 @@ public final class ConvolutionReverb {
 				}
 				int slot = slots[into];
 				int effect = effects[into];
+				// Java-only work stays outside the error window: from the drain to the check below this thread
+				// makes OpenAL calls and nothing else, so no call of ours outside the window can be blamed on it.
+				float[] turn = orientation();
 				// OpenAL's error is the context's, shared with the sound thread: clear what it left, so only this load's
 				// own calls are checked below.
 				AL10.alGetError();
@@ -244,7 +250,7 @@ public final class ConvolutionReverb {
 				AL10.alBufferData(buffer, AL_FORMAT_BFORMAT3D_FLOAT32, ir, SAMPLE_RATE);
 				// Buffer first, then the effect, as OpenAL Soft's own example does.
 				EXTEfx.alAuxiliaryEffectSloti(slot, AL10.AL_BUFFER, buffer);
-				EXTEfx.alEffectfv(effect, AL_CONVOLUTION_ORIENTATION_SOFT, orientation());
+				EXTEfx.alEffectfv(effect, AL_CONVOLUTION_ORIENTATION_SOFT, turn);
 				EXTEfx.alAuxiliaryEffectSloti(slot, EXTEfx.AL_EFFECTSLOT_EFFECT, effect);
 				int error = AL10.alGetError();
 				loading = false;
@@ -260,9 +266,10 @@ public final class ConvolutionReverb {
 				buffers[into] = buffer;
 				made = 0;
 				if (error != AL10.AL_NO_ERROR) {
-					// Maybe another thread's error, landing between the clear and the check: not a reason to turn
-					// convolution off for good at once. Kept (it's bound) but not faded in; made again next time.
-					if (++failures >= TRIES) failed = true;
+					// The window holds only this thread's own calls, but OpenAL's error state is the context's:
+					// an error another thread raised in the gap is indistinguishable from our own here. So an
+					// ambiguous window does not count toward TRIES — one foreign error must never march
+					// convolution toward the permanent latch — it is logged, and made again next time.
 					EarshotClient.LOGGER.warn("Loading a convolution response failed (OpenAL error 0x{}){}",
 							Integer.toHexString(error), failed ? "; convolution reverb is off" : "; trying again");
 					madeFrom = new double[0];
