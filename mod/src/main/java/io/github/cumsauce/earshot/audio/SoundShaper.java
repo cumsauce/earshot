@@ -600,7 +600,10 @@ public final class SoundShaper {
 			}
 		}
 		java.util.Arrays.fill(owners, 0);
-		for (int k = 0; k < n; k++) owners[slotOf[k]] = targets.get(order[from + k]).source();
+		for (int k = 0; k < n; k++) {
+			if (slotOf[k] < 0) continue;
+			owners[slotOf[k]] = targets.get(order[from + k]).source();
+		}
 		return slotOf;
 	}
 

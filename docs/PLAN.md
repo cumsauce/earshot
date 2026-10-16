@@ -496,10 +496,12 @@ earshot/
 | Not enough OpenAL sources for voice | Reserve a fixed number of voice sources out of vanilla's pool (vanilla rarely fills it). |
 | Older or weaker hardware | Auto preset, adaptive ray budget, and an Off switch for each feature. |
 
-## Open questions
+## Resolved questions
 
-1. **Name and GitHub repo.** Keep "Earshot"? Public or private? Public repos get free macOS and Windows runners. Private repos use paid minutes, and macOS minutes cost 10×. `gh` isn't installed on this machine, so either install it or give me the remote URL.
-2. **yakvc.** It is maintained by someone else, so the voice sink is an upstream request. It touches no wire protocol, so a patched client still talks to stock yakvc users. If it is declined, voice keeps yakvc's own stereo panning and Earshot processes game sounds only.
-3. **License.** MIT OR Apache-2.0 to match yakvc?
-4. **Distribution.** GitHub Releases only, like yakvc, or also Modrinth?
-5. **Distance falloff.** Keep vanilla's linear falloff by default (gameplay stays as is), with "realistic falloff" as an option?
+All five are settled now; each says where it was settled.
+
+1. **Name and GitHub repo — resolved: "Earshot", public at `https://github.com/cumsauce/earshot.git`.** That has been the origin since the first push, and the repository is public, so its macOS and Windows runners are free: `ci.yml` builds natives on `macos-15-intel` and `windows-latest` on every push without paid minutes. Nothing needs a local `gh` either — the release job runs `gh release create` with `GH_TOKEN` from `github.token`, which Actions always has.
+2. **yakvc — resolved: the upstream request was accepted and merged.** The sink went in as #177 and own voice as #186 on 2026-10-12, and the maintainer's follow-up #191 (the sink pacing itself to real time, ending each stream when a sink is replaced) is what Earshot now builds against. It touches no wire protocol, so a patched client still talks to stock yakvc users, and if a future change is declined, voice keeps yakvc's own stereo panning while Earshot processes game sounds only — the fallback costs nothing to keep.
+3. **License — resolved: MIT OR Apache-2.0.** `workspace.package.license` in `Cargo.toml` says exactly that, `LICENSE-MIT` and `LICENSE-APACHE` both ship, the README offers either at your option, and Yak VC — whose build setup and native loader this adapts — carries the same two.
+4. **Distribution — resolved: both, with Modrinth optional.** A `v*` tag always publishes a GitHub prerelease with the jar (`gh release create`, `--prerelease` whenever the version carries a hyphen); the same job then POSTs that jar to Modrinth when the repository has a `MODRINTH_TOKEN` secret, against a project that already exists (`project_id: GnuooDgr`, with Fabric `P7dR8mSH` as its required dependency) and typed `alpha`/`beta`/`release` from the version string. No token, no Modrinth upload, and the release still ships.
+5. **Distance falloff — resolved: realistic falloff on by default, vanilla's linear one the opt-out.** `EarshotConfig.realisticFalloff` defaults to true — a config written before the key existed gets it on — and `EarshotConfigTest` pins "realistic falloff unless turned off". `SoundShaper.falloff` puts a source on `AL_INVERSE_DISTANCE_CLAMPED` with `REFERENCE_DISTANCE` 3 blocks and `AL_MAX_DISTANCE` at `range × REACH`, so a sound holds full volume for three blocks then loses 6 dB a doubling and fades over the last quarter of its range; turning the option off puts it back on `AL_LINEAR_DISTANCE` with the game's own range. `SoundEngineMixin` and `SoundEventMixin` widen what the server sends so the extra reach is real, and Options → Music & Sounds → Acoustics… carries the toggle beside the rest.
