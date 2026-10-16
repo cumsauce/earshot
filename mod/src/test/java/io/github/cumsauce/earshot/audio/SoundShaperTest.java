@@ -118,4 +118,12 @@ class SoundShaperTest {
 		assertTrue(ran[0], "a healthy pass must run");
 		assertEquals(1, cleanedUp[0], "a healthy pass must not run onFail");
 	}
+
+	/** Leaving convolution lets its slots go: off that mode they would keep convolving with nothing sending. */
+	@Test
+	void leaving_convolution_frees_its_slots() {
+		assertFalse(SoundShaper.freesConvolution(SoundShaper.ReverbMode.CONVOLUTION));
+		assertTrue(SoundShaper.freesConvolution(SoundShaper.ReverbMode.EAX));
+		assertTrue(SoundShaper.freesConvolution(SoundShaper.ReverbMode.OFF));
+	}
 }

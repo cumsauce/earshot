@@ -397,6 +397,7 @@ public final class SoundShaper {
 			spaces.end(System.nanoTime(), !spacesOn, ear, axes.right(), axes.up(), axes.forward());
 			if (!earlyOn(efx, underwater)) early.free();
 			for (ConvolutionReverb own : ownReverbs) own.release();
+			releaseConvolutionWhenOff();
 			return;
 		}
 		double[] sources = new double[3 * count];
@@ -476,6 +477,23 @@ public final class SoundShaper {
 		for (int k = 0; k < OWN_REVERBS; k++) {
 			if (unusedOwn[k]) ownReverbs[k].release();
 		}
+		releaseConvolutionWhenOff();
+	}
+
+	/**
+	 * The convolution reverb's slots keep convolving (about a tenth of a core) whether or not a source sends to
+	 * them, so once the mode has left convolution they are let go. Called at the end of a pass, after every
+	 * source's sends have been rewritten, so nothing still sends to a slot being deleted. Idempotent: releasing
+	 * with nothing named does nothing.
+	 */
+	private void releaseConvolutionWhenOff() {
+		if (!freesConvolution(mode)) return;
+		convolution.release();
+	}
+
+	/** Whether the mode has left convolution, so its slots should be let go rather than keep convolving. */
+	static boolean freesConvolution(ReverbMode mode) {
+		return mode != ReverbMode.CONVOLUTION;
 	}
 
 	/**
@@ -519,6 +537,7 @@ public final class SoundShaper {
 		spaces.end(now, true, ear, axes.right(), axes.up(), axes.forward());
 		early.free();
 		for (ConvolutionReverb own : ownReverbs) own.release();
+		releaseConvolutionWhenOff();
 	}
 
 	/**
