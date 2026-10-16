@@ -6,6 +6,7 @@ import io.github.cumsauce.earshot.audio.SoundShaper;
 import io.github.cumsauce.earshot.config.EarshotConfig;
 import io.github.cumsauce.earshot.config.EarshotConfig.Preset;
 import io.github.cumsauce.earshot.config.EarshotConfig.Reverb;
+import io.github.cumsauce.earshot.config.EarshotConfig.Diffraction;
 import io.github.cumsauce.earshot.natives.NativeBridge;
 import io.github.cumsauce.earshot.openal.ContextAttributes;
 import io.github.cumsauce.earshot.openal.HrtfFiles;
@@ -56,6 +57,7 @@ public final class AcousticsScreen extends OptionsSubScreen {
 	private final OptionInstance<Boolean> doppler;
 	private final OptionInstance<Boolean> underwater;
 	private final OptionInstance<String> reverb;
+	private final OptionInstance<String> diffraction;
 	private final OptionInstance<String> hrtf;
 	private final OptionInstance<Boolean> voice;
 	private final OptionInstance<Boolean> ownVoice;
@@ -93,6 +95,8 @@ public final class AcousticsScreen extends OptionsSubScreen {
 		underwater = toggle("earshot.settings.underwater", config.underwater());
 		reverb = choice("earshot.settings.reverb", Arrays.stream(Reverb.values()).map(Reverb::key).toList(),
 				config.reverb().key());
+		diffraction = choice("earshot.settings.diffraction",
+				Arrays.stream(Diffraction.values()).map(Diffraction::key).toList(), config.diffraction().key());
 		List<String> hrtfs = new ArrayList<>();
 		hrtfs.add("");
 		OpenAlProbe.Report report = OpenAlProbe.last();
@@ -138,8 +142,9 @@ public final class AcousticsScreen extends OptionsSubScreen {
 
 		list.addHeader(Component.translatable("earshot.settings.section.sound"));
 		list.addSmall(occlusion, pathing);
-		list.addSmall(airAbsorption, realisticFalloff);
-		list.addSmall(doppler, underwater);
+		list.addSmall(diffraction, airAbsorption);
+		list.addSmall(realisticFalloff, doppler);
+		list.addSmall(underwater);
 
 		list.addHeader(Component.translatable("earshot.settings.section.reverb"));
 		list.addBig(reverb);
@@ -293,7 +298,8 @@ public final class AcousticsScreen extends OptionsSubScreen {
 	public void removed() {
 		EarshotConfig next = new EarshotConfig(Preset.valueOf(preset.get().toUpperCase(Locale.ROOT)), occlusion.get(),
 				pathing.get(), Reverb.valueOf(reverb.get().toUpperCase(Locale.ROOT)), airAbsorption.get(),
-				underwater.get(), doppler.get(), voice.get(), hrtf.get(), ownVoice.get(), realisticFalloff.get());
+				underwater.get(), doppler.get(), voice.get(), hrtf.get(), ownVoice.get(), realisticFalloff.get(),
+				Diffraction.valueOf(diffraction.get().toUpperCase(Locale.ROOT)));
 		if (!next.equals(initial)) EarshotClient.apply(next);
 		super.removed();
 	}

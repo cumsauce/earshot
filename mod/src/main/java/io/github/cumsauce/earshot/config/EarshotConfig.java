@@ -28,11 +28,13 @@ import java.util.Locale;
  * @param hrtf          the HRTF dataset for Directional Audio, or empty for OpenAL's default
  * @param ownVoice      whether the player's own voice in Yak VC echoes off the room (headphones only)
  * @param realisticFalloff whether the game's sounds fall off as 1/distance rather than linearly
+ * @param diffraction   which barrier curve bends sound round edges (see {@link Diffraction})
  */
 public record EarshotConfig(Preset preset, boolean occlusion, boolean pathing, Reverb reverb, boolean airAbsorption,
-		boolean underwater, boolean doppler, boolean voice, String hrtf, boolean ownVoice, boolean realisticFalloff) {
+		boolean underwater, boolean doppler, boolean voice, String hrtf, boolean ownVoice, boolean realisticFalloff,
+		Diffraction diffraction) {
 	public static final EarshotConfig DEFAULT = new EarshotConfig(Preset.AUTO, true, true, Reverb.AUTO, true, true, true,
-			true, "", false, true);
+			true, "", false, true, Diffraction.ISO_9613_2);
 
 	/** How much the engine traces. */
 	public enum Preset {
@@ -77,6 +79,18 @@ public record EarshotConfig(Preset preset, boolean occlusion, boolean pathing, R
 		}
 	}
 
+	/** Which curve prices the detour sound takes round an edge or over a wall. */
+	public enum Diffraction {
+		/** ISO 9613-2's {@code 10·lg(3 + 20 N)}, capped at 25 dB. */
+		ISO_9613_2,
+		/** China's HJ 2.4 table of Maekawa's measurements: steeper round {@code N = 1}, capped at 24 dB. */
+		HJ_2_4;
+
+		public String key() {
+			return name().toLowerCase(Locale.ROOT);
+		}
+	}
+
 	/** Whether Earshot shapes the game's sounds at all. */
 	public boolean active() {
 		return preset.resolve() != Preset.OFF;
@@ -86,8 +100,9 @@ public record EarshotConfig(Preset preset, boolean occlusion, boolean pathing, R
 	 * {@code earshot_set_quality}'s doubles for these settings, with room rays reaching {@code reach} blocks.
 	 */
 	public double[] quality(double reach) {
-		double[] quality = java.util.Arrays.copyOf(preset.resolve().quality, 7);
+		double[] quality = java.util.Arrays.copyOf(preset.resolve().quality, 8);
 		quality[6] = reach;
+		quality[7] = diffraction == Diffraction.HJ_2_4 ? 1 : 0;
 		if (!occlusion) {
 			quality[3] = 0;
 			quality[4] = 0;
@@ -99,32 +114,37 @@ public record EarshotConfig(Preset preset, boolean occlusion, boolean pathing, R
 
 	public EarshotConfig withPreset(Preset preset) {
 		return new EarshotConfig(preset, occlusion, pathing, reverb, airAbsorption, underwater, doppler, voice, hrtf,
-				ownVoice, realisticFalloff);
+				ownVoice, realisticFalloff, diffraction);
 	}
 
 	public EarshotConfig withReverb(Reverb reverb) {
 		return new EarshotConfig(preset, occlusion, pathing, reverb, airAbsorption, underwater, doppler, voice, hrtf,
-				ownVoice, realisticFalloff);
+				ownVoice, realisticFalloff, diffraction);
 	}
 
 	public EarshotConfig withVoice(boolean voice) {
 		return new EarshotConfig(preset, occlusion, pathing, reverb, airAbsorption, underwater, doppler, voice, hrtf,
-				ownVoice, realisticFalloff);
+				ownVoice, realisticFalloff, diffraction);
 	}
 
 	public EarshotConfig withRealisticFalloff(boolean realisticFalloff) {
 		return new EarshotConfig(preset, occlusion, pathing, reverb, airAbsorption, underwater, doppler, voice, hrtf,
-				ownVoice, realisticFalloff);
+				ownVoice, realisticFalloff, diffraction);
 	}
 
 	public EarshotConfig withHrtf(String hrtf) {
 		return new EarshotConfig(preset, occlusion, pathing, reverb, airAbsorption, underwater, doppler, voice, hrtf,
-				ownVoice, realisticFalloff);
+				ownVoice, realisticFalloff, diffraction);
 	}
 
 	public EarshotConfig withOwnVoice(boolean ownVoice) {
 		return new EarshotConfig(preset, occlusion, pathing, reverb, airAbsorption, underwater, doppler, voice, hrtf,
-				ownVoice, realisticFalloff);
+				ownVoice, realisticFalloff, diffraction);
+	}
+
+	public EarshotConfig withDiffraction(Diffraction diffraction) {
+		return new EarshotConfig(preset, occlusion, pathing, reverb, airAbsorption, underwater, doppler, voice, hrtf,
+				ownVoice, realisticFalloff, diffraction);
 	}
 
 	/** The settings in {@code file}, or the defaults if there is none or it can't be read. */
@@ -163,7 +183,8 @@ public record EarshotConfig(Preset preset, boolean occlusion, boolean pathing, R
 				text(json, "hrtf", d.hrtf),
 				flag(json, "own_voice", d.ownVoice),
 				// A new key: settings saved before falloff carried far get it on.
-				flag(json, "realistic_distance", d.realisticFalloff));
+				flag(json, "realistic_distance", d.realisticFalloff),
+				named(json, "diffraction", Diffraction.class, d.diffraction));
 	}
 
 	JsonObject toJson() {
@@ -179,6 +200,7 @@ public record EarshotConfig(Preset preset, boolean occlusion, boolean pathing, R
 		json.addProperty("hrtf", hrtf);
 		json.addProperty("own_voice", ownVoice);
 		json.addProperty("realistic_distance", realisticFalloff);
+		json.addProperty("diffraction", diffraction.key());
 		return json;
 	}
 

@@ -31,7 +31,7 @@ class EarshotConfigTest {
 		Path file = dir.resolve("earshot").resolve("earshot.json");
 		assertEquals(EarshotConfig.DEFAULT, EarshotConfig.load(file), "no file: the defaults");
 		EarshotConfig config = new EarshotConfig(EarshotConfig.Preset.LOW, false, true, EarshotConfig.Reverb.EAX, false,
-				true, false, false, "Built-In HRTF", true, true);
+				true, false, false, "Built-In HRTF", true, true, EarshotConfig.Diffraction.ISO_9613_2);
 		config.save(file);
 		assertEquals(config, EarshotConfig.load(file));
 		Files.writeString(file, "not json {");
@@ -41,13 +41,16 @@ class EarshotConfigTest {
 	@Test
 	void togglesTurnTheirPartOfTheTraceOff() {
 		EarshotConfig high = new EarshotConfig(EarshotConfig.Preset.HIGH, true, true, EarshotConfig.Reverb.AUTO, true,
-				true, true, true, "", false, false);
-		assertArrayEquals(new double[] {4096, 16, 0.1, 9, 32, 0.3, 64}, high.quality(64));
+				true, true, true, "", false, false, EarshotConfig.Diffraction.ISO_9613_2);
+		assertArrayEquals(new double[] {4096, 16, 0.1, 9, 32, 0.3, 64, 0}, high.quality(64));
 		EarshotConfig noPaths = new EarshotConfig(EarshotConfig.Preset.HIGH, true, false, EarshotConfig.Reverb.OFF,
-				true, true, true, true, "", false, false);
-		assertArrayEquals(new double[] {0, 16, 0.1, 9, 0, 0.3, 128}, noPaths.quality(128));
+				true, true, true, true, "", false, false, EarshotConfig.Diffraction.ISO_9613_2);
+		assertArrayEquals(new double[] {0, 16, 0.1, 9, 0, 0.3, 128, 0}, noPaths.quality(128));
+		EarshotConfig maekawa = new EarshotConfig(EarshotConfig.Preset.HIGH, true, true, EarshotConfig.Reverb.AUTO, true,
+				true, true, true, "", false, false, EarshotConfig.Diffraction.HJ_2_4);
+		assertEquals(1.0, maekawa.quality(64)[7]);
 		EarshotConfig off = new EarshotConfig(EarshotConfig.Preset.OFF, true, true, EarshotConfig.Reverb.AUTO, true,
-				true, true, true, "", false, false);
+				true, true, true, "", false, false, EarshotConfig.Diffraction.ISO_9613_2);
 		assertFalse(off.active());
 		assertEquals(0, off.quality(64)[0]);
 		assertEquals(0, off.quality(64)[3]);

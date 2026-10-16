@@ -31,7 +31,7 @@ import java.util.UUID;
  */
 public final class NativeBridge {
 	/** Must equal {@code EARSHOT_ABI_VERSION} in {@code earshot.h}. */
-	public static final int ABI_VERSION = 14;
+	public static final int ABI_VERSION = 15;
 	/** Blocks in a section, in Minecraft's order. */
 	public static final int SECTION_BLOCKS = 4096;
 	/** Doubles per traced leg: from x, y, z, to x, y, z, energy, escaped (1 or 0). */
@@ -50,10 +50,11 @@ public final class NativeBridge {
 	public static final int EAX_FIRST = 7;
 	/**
 	 * Doubles for {@link #setQuality}: the room measurement's rays (0 for none), bounces and interval in seconds,
-	 * occlusion rays per source (0, 1, 5 or 9), the pathing field's reach in blocks (0 for none), and the share of one
-	 * core the room measurement may take, and how far room rays reach in blocks.
+	 * occlusion rays per source (0, 1, 5 or 9), the pathing field's reach in blocks (0 for none), the share of one
+	 * core the room measurement may take, how far room rays reach in blocks, and the diffraction standard (0 for
+	 * ISO 9613-2, 1 for HJ 2.4's Maekawa curve).
 	 */
-	public static final int QUALITY_DOUBLES = 7;
+	public static final int QUALITY_DOUBLES = 8;
 	/**
 	 * Doubles from {@link #stats}: rays in the latest room measurement, its share of one core, the latest pathing
 	 * field's build time in milliseconds, and its reach (0 for none).
