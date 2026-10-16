@@ -76,7 +76,7 @@ jobs:
       - uses: actions/checkout@v7
       # Xvfb and Mesa's software Vulkan for the gametest, as in yakvc.
       - name: Install system libraries
-        run: sudo apt-get update && sudo apt-get install -y xvfb mesa-vulkan-drivers libvulkan1
+        run: sudo apt-get update && sudo apt-get install -y xvfb mesa-vulkan-drivers libvulkan1 gdb
       - name: Install toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -115,29 +115,36 @@ jobs:
           { echo '<details><summary>Sound engine classes (26.3)</summary>'; echo; echo '```'
             cat build/sound-classes.txt; echo '```'; echo '</details>'; } >> "$GITHUB_STEP_SUMMARY"
       # Loom runs client gametests under Xvfb when CI is set. There is no sound
-      # card, so OpenAL Soft's null backend stands in for one. libSegFault makes
-      # a SIGSEGV print the dying thread's stack: the client has been known to
-      # die with the shell's bare "Segmentation fault" and no HotSpot report,
-      # which names no frame at all. The .so is not at a fixed path on this
-      # image, so it is hunted down first.
+      # card, so OpenAL Soft's null backend stands in for one. The client has
+      # been known to die with the shell's bare "Segmentation fault" and no
+      # HotSpot report, which names no frame at all — so the core the kernel
+      # already writes is pointed at a known path and read back with gdb: every
+      # thread's backtrace, above all the name of the library that died.
       - name: Client gametest
         working-directory: mod
         env:
           ALSOFT_DRIVERS: "null"
         run: |
-          libseg=$(find /lib /usr/lib -name libSegFault.so 2>/dev/null | head -n1)
-          if [ -z "$libseg" ]; then
-            sudo apt-get install -y libc6-dev > /dev/null 2>&1 || true
-            libseg=$(find /lib /usr/lib -name libSegFault.so 2>/dev/null | head -n1)
-          fi
-          if [ -n "$libseg" ]; then
-            export LD_PRELOAD="$libseg" SEGFAULT_SIGNALS=all SEGFAULT_USE_ALTSTACK=1
-            echo "libSegFault: $libseg"
-          else
-            echo "libSegFault.so not found; no stack on a crash"
-          fi
+          sudo sysctl -w kernel.core_pattern=/tmp/cores/core.%e.%p > /dev/null
+          mkdir -p /tmp/cores
+          ulimit -c unlimited
           echo "kernel: $(uname -r)"
+          set +e
           ./gradlew runClientGameTest -Pearshot.prebuiltNatives="$GITHUB_WORKSPACE/target/dist/natives"
+          rc=$?
+          set -e
+          if [ "$rc" -ne 0 ]; then
+            core=$(ls -t /tmp/cores/core.* 2>/dev/null | head -n1 || true)
+            if [ -n "$core" ]; then
+              echo "core: $core ($(stat -c %s "$core") bytes)"
+              gdb -batch -nx -ex "set pagination off" -ex "thread apply all bt" \
+                "$(command -v java)" "$core" 2>&1 | tail -n 400
+            else
+              echo "no core file in /tmp/cores:"
+              ls -la /tmp/cores || true
+            fi
+          fi
+          exit $rc
       - name: Report the OpenAL probe
         if: always()
         run: |
