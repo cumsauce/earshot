@@ -157,7 +157,7 @@ public final class SoundShaper {
 	private record Axes(Vec3 right, Vec3 up, Vec3 forward) {}
 
 	/** A source to shape: the OpenAL source, its smoothed shaping, where it is, and the voice it plays if any. */
-	private record Target(int source, SourceState state, Vec3 position, VoicePlayer.@Nullable Voice voice,
+	record Target(int source, SourceState state, Vec3 position, VoicePlayer.@Nullable Voice voice,
 			float range) {}
 
 	public SoundShaper(NativeBridge bridge, MemorySegment engine) {
@@ -372,6 +372,15 @@ public final class SoundShaper {
 			}
 		});
 		for (VoicePlayer.Voice v : voice.update(players, voiceVolume, sends)) targets.add(new Target(v.source, v.state, v.position, v, 0));
+		// A source at a point the native engine cannot use (as Vec3::is_usable: NaN, infinite, or past 1e9)
+		// is not heard: one such point would fail hear() for every source at once. The bad ones are dropped
+		// before the sources array is built, and the shaping earlier updates set on them is taken off, so a
+		// source gone bad does not keep a stale filter or hold a reverb send open.
+		List<Target> dropped = new ArrayList<>();
+		List<Target> kept = heardTargets(targets, dropped);
+		targets.clear();
+		targets.addAll(kept);
+		for (Target target : dropped) releaseStale(target);
 		int count = targets.size();
 		if (count == 0) {
 			snapshot = List.of();
@@ -520,6 +529,42 @@ public final class SoundShaper {
 			if (target.source() == source) return true;
 		}
 		return false;
+	}
+
+	/**
+	 * The targets at points the native engine can use ({@link SourceState#usable}), which is every one it will
+	 * hear; the rest — a NaN or absurd position from some other mod — go to {@code dropped} rather than into the
+	 * sources array, where one would fail the whole hear() call.
+	 */
+	static List<Target> heardTargets(List<Target> targets, List<Target> dropped) {
+		List<Target> heard = new ArrayList<>(targets.size());
+		for (Target target : targets) {
+			if (SourceState.usable(target.position())) heard.add(target);
+			else dropped.add(target);
+		}
+		return heard;
+	}
+
+	/**
+	 * Takes off the shaping a source keeps from earlier updates when this update cannot hear it: its sends, which
+	 * would hold reverb slots open, and its filters, as {@link #release} does when the game destroys the source.
+	 * The early-reflections and own-reverb slots it held are let go by {@link #keep}, which hands slots out only
+	 * to the targets still heard.
+	 */
+	private static void releaseStale(Target target) {
+		int source = target.source();
+		SourceState state = target.state();
+		if (state.spaceSent) {
+			AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, EXTEfx.AL_EFFECTSLOT_NULL,
+					SpaceReverb.SEND, EXTEfx.AL_FILTER_NULL);
+			state.spaceSent = false;
+		}
+		if (state.earlySent) {
+			AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, EXTEfx.AL_EFFECTSLOT_NULL,
+					EarlyReflections.SEND, EXTEfx.AL_FILTER_NULL);
+			state.earlySent = false;
+		}
+		releaseFilters(source, state);
 	}
 
 	/**
@@ -767,7 +812,9 @@ public final class SoundShaper {
 	public static void reapplyPosition(ShapedChannel channel) {
 		SourceState state = channel.earshot$state();
 		Vec3 position = channel.earshot$position();
-		if (!state.started() || position == null || !channel.earshot$positional()) return;
+		// usable(null) covers the not-positional case: a point the native engine cannot use must not reach
+		// OpenAL as a NaN position either (AL_INVALID_VALUE into the context's shared error state).
+		if (!state.started() || !SourceState.usable(position) || !channel.earshot$positional()) return;
 		Vec3 heardFrom = state.heardFrom(position);
 		AL10.alSource3f(channel.earshot$source(), AL10.AL_POSITION, (float) heardFrom.x, (float) heardFrom.y,
 				(float) heardFrom.z);

@@ -12,6 +12,24 @@ public final class SourceState {
 	private static final float SMOOTHING = 0.5f;
 	/** Faster than this, in blocks a second, a source jumped (teleported, or was moved by the game) rather than moved. */
 	static final double MAX_SPEED = 80;
+	/**
+	 * How far from the origin a coordinate may be for the native engine, as its {@code Vec3::is_usable}'s bound
+	 * (inclusive). A point past it fails the native call and stops every source's shaping, so it is not heard.
+	 */
+	static final double MAX_COORDINATE = 1e9;
+
+	/**
+	 * Whether the native engine can use this point at all, as its {@code Vec3::is_usable} does: finite, with no
+	 * coordinate past {@value #MAX_COORDINATE} in magnitude (the bound inclusive). A sound placed at a point it
+	 * cannot use fails the native call and silences every source's shaping, so such points are not heard.
+	 */
+	static boolean usable(@Nullable Vec3 position) {
+		return position != null && usable(position.x) && usable(position.y) && usable(position.z);
+	}
+
+	private static boolean usable(double coord) {
+		return Double.isFinite(coord) && Math.abs(coord) <= MAX_COORDINATE;
+	}
 
 	/** The OpenAL filter for the direct path, 0 until made. */
 	int filter;

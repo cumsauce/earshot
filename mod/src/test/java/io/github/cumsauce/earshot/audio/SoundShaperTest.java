@@ -7,6 +7,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.cumsauce.earshot.natives.NativeBridge;
+import java.util.ArrayList;
+import java.util.List;
+import net.minecraft.world.phys.Vec3;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -55,6 +58,36 @@ class SoundShaperTest {
 		assertArrayEquals(new int[2], ownOwners);
 		assertArrayEquals(new int[EarlyReflections.SOURCES], earlyOwners);
 		assertArrayEquals(new boolean[2], unusedOwn);
+	}
+
+	/** A sound at a point the native engine cannot use is not heard — one bad mod must not silence the rest. */
+	@Test
+	void an_unusable_position_is_not_heard() {
+		List<SoundShaper.Target> targets = List.of(
+				new SoundShaper.Target(1, new SourceState(), new Vec3(4, 64, -8), null, 16),
+				new SoundShaper.Target(2, new SourceState(), new Vec3(Double.NaN, 1, 2), null, 16),
+				new SoundShaper.Target(3, new SourceState(), new Vec3(0, -30, 9), null, 16));
+		List<SoundShaper.Target> dropped = new ArrayList<>();
+
+		List<SoundShaper.Target> heard = SoundShaper.heardTargets(targets, dropped);
+
+		assertEquals(2, heard.size(), "the two at points the native engine can use are still heard");
+		assertEquals(1, heard.get(0).source());
+		assertEquals(3, heard.get(1).source());
+		assertEquals(1, dropped.size(), "the NaN-positioned one is dropped, to have its shaping released");
+		assertEquals(2, dropped.get(0).source());
+	}
+
+	/** The predicate mirrors the native Vec3::is_usable: finite coordinates, each within ±1e9 inclusive. */
+	@Test
+	void the_usable_predicate_matches_the_native_one() {
+		assertTrue(SourceState.usable(new Vec3(0, 0, 0)));
+		assertTrue(SourceState.usable(new Vec3(1e9, -1e9, 1e9)));
+		assertFalse(SourceState.usable(new Vec3(Double.NaN, 0, 0)));
+		assertFalse(SourceState.usable(new Vec3(0, Double.POSITIVE_INFINITY, 0)));
+		assertFalse(SourceState.usable(new Vec3(0, 0, Double.NEGATIVE_INFINITY)));
+		assertFalse(SourceState.usable(new Vec3(1e300, 0, 0)), "past the native bound, as 1e9 is not");
+		assertFalse(SourceState.usable(null));
 	}
 
 	/** A shaping pass that dies part way must stop shaping cleanly, not repeat half-applied every tick. */

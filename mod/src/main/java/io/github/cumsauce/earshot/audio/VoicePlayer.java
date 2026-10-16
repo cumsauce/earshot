@@ -253,6 +253,18 @@ public final class VoicePlayer {
 		Set<UUID> heard = new HashSet<>();
 		for (NativeBridge.VoiceStream stream : bridge.voiceStreams()) {
 			if (stream.ended() || stream.secondsSinceFrame() > IDLE_SECONDS) continue;
+			boolean centred = (stream.flags() & UNPOSITIONED) != 0;
+			Head head = players.get(stream.speaker());
+			Vec3 eye = null;
+			if (!centred) {
+				double[] at = stream.heardFrom();
+				eye = head != null ? head.eye() : new Vec3(at[0], at[1], at[2]);
+				// A speaker somewhere the native engine cannot use (as Vec3::is_usable: NaN, infinite, or
+				// past 1e9) is not heard this tick: the stream is skipped before its source is made or
+				// placed, so the bad point never reaches hear(), and any voice it had is let go below, as
+				// for a speaker gone quiet.
+				if (!SourceState.usable(eye)) continue;
+			}
 			Voice voice = voices.get(stream.speaker());
 			if (voice == null) {
 				voice = start(stream.speaker());
@@ -269,14 +281,12 @@ public final class VoicePlayer {
 			if (AL10.alGetSourcei(voice.source, AL10.AL_SOURCE_STATE) != AL10.AL_PLAYING) {
 				AL10.alSourcePlay(voice.source);
 			}
-			if ((stream.flags() & UNPOSITIONED) != 0) {
+			if (centred) {
 				centre(voice);
 				if ((stream.flags() & SELF) != 0) reverbOnly(voice, sends);
 				continue;
 			}
-			double[] at = stream.heardFrom();
-			Head head = players.get(stream.speaker());
-			place(voice, head != null ? head.eye() : new Vec3(at[0], at[1], at[2]), stream.range());
+			place(voice, eye, stream.range());
 			point(voice, head == null ? null : head.facing());
 			positioned.add(voice);
 		}
