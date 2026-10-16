@@ -12,6 +12,42 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 class NativeBridgeTest {
+	/**
+	 * The bound check behind every native count this class trusts: an out-of-range value fails fast naming itself
+	 * and the bound, rather than being truncated into a wrong-sized array or index.
+	 */
+	@Test
+	void nativeCountsOutsideTheirBoundFailFast() {
+		// Inside the bound, both ends included: nothing is thrown.
+		NativeBridge.checkNativeLength(0, 10, "tracePaths segments written");
+		NativeBridge.checkNativeLength(10, 10, "tracePaths segments written");
+		NativeBridge.checkNativeLength(NativeBridge.MAX_IR_FLOATS, NativeBridge.MAX_IR_FLOATS,
+				"impulse response floats");
+
+		IllegalStateException over = assertThrows(IllegalStateException.class, () -> NativeBridge
+				.checkNativeLength(NativeBridge.MAX_IR_FLOATS + 1L, NativeBridge.MAX_IR_FLOATS, "impulse response floats"));
+		assertTrue(over.getMessage().contains(Long.toString(NativeBridge.MAX_IR_FLOATS + 1L)), over.getMessage());
+		assertTrue(over.getMessage().contains(Long.toString(NativeBridge.MAX_IR_FLOATS)), over.getMessage());
+
+		IllegalStateException negative = assertThrows(IllegalStateException.class,
+				() -> NativeBridge.checkNativeLength(-1, NativeBridge.MAX_VOICE_STREAMS, "voice streams"));
+		assertTrue(negative.getMessage().contains("-1"), negative.getMessage());
+		assertTrue(negative.getMessage().contains(Integer.toString(NativeBridge.MAX_VOICE_STREAMS)),
+				negative.getMessage());
+	}
+
+	/** The impulse response bound is derived from the API's own sizes, and small enough that (int) stays exact. */
+	@Test
+	void theImpulseResponseBoundCoversEveryCallTheModMakes() {
+		int channels = 4; // First-order ambisonics: W, X, Y, Z interleaved.
+		assertTrue(NativeBridge.MAX_IR_FLOATS >= channels * 48_000 * 4L,
+				"four seconds of 48 kHz impulse response must fit");
+		assertTrue(NativeBridge.MAX_IR_FLOATS <= Integer.MAX_VALUE, "the (int) cast must stay exact");
+		// The arrays voiceStreams makes for its cap: 16 bytes and VOICE_DOUBLES doubles per stream.
+		assertTrue(NativeBridge.MAX_VOICE_STREAMS * 16L <= Integer.MAX_VALUE, "the uuid array must fit an int");
+		assertTrue(NativeBridge.MAX_VOICE_STREAMS * 10L <= Integer.MAX_VALUE, "the info array must fit an int");
+	}
+
 	@Test
 	void aMirroredWallMuffles(@TempDir Path configDir) throws Exception {
 		NativeBridge bridge = new NativeBridge(NativeLoader.load(configDir));
