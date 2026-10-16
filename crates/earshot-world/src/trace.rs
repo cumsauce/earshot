@@ -37,6 +37,11 @@ pub struct Hit {
     pub normal: Vec3,
 }
 
+/// The furthest a ray may travel, in blocks: past it the walk would step
+/// the i32 block coordinates toward an overflow, so both walks stop here
+/// whatever `max` asks for, and the FFI refuses a larger reach.
+pub const MAX_REACH_METRES: f64 = 4096.0;
+
 /// Walks the blocks a ray from `origin` in direction `dir` (unit length)
 /// passes through within `max` blocks, in order (Amanatides–Woo: each step
 /// crosses one block boundary). `visit` can stop the walk early.
@@ -51,6 +56,9 @@ pub fn walk(
     if !finite.iter().all(|v| v.is_finite()) {
         return;
     }
+    // A larger reach would walk the block coordinates toward an i32
+    // overflow, so the bound holds whatever the caller passed.
+    let max = max.min(MAX_REACH_METRES);
     let mut block = [
         origin.x.floor() as i32,
         origin.y.floor() as i32,
@@ -211,6 +219,9 @@ fn walk_solid(
     if !finite.iter().all(|v| v.is_finite()) {
         return;
     }
+    // A larger reach would walk the block coordinates toward an i32
+    // overflow, so the bound holds whatever the caller passed.
+    let max = max.min(MAX_REACH_METRES);
     let mut block = [
         origin.x.floor() as i32,
         origin.y.floor() as i32,
@@ -370,6 +381,19 @@ mod tests {
             ControlFlow::Continue(())
         });
         steps
+    }
+
+    #[test]
+    fn a_walk_stops_at_the_reach_limit() {
+        let world = World::new();
+        let steps = steps(
+            &world,
+            Vec3::new(0.5, 0.5, 0.5),
+            Vec3::new(1.0, 0.0, 0.0),
+            1e300,
+        );
+        let last = steps.last().unwrap();
+        assert!((last.exit - MAX_REACH_METRES).abs() < 1e-9, "{last:?}");
     }
 
     #[test]

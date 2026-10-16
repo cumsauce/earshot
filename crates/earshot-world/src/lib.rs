@@ -11,6 +11,6 @@ mod vec3;
 mod world;
 
 pub use crate::material::{Acoustics, BANDS, Bands, Material};
-pub use crate::trace::{Hit, Step, cast, transmission, walk};
+pub use crate::trace::{Hit, MAX_REACH_METRES, Step, cast, transmission, walk};
 pub use crate::vec3::Vec3;
 pub use crate::world::{SECTION_BLOCKS, Section, SectionPos, World};

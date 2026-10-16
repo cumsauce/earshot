@@ -20,7 +20,7 @@ use std::ffi::c_void;
 use earshot_sim::{
     DiffractionStandard, Engine, Heard, Quality, Room, early_reflections, eax_reverb, trace_paths,
 };
-use earshot_world::{BANDS, Material, SECTION_BLOCKS, SectionPos, Vec3, World};
+use earshot_world::{BANDS, MAX_REACH_METRES, Material, SECTION_BLOCKS, SectionPos, Vec3, World};
 
 use crate::guard::{FfiError, array_arg, guard, guard_value, out_arg, slice_arg, slice_mut_arg};
 
@@ -726,7 +726,12 @@ pub unsafe extern "C" fn earshot_trace_paths(
             let written = out_arg(written, "written")?;
             // SAFETY: the caller guarantees `stats` is writable for 4 doubles.
             let stats = slice_mut_arg(stats, 4, "stats")?;
-            if !(reach.is_finite() && reach > 0.0) || rays > 1 << 20 || bounces > 64 {
+            // A reach past the bound would walk the ray until its block
+            // coordinates overflowed, so it is refused here.
+            if !(reach.is_finite() && reach > 0.0 && reach <= MAX_REACH_METRES)
+                || rays > 1 << 20
+                || bounces > 64
+            {
                 return Err(FfiError::invalid("rays, bounces or reach out of range"));
             }
             let mut legs = out.as_chunks_mut::<EARSHOT_SEGMENT_DOUBLES>().0.iter_mut();
@@ -1125,6 +1130,53 @@ mod tests {
         assert_eq!(out[7], 1.0, "escaped");
         // SAFETY: `engine` is live, then never used again.
         unsafe { earshot_destroy(engine) };
+    }
+
+    #[test]
+    fn a_path_ray_has_a_reach_limit() {
+        let engine = engine();
+        let origin = [0.5, 0.5, 0.5];
+        let mut out = [0.0; EARSHOT_SEGMENT_DOUBLES];
+        let (mut written, mut stats) = (0, [0.0; 4]);
+        // SAFETY: `engine` is live and every buffer is valid for its length.
+        unsafe {
+            // A reach past the limit would walk the ray until its block
+            // coordinates overflowed, so it is refused.
+            assert_eq!(
+                earshot_trace_paths(
+                    engine,
+                    origin.as_ptr(),
+                    1,
+                    0,
+                    1e300,
+                    1,
+                    out.as_mut_ptr(),
+                    1,
+                    &mut written,
+                    stats.as_mut_ptr(),
+                ),
+                EARSHOT_ERR_INVALID_ARGUMENT
+            );
+            for reach in [64.0, 4096.0] {
+                assert_eq!(
+                    earshot_trace_paths(
+                        engine,
+                        origin.as_ptr(),
+                        1,
+                        0,
+                        reach,
+                        1,
+                        out.as_mut_ptr(),
+                        1,
+                        &mut written,
+                        stats.as_mut_ptr(),
+                    ),
+                    EARSHOT_OK,
+                    "reach {reach}"
+                );
+            }
+            earshot_destroy(engine);
+        }
     }
 
     #[test]
