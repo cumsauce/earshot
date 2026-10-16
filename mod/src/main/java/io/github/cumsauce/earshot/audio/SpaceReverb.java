@@ -201,6 +201,8 @@ final class SpaceReverb {
 		double[] room = space.measured;
 		if (room == null) return;
 		space.measured = null;
+		// Checked before the measurement is copied into space.room and read for its EAX parameters below.
+		SoundShaper.requireRoom(room);
 		System.arraycopy(room, 0, space.room, 0, room.length);
 		if (!space.ready) {
 			// The first measurement is heard at once.
@@ -213,6 +215,7 @@ final class SpaceReverb {
 	/** Moves a space's reverb a step towards its latest measurement and sets it. On the sound thread. */
 	private static void glide(Space space) {
 		if (!space.ready) return;
+		SoundShaper.requireRoom(space.room);
 		for (int i = 0; i < space.heard.length; i++) {
 			float target = (float) space.room[NativeBridge.EAX_FIRST + i];
 			space.heard[i] += (target - space.heard[i]) * GLIDE;

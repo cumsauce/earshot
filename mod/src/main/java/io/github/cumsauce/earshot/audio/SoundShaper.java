@@ -362,6 +362,15 @@ public final class SoundShaper {
 		}
 		double[] heard = new double[NativeBridge.HEARD_DOUBLES * count];
 		if (!call(() -> bridge.hear(engine, listener, sources, count, heard))) return;
+		// Each source's block is read straight out of heard below (heard[at] … heard[at + 7]), so a count
+		// mismatch stops shaping here, as a failed native call does, instead of throwing part way through.
+		if (!heardHolds(heard, count)) {
+			failed = true;
+			EarshotClient.LOGGER.error("Sound shaping stopped: hear gave {} doubles for {} sources, needing {}",
+					heard.length, count, (long) NativeBridge.HEARD_DOUBLES * count);
+			voice.fail();
+			return;
+		}
 
 		int[][] ownSends = new int[count][];
 		int[] earlySlots = earlySlots(targets, heard, listener, ear, axes, efx, underwater,
@@ -447,6 +456,7 @@ public final class SoundShaper {
 			boolean jump = heardEax == null || underwater != heardUnderwater;
 			if (heardEax == null) heardEax = new float[EAX_PARAMETERS.length];
 			heardUnderwater = underwater;
+			requireRoom(room);
 			for (int i = 0; i < EAX_PARAMETERS.length; i++) {
 				float value = underwater ? UNDERWATER_REVERB[i] : (float) room[NativeBridge.EAX_FIRST + i];
 				heardEax[i] = jump ? value : heardEax[i] + (value - heardEax[i]) * EAX_GLIDE;
@@ -496,6 +506,29 @@ public final class SoundShaper {
 	/** 1 until the last {@value #FADE_SHARE} of {@code range}, then down to 0 at it. */
 	static float fade(float range, float distance) {
 		return Math.clamp((range - distance) / (FADE_SHARE * range), 0f, 1f);
+	}
+
+	/**
+	 * Whether {@code heard} holds a block of {@link NativeBridge#HEARD_DOUBLES} doubles for each of {@code count}
+	 * sources: the update reads {@code heard[at]} through {@code heard[at + 7]} per source with no bounds checks,
+	 * so a short array is caught once, here, rather than an
+	 * {@link ArrayIndexOutOfBoundsException} part way through a source.
+	 */
+	static boolean heardHolds(double[] heard, int count) {
+		return count >= 0 && (long) heard.length >= (long) NativeBridge.HEARD_DOUBLES * count;
+	}
+
+	/**
+	 * Fails fast unless {@code room} is laid out as {@link NativeBridge#room} writes it: no more than
+	 * {@link NativeBridge#ROOM_DOUBLES} doubles, so nothing reads or copies past its end, and enough to reach the
+	 * last EAX parameter after {@link NativeBridge#EAX_FIRST}, which the reverb setters index straight out of it.
+	 */
+	static void requireRoom(double[] room) {
+		int reach = NativeBridge.EAX_FIRST + EAX_PARAMETERS.length;
+		if (room.length > NativeBridge.ROOM_DOUBLES || room.length < reach) {
+			throw new IllegalStateException("room has " + room.length + " doubles: the layout takes "
+					+ NativeBridge.ROOM_DOUBLES + ", its EAX parameters reaching index " + (reach - 1));
+		}
 	}
 
 	private boolean earlyOn(boolean efx, boolean underwater) {

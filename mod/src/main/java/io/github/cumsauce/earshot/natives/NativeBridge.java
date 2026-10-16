@@ -68,6 +68,18 @@ public final class NativeBridge {
 	public static final int EARLY_DOUBLES = 6;
 	/** Doubles per stream from {@code earshot_voice_streams}. */
 	private static final int VOICE_DOUBLES = 10;
+	/**
+	 * The most floats an impulse response may ask the JVM to marshal. The API sizes one as
+	 * {@code maxSeconds × sample_rate × 4} channels (first-order ambisonics: W, X, Y, Z), and every call this mod
+	 * makes is 1.5 s × 48 000 × 4 = 288 000 floats; {@code 1 << 22} = 4 194 304 is that with room for about 21 s
+	 * of impulse response, so a native count above it is a corrupt value, never a length to allocate.
+	 */
+	static final int MAX_IR_FLOATS = 1 << 22;
+	/**
+	 * The most voice streams {@link #voiceStreams} may be told there are at once: dozens in any real session, so
+	 * 4096 is an absurd ceiling that still keeps the {@code (int)} cast and the arrays made for it exact.
+	 */
+	static final int MAX_VOICE_STREAMS = 4096;
 
 	// size_t is 64 bits on every platform Minecraft runs on.
 	private static final ValueLayout.OfLong SIZE_T = JAVA_LONG;
@@ -248,6 +260,7 @@ public final class NativeBridge {
 		check((int) invoke(tracePaths, engine, MemorySegment.ofArray(origin), rays, bounces, reach, seed,
 				MemorySegment.ofArray(segments), (long) maxSegments, MemorySegment.ofArray(written),
 				MemorySegment.ofArray(stats)));
+		checkNativeLength(written[0], maxSegments, "tracePaths segments written");
 		return new Trace(segments, (int) written[0], (long) stats[0], (long) stats[1], (long) stats[2], stats[3]);
 	}
 
@@ -310,6 +323,7 @@ public final class NativeBridge {
 		check((int) invoke(impulseResponse, engine, sampleRate, maxSeconds, seed, MemorySegment.ofArray(none), 0L,
 				MemorySegment.ofArray(needed)));
 		while (true) {
+			checkNativeLength(needed[0], MAX_IR_FLOATS, "impulse response floats");
 			float[] out = new float[(int) needed[0]];
 			check((int) invoke(impulseResponse, engine, sampleRate, maxSeconds, seed, MemorySegment.ofArray(out),
 					(long) out.length, MemorySegment.ofArray(needed)));
@@ -388,6 +402,7 @@ public final class NativeBridge {
 			long[] count = new long[1];
 			check((int) invoke(voiceStreams, MemorySegment.ofArray(uuids), MemorySegment.ofArray(info), (long) cap,
 					MemorySegment.ofArray(count)));
+			checkNativeLength(count[0], MAX_VOICE_STREAMS, "voice streams");
 			if (count[0] > cap) {
 				cap = (int) count[0];
 				continue;
@@ -422,6 +437,7 @@ public final class NativeBridge {
 		check((int) invoke(impulseResponseFor, engine, MemorySegment.ofArray(source), rays, bounces, sampleRate,
 				maxSeconds, seed, MemorySegment.ofArray(new float[0]), 0L, MemorySegment.ofArray(needed)));
 		while (true) {
+			checkNativeLength(needed[0], MAX_IR_FLOATS, "impulse response floats");
 			float[] out = new float[(int) needed[0]];
 			check((int) invoke(impulseResponseFor, engine, MemorySegment.ofArray(source), rays, bounces, sampleRate,
 					maxSeconds, seed, MemorySegment.ofArray(out), (long) out.length, MemorySegment.ofArray(needed)));
@@ -443,6 +459,16 @@ public final class NativeBridge {
 
 	private static void requireLength(double[] array, int length, String what) {
 		if (array.length != length) throw new IllegalArgumentException(what + " has " + array.length + " values");
+	}
+
+	/**
+	 * Fails fast when the native side reports a count outside {@code 0…bound}, naming both the value and the
+	 * bound: a truncating {@code (int)} cast would quietly make a wrong-sized array or index instead.
+	 */
+	static void checkNativeLength(long value, long bound, String what) {
+		if (value < 0 || value > bound) {
+			throw new IllegalStateException("native " + what + " is " + value + ", outside 0…" + bound);
+		}
 	}
 
 	/** Calls {@code handle}. A downcall never throws, so anything thrown is a bug in this class. */
