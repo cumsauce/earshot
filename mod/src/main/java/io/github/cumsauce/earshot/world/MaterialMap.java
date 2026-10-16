@@ -38,6 +38,13 @@ public final class MaterialMap {
 	private static final Map<SoundType, AcousticMaterial> BY_SOUND = new IdentityHashMap<>();
 
 	static {
+		// The packed native byte gives the material id 4 bits (see packNibble), so ids must stay in 0…15.
+		for (AcousticMaterial material : AcousticMaterial.values()) {
+			if (material.id() > 0x0F) {
+				throw new IllegalStateException("material " + material + " has id " + material.id()
+						+ ", past the packed byte's 4-bit id nibble (0…15)");
+			}
+		}
 		for (SoundType sound : new SoundType[] {SoundType.WOOL, SoundType.SLIME_BLOCK, SoundType.HONEY_BLOCK,
 				SoundType.SPONGE, SoundType.WET_SPONGE, SoundType.WART_BLOCK, SoundType.SHROOMLIGHT, SoundType.MOSS,
 				SoundType.MOSS_CARPET}) {
@@ -92,7 +99,7 @@ public final class MaterialMap {
 
 	/** The material of {@code state}. */
 	public AcousticMaterial material(BlockState state) {
-		return AcousticMaterial.values()[packed(state) & 0x0F];
+		return materialOf(packed(state));
 	}
 
 	/**
@@ -174,7 +181,26 @@ public final class MaterialMap {
 	static byte pack(BlockState state, MaterialOverrides overrides) {
 		AcousticMaterial material = classify(state, overrides);
 		if (material == AcousticMaterial.AIR) return 0;
-		return (byte) (fillCode(state, material) << 4 | material.id());
+		return packNibble(fillCode(state, material), material);
+	}
+
+	/**
+	 * Packs a material id into the byte's low nibble and how full the block is into its high one: 4 bits each, so
+	 * both must stay within 0…15 — a fill of 16 (a full block counted in sixteenths) would roll over into the id
+	 * and read back as another material.
+	 */
+	static byte packNibble(int fillCode, AcousticMaterial material) {
+		int id = material.id();
+		if (id > 0x0F || fillCode < 0 || fillCode > 0x0F) {
+			throw new IllegalStateException("packed byte: material " + material + " id " + id + " and fill "
+					+ fillCode + " must each fit 4 bits (0…15)");
+		}
+		return (byte) (fillCode << 4 | id);
+	}
+
+	/** The material a packed native byte names: its low nibble. */
+	static AcousticMaterial materialOf(byte packed) {
+		return AcousticMaterial.values()[packed & 0x0F];
 	}
 
 	/**
