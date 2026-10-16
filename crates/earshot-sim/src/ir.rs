@@ -140,7 +140,12 @@ pub fn impulse_response(
         *sample *= norm;
     }
 
-    // The early reflections, as taps from their directions.
+    // The early reflections, as taps from their directions. Each tap is a
+    // broadband click carrying its whole path's air absorption per band:
+    // the click is run through the band split, the three bands weighted by
+    // what that much air leaves of each. With equal weights the bands sum
+    // back to the plain click (the split's ring cancels sample for sample),
+    // so untouched bands leave the tap exactly where it was.
     for reflection in &merge(early) {
         let i = (reflection.delay * rate) as usize;
         if i >= length {
@@ -148,11 +153,20 @@ pub fn impulse_response(
         }
         let a = reflection.energy.sqrt();
         let d = reflection.direction;
-        let at = i * IR_CHANNELS;
-        out[at] += a * std::f32::consts::FRAC_1_SQRT_2;
-        out[at + 1] += a * -d.z as f32;
-        out[at + 2] += a * -d.x as f32;
-        out[at + 3] += a * d.y as f32;
+        let air = air_absorption(reflection.delay * SPEED_OF_SOUND as f32);
+        let mut bands = Bands3::new(rate);
+        // The split's low band still rings a few milliseconds after the
+        // click; five is many lifetimes of it at these crossovers.
+        let ring = (rate as usize / 200).min(length - i);
+        for sample in i..i + ring {
+            let [low, mid, high] = bands.split(if sample == i { 1.0 } else { 0.0 });
+            let g = a * (low * air[0] + mid * air[1] + high * air[2]);
+            let at = sample * IR_CHANNELS;
+            out[at] += g * std::f32::consts::FRAC_1_SQRT_2;
+            out[at + 1] += g * -d.z as f32;
+            out[at + 2] += g * -d.x as f32;
+            out[at + 3] += g * d.y as f32;
+        }
     }
 
     // The edge sources: small taps at the wall's diffracting edges, in
@@ -193,19 +207,62 @@ pub fn impulse_response(
     out
 }
 
+/// ISO 9613-1 atmospheric absorption of air at 20 °C and 50 % relative
+/// humidity, in dB per metre, at each band's representative frequency (the
+/// low at 250 Hz, the mid at 1 kHz, the high at 4 kHz: the standard's
+/// coefficient table reads 0.0002, 0.0013 and 0.0124 dB/m there — the same
+/// ISO 9613-1 model the Java side's `Air` applies to sounds travelling to
+/// the listener, where OpenAL's air absorption factor 1 is about 0.05 dB/m
+/// at its 5 kHz reference). Taps carry it over their whole path, so a far
+/// echo arrives darker than a near one instead of ringing as bright.
+const AIR_DB_PER_METRE: [f32; BANDS] = [0.0002, 0.0013, 0.0124];
+
+/// Each band's energy kept over `path` metres of air: those dB figures are
+/// power levels by tens, so the energy gain is 10^(−dB/10). Modest at
+/// block scale — a near tap loses nothing — and cumulative out to the
+/// hundreds of metres a tap over open water can travel.
+fn air_absorption(path: f32) -> [f32; BANDS] {
+    std::array::from_fn(|band| 10.0f32.powf(-AIR_DB_PER_METRE[band] * path / 10.0))
+}
+
 /// Within this long, reflections from about the same direction are one.
-const MERGE_SECONDS: f32 = 0.001;
+/// Sub-millisecond: a fused tap's time is placed on this bin's grid, and
+/// at a millisecond that grid is a comb — the steady notches heard over a
+/// flat plane, where the first bounces fill every bin all the way out.
+const MERGE_SECONDS: f32 = 0.0005;
+
+/// A deterministic jitter in `[0, 1)` for a fused bucket, from its key
+/// alone: splitmix64's finalizer over the bin and the direction code. The
+/// same key always gives the same jitter — no RNG state anywhere — so the
+/// same room and seed always produce the same taps.
+fn bucket_jitter(bin: u32, direction: u8) -> f32 {
+    let mut h = (u64::from(bin) << 8) | u64::from(direction);
+    h = (h ^ (h >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    h = (h ^ (h >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    h ^= h >> 31;
+    (h >> 40) as f32 / (1u32 << 24) as f32
+}
 
 /// The early reflections as the reflections they are, not one per ray: the
 /// rays that hit the same wall each carry a share of one reflection's
 /// energy, and arrive together. Added as taps one by one, they would sum in
 /// amplitude, not energy: at low frequencies, where they're in phase, a
 /// thousand taps from one wall gave the response some 30 dB of bass. So each
-/// reflection's share is summed by energy, per millisecond and direction
+/// reflection's share is summed by energy, per half-millisecond and direction
 /// (which way along the axis it mostly comes from), into one tap at their
 /// energy-weighted time, from their energy-weighted direction.
+///
+/// A tap fusing more than one ray is then nudged by a jitter derived from
+/// its bucket key alone. Over a near-specular plane — water above all,
+/// where the diffuse tail that would mask taps is absent — the rays'
+/// delays fill every bin, and their energy-weighted times sit on the bin
+/// grid: one tap a bin, a regular impulse grid the ear hears as a steady
+/// metallic comb. The jitter scatters the fused taps off that grid; a
+/// lone reflection keeps its true time, only the summary of many rays is
+/// moved. The result is sorted by delay, so the taps are written in the
+/// same order however the buckets come out of the map.
 fn merge(early: &[Reflection]) -> Vec<Reflection> {
-    let mut merged: std::collections::HashMap<(u32, u8), (f32, Vec3, f32)> =
+    let mut merged: std::collections::HashMap<(u32, u8), (f32, Vec3, f32, u32)> =
         std::collections::HashMap::new();
     for r in early {
         if !(r.energy > 0.0 && r.delay.is_finite() && r.delay >= 0.0) {
@@ -222,19 +279,29 @@ fn merge(early: &[Reflection]) -> Vec<Reflection> {
         };
         let sign = u8::from([d.x, d.y, d.z][usize::from(main)] < 0.0);
         let key = ((r.delay / MERGE_SECONDS) as u32, main * 2 + sign);
-        let entry = merged.entry(key).or_insert((0.0, Vec3::ZERO, 0.0));
+        let entry = merged.entry(key).or_insert((0.0, Vec3::ZERO, 0.0, 0));
         entry.0 += r.energy;
         entry.1 = entry.1 + d * f64::from(r.energy);
         entry.2 += r.delay * r.energy;
+        entry.3 += 1;
     }
-    merged
+    let mut taps: Vec<Reflection> = merged
         .into_iter()
-        .map(|(_, (energy, direction, delay))| Reflection {
-            direction: direction.normalized(),
-            delay: delay / energy,
-            energy,
+        .map(|((bin, direction), (energy, dir_energy, delay, rays))| {
+            let delay = delay / energy;
+            Reflection {
+                direction: dir_energy.normalized(),
+                delay: if rays > 1 {
+                    delay + bucket_jitter(bin, direction) * MERGE_SECONDS
+                } else {
+                    delay
+                },
+                energy,
+            }
         })
-        .collect()
+        .collect();
+    taps.sort_by(|a, b| a.delay.total_cmp(&b.delay));
+    taps
 }
 
 /// The reverberant energy relative to the direct sound at one block. The
@@ -872,6 +939,128 @@ mod tests {
         assert!(
             with > without,
             "with edges should add energy at the edge delay: {with} vs {without}"
+        );
+    }
+
+    /// The tap set a listener two metres over a large flat near-specular
+    /// plane produces: first-bounce delays from 2h/c ≈ 11.7 ms out to the
+    /// 50 m reach limit ≈ 292 ms, dense (about seven rays per old-style
+    /// millisecond bin), all from the plane's one direction. Binned on a
+    /// fixed millisecond grid these fuse into one tap every bin — the
+    /// regular impulse grid heard as a steady metallic comb over water.
+    fn over_a_plane() -> Vec<Reflection> {
+        let down = Vec3::new(0.0, 0.0, -1.0);
+        (0..2000)
+            .map(|i| Reflection {
+                direction: down,
+                delay: 0.011_7 + 0.28 * (i as f32 / 2000.0),
+                energy: 0.001,
+            })
+            .collect()
+    }
+
+    /// A comb is a tap train correlating with itself at the grid spacing:
+    /// one tap every millisecond gives full correlation at 1 ms and its
+    /// multiples, notches every kilohertz. Merged, the train over a flat
+    /// plane must show no such peak at the old grid's lags.
+    #[test]
+    fn taps_over_a_flat_plane_do_not_form_a_comb() {
+        let taps = merge(&over_a_plane());
+        let rate = 48_000.0;
+        let mut train = vec![0.0f32; (0.32 * rate) as usize];
+        for tap in &taps {
+            train[(tap.delay * rate) as usize] += tap.energy;
+        }
+        // The train's autocorrelation, normalised: a perfect 1 ms grid
+        // reads 1.0 at lags 48, 96 and 144 samples.
+        let n = train.len() as f32;
+        let mean = train.iter().sum::<f32>() / n;
+        let centered: Vec<f32> = train.iter().map(|s| s - mean).collect();
+        let power: f32 = centered.iter().map(|s| s * s).sum();
+        let mut worst = 0.0f32;
+        let mut at = 0usize;
+        for lag in 40..=160 {
+            let sum: f32 = centered
+                .iter()
+                .zip(&centered[lag..])
+                .map(|(a, b)| a * b)
+                .sum();
+            let corr = (sum / power).abs();
+            if corr > worst {
+                worst = corr;
+                at = lag;
+            }
+        }
+        assert!(
+            worst < 0.5,
+            "the tap train correlates with itself at lag {at} samples: {worst}"
+        );
+    }
+
+    /// The same input always merges to the same taps, bitwise — the golden
+    /// scenes and every IR built from a fixed room and seed rest on it.
+    #[test]
+    fn merging_is_deterministic() {
+        let early = over_a_plane();
+        assert_eq!(merge(&early), merge(&early));
+    }
+
+    /// Merging sums shares by energy, never inventing or losing any: the
+    /// taps' energies add to the rays' own, to the last bit of tolerance
+    /// float addition allows.
+    #[test]
+    fn merging_preserves_the_total_energy() {
+        let early = over_a_plane();
+        let want: f64 = early.iter().map(|r| f64::from(r.energy)).sum();
+        let got: f64 = merge(&early).iter().map(|r| f64::from(r.energy)).sum();
+        assert!((got - want).abs() < 1e-6 * want, "{got} against {want}");
+    }
+
+    /// ISO 9613-1 air absorption on the taps: a tap 171 m out arrives with
+    /// its high band markedly darker than its low, while a tap a few
+    /// metres out is barely touched. Measured through the band split on
+    /// channel Y (both taps come from +x), in a room with almost no tail
+    /// to drown the taps.
+    #[test]
+    fn a_far_tap_arrives_darker_than_a_near_one() {
+        let near = Reflection {
+            direction: Vec3::new(1.0, 0.0, 0.0),
+            delay: 0.01,
+            energy: 0.25,
+        };
+        let far = Reflection {
+            direction: Vec3::new(1.0, 0.0, 0.0),
+            delay: 0.5,
+            energy: 0.25,
+        };
+        let r = Room {
+            decay: [0.05; 3],
+            early_decay: [0.05; 3],
+            mean_free_path: 1.0,
+            enclosure: 0.2,
+            first_reflection: 0.5,
+            scattering: 0.3,
+            volume: 0.0,
+        };
+        let ir = impulse_response(&r, &[near, far], &[], 48_000, 1.0, 7);
+        // The tap's energy through each band, over the 10 ms after it.
+        let bands_after = |at: f32| {
+            let mut split = Bands3::new(48_000.0);
+            let mut e = [0.0f32; 3];
+            let from = (at * 48_000.0) as usize;
+            for i in from..from + 480 {
+                let [low, mid, high] = split.split(ir[i * IR_CHANNELS + 2]);
+                e[0] += low * low;
+                e[1] += mid * mid;
+                e[2] += high * high;
+            }
+            e
+        };
+        let bright = |e: [f32; 3]| e[2] / e[0];
+        let (near_e, far_e) = (bands_after(0.01), bands_after(0.5));
+        assert!(
+            bright(far_e) < 0.85 * bright(near_e),
+            "near {near_e:?}, far {far_e:?}"
         );
     }
 }
