@@ -127,7 +127,7 @@ pub fn measure_with_early(
         parts
             .into_iter()
             .map(|part| part.join().expect("a room trace thread panicked"))
-            .fold(Tally::new(bounces), Tally::merge)
+            .fold(Tally::new(bounces), |total, part| total.merge(&part))
     });
     tally.room(rays)
 }
@@ -164,11 +164,14 @@ struct Tally {
     /// at each surface by what the surface took.
     band_energy: [f64; BANDS],
     /// The energy decay curve: the ray energy present in each one
-    /// millisecond bin, per band — what the early decay is read off.
-    hist: [[f64; HIST_BINS]; BANDS],
+    /// millisecond bin, per band — what the early decay is read off. Boxed:
+    /// a room is measured on the FFI thread, whose Java stack is a fraction
+    /// of a megabyte, and this is 96 KB on its own.
+    hist: Box<[[f64; HIST_BINS]; BANDS]>,
     /// Energy the bounce cap would have carried on, at the bin the ray
-    /// reached the cap: the curve's tail after the trace's horizon.
-    orphan: [[f64; HIST_BINS]; BANDS],
+    /// reached the cap: the curve's tail after the trace's horizon. Boxed
+    /// with `hist`.
+    orphan: Box<[[f64; HIST_BINS]; BANDS]>,
 }
 
 impl Default for Tally {
@@ -186,8 +189,8 @@ impl Default for Tally {
             bounces: 0,
             elapsed: 0.0,
             band_energy: [0.0; BANDS],
-            hist: [[0.0; HIST_BINS]; BANDS],
-            orphan: [[0.0; HIST_BINS]; BANDS],
+            hist: Box::new([[0.0; HIST_BINS]; BANDS]),
+            orphan: Box::new([[0.0; HIST_BINS]; BANDS]),
         }
     }
 }
@@ -289,8 +292,12 @@ impl Tally {
         }
     }
 
-    fn merge(mut self, other: Tally) -> Tally {
-        self.early.extend(other.early);
+    /// Adds `other` into `self`. Borrows `self` and takes `other` by value:
+    /// the histograms are boxed, so only the box pointers move, and the
+    /// running total stays put on the stack rather than being built afresh by
+    /// value in a fold.
+    fn merge(mut self, other: &Tally) -> Tally {
+        self.early.extend(other.early.iter().copied());
         for (a, b) in self.absorbed.iter_mut().zip(other.absorbed) {
             *a += b;
         }
@@ -433,6 +440,47 @@ mod tests {
         let loss = |a: f64| SIXTY_DB * path / (SPEED_OF_SOUND * (-((1.0 - a).ln()) + air * path));
         let leaky = a + (1.0 - a) * f64::from(acoustics.transmission[band]);
         loss(leaky)
+    }
+
+    /// A tally must stay small enough to live on the stack of whatever
+    /// thread measures a room: `earshot_room_at` runs on a Java thread with
+    /// the JVM's default stack (a fraction of a megabyte), and a `Tally` by
+    /// value in `measure_with_early`'s fold, plus another for the running
+    /// total, is what overflowed it and crashed the process inside the
+    /// library, its frames smeared past the guard page.
+    #[test]
+    fn a_tally_small_enough_for_the_stacks_that_measure_rooms() {
+        assert!(
+            std::mem::size_of::<Tally>() <= 4096,
+            "Tally is {} bytes: the histograms must be boxed, not inline",
+            std::mem::size_of::<Tally>()
+        );
+    }
+
+    /// A room measured on a JVM-sized stack: `earshot_room_at` runs on a Java
+    /// thread with the JVM's default stack, a fraction of a megabyte, so
+    /// measuring a room there must not need more than that. With the
+    /// histograms inline (192 KB each, by value through [`Tally::merge`]) this
+    /// overflowed the stack and the process died inside the library; boxed,
+    /// it fits with room to spare. Skipped where threads can't take a small
+    /// stack, since there is nothing to check there.
+    #[test]
+    fn a_room_measures_on_a_jvm_sized_stack() {
+        // The JVM's default is usually 512 KB-1 MB; 256 KB is the small end,
+        // and the point of the test is that it fits at all.
+        let measured = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(|| {
+                let world = closed_box(Material::Rock, 12);
+                measure(&world, Vec3::new(6.0, 6.0, 6.0), 512, 8, 64.0, 1)
+            });
+        let Ok(handle) = measured else {
+            return;
+        };
+        let room = handle
+            .join()
+            .expect("the measurement thread overflowed its stack");
+        assert!(room.decay[1] > 0.1, "{room:?}");
     }
 
     /// Eyring's decay with no leak at all: the sealed-box figure.
