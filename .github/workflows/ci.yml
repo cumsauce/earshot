@@ -115,12 +115,20 @@ jobs:
           { echo '<details><summary>Sound engine classes (26.3)</summary>'; echo; echo '```'
             cat build/sound-classes.txt; echo '```'; echo '</details>'; } >> "$GITHUB_STEP_SUMMARY"
       # Loom runs client gametests under Xvfb when CI is set. There is no sound
-      # card, so OpenAL Soft's null backend stands in for one.
+      # card, so OpenAL Soft's null backend stands in for one. libSegFault makes
+      # a SIGSEGV print the dying thread's stack: the client has been known to
+      # die with the shell's bare "Segmentation fault" and no HotSpot report,
+      # which names no frame at all.
       - name: Client gametest
         working-directory: mod
         env:
           ALSOFT_DRIVERS: "null"
-        run: ./gradlew runClientGameTest -Pearshot.prebuiltNatives="$GITHUB_WORKSPACE/target/dist/natives"
+          LD_PRELOAD: /lib/x86_64-linux-gnu/libSegFault.so
+          SEGFAULT_SIGNALS: all
+          SEGFAULT_USE_ALTSTACK: "1"
+        run: |
+          echo "kernel: $(uname -r)"
+          ./gradlew runClientGameTest -Pearshot.prebuiltNatives="$GITHUB_WORKSPACE/target/dist/natives"
       - name: Report the OpenAL probe
         if: always()
         run: |
