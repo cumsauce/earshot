@@ -270,6 +270,8 @@ mod merge_tests {
 
 #[cfg(test)]
 mod tests {
+    use earshot_world::Material;
+
     use super::*;
 
     fn room(t60: [f32; 3], mean_free_path: f64, enclosure: f32) -> Room {
@@ -345,6 +347,35 @@ mod tests {
             ir.len() / IR_CHANNELS
         );
         assert!(ir[at + 2] < 0.0, "the echo is there, from +x");
+    }
+
+    #[test]
+    fn the_tail_sits_at_sabines_level_for_a_shoebox() {
+        // Sabine's reverberant level — 16π/R, R = S·a/(1 − a) — against a
+        // measured rock box: the response's absolute level was pinned only
+        // to itself before this. The old 4× air bug inflated the absorption
+        // the decay implies and dropped this ratio to 0.65.
+        let size = 12;
+        let mut world = earshot_world::World::new();
+        for a in -1..=size {
+            for b in -1..=size {
+                for wall in [-1, size] {
+                    world.set_block(wall, a, b, Material::Rock);
+                    world.set_block(a, wall, b, Material::Rock);
+                    world.set_block(a, b, wall, Material::Rock);
+                }
+            }
+        }
+        let room = crate::measure(&world, Vec3::new(6.0, 6.0, 6.0), 2048, 24, 64.0, 1);
+        assert_eq!(room.enclosure, 1.0);
+        let a = f64::from(Material::Rock.acoustics().absorption[1]);
+        let surface = 6.0 * f64::from(size).powi(2);
+        let sabine = 16.0 * std::f64::consts::PI / (surface * a / (1.0 - a));
+        let ratio = f64::from(late_energy(&room)) / sabine;
+        assert!(
+            (0.75..=1.25).contains(&ratio),
+            "the tail is {ratio} of Sabine's {sabine} s level"
+        );
     }
 
     #[test]
