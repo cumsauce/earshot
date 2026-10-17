@@ -366,9 +366,19 @@ public final class VoicePlayer {
 		return Float.isFinite(range) && range > 0 ? Math.max(range, FULL_VOLUME_DISTANCE + 1) : DEFAULT_MAX_DISTANCE;
 	}
 
-	/** Points a voice the way its speaker faces, or all round when that isn't known. */
+	/**
+	 * The direction a voice may point, or null when {@code facing} is not usable as {@link SourceState#usable}
+	 * judges: a NaN or infinite coordinate raises AL_INVALID_VALUE into the context's shared error state, where
+	 * a later bracketed caller could blame its own window for it.
+	 */
+	static @Nullable Vec3 direction(@Nullable Vec3 facing) {
+		return SourceState.usable(facing) ? facing : null;
+	}
+
+	/** Points a voice the way its speaker faces, or all round when that isn't known or usable. */
 	private static void point(Voice voice, @Nullable Vec3 facing) {
-		if (facing == null) {
+		Vec3 direction = direction(facing);
+		if (direction == null) {
 			if (voice.directional) AL10.alSource3f(voice.source, AL10.AL_DIRECTION, 0, 0, 0);
 			voice.directional = false;
 			return;
@@ -380,7 +390,8 @@ public final class VoicePlayer {
 			AL10.alSourcef(voice.source, EXTEfx.AL_CONE_OUTER_GAINHF, BEHIND_HIGHS);
 			voice.directional = true;
 		}
-		AL10.alSource3f(voice.source, AL10.AL_DIRECTION, (float) facing.x, (float) facing.y, (float) facing.z);
+		AL10.alSource3f(voice.source, AL10.AL_DIRECTION, (float) direction.x, (float) direction.y,
+				(float) direction.z);
 	}
 
 	/**
@@ -416,10 +427,15 @@ public final class VoicePlayer {
 		AL10.alSource3f(voice.source, AL10.AL_POSITION, 0, 0, 0);
 		AL10.alSourcei(voice.source, AL10.AL_DISTANCE_MODEL, AL10.AL_NONE);
 		AL10.alSourcei(voice.source, EXTEfx.AL_DIRECT_FILTER, EXTEfx.AL_FILTER_NULL);
-		for (int send = 0; send < 2; send++) {
+		// Every send goes, sends 0 and 1 like before and the space (SpaceReverb.SEND) and early
+		// reflections (EarlyReflections.SEND) sends too: a centred voice leaves SoundShaper's target
+		// list, so nothing later clears those, and the dry voice would keep exciting them for its lifetime.
+		for (int send = 0; send <= Math.max(SpaceReverb.SEND, EarlyReflections.SEND); send++) {
 			AL11.alSource3i(voice.source, EXTEfx.AL_AUXILIARY_SEND_FILTER, EXTEfx.AL_EFFECTSLOT_NULL, send,
 					EXTEfx.AL_FILTER_NULL);
 		}
+		voice.state.spaceSent = false;
+		voice.state.earlySent = false;
 		voice.gains = new float[] {1, 1, 1};
 	}
 
@@ -433,8 +449,10 @@ public final class VoicePlayer {
 	private static void stop(Voice voice) {
 		AL10.alSourceStop(voice.source);
 		AL10.alSourcei(voice.source, AL10.AL_BUFFER, 0);
+		// Filters must come off before the source goes: the int+state overload detaches the direct, send
+		// and space filters from the source, which a deleted source cannot be detached from.
+		SoundShaper.releaseFilters(voice.source, voice.state);
 		AL10.alDeleteSources(voice.source);
 		AL10.alDeleteBuffers(voice.buffer);
-		SoundShaper.releaseFilters(voice.state);
 	}
 }
