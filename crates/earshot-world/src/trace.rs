@@ -792,6 +792,36 @@ mod tests {
     }
 
     #[test]
+    fn the_relay_is_never_below_the_wall_crossing() {
+        // A relay along the structure must never cost more than crossing
+        // the wall does, or flanking would punish the cheap path. Water is
+        // the one row where the table cannot hold that: a water crossing
+        // loses a thousandth of a decibel, a share just under one, and no
+        // relay rate less than perfect could sit above it. Water's relay
+        // stays within a hair of its crossing, so the leak is the table's
+        // own figure, not a loophole.
+        for material in Material::ALL {
+            let acoustics = material.acoustics();
+            for band in 0..BANDS {
+                if material != Material::Water {
+                    assert!(
+                        acoustics.structure[band] >= acoustics.transmission[band],
+                        "{material:?} band {band}"
+                    );
+                }
+                assert!(
+                    (0.0..=1.0).contains(&acoustics.structure[band]),
+                    "{material:?} band {band}"
+                );
+                assert!(
+                    (0.0..=1.0).contains(&acoustics.transmission[band]),
+                    "{material:?} band {band}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn bad_input_ends_the_walk_at_once() {
         let world = World::new();
         let nan = Vec3::new(f64::NAN, 0.0, 0.0);

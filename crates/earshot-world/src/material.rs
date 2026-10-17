@@ -49,9 +49,16 @@ pub struct Acoustics {
     pub scattering: f32,
     /// Share of the energy that gets through one whole block, per band.
     pub transmission: Bands,
+    /// Share of the energy kept per metre of lateral run inside the
+    /// material, per band: how well the material carries sound along itself.
+    /// A wall crossed at a shallow angle pays its crossing over the
+    /// thickness and this rate over the run, so sound leaks along a shared
+    /// structure instead of dying in it.
+    pub structure: Bands,
 }
 
-/// Absorption, scattering and transmission loss (dB per block) for each
+/// Absorption, scattering and transmission loss (dB per block) and the
+/// structure-borne relay rate (share kept per metre of lateral run) for each
 /// material, in [`Material::ALL`] order. Absorption follows published
 /// coefficients for similar surfaces (rock and concrete, wood panelling,
 /// glass, heavy fabric, soil, snow) at about 250 Hz, 1 kHz and 4 kHz.
@@ -59,40 +66,130 @@ pub struct Acoustics {
 /// masonry wall some 45 dB at 1 kHz, a timber one under 30, glazing under 30,
 /// rising with frequency as the mass law has it), rather than a solid metre's,
 /// which would stop nearly everything: a sound behind a wall is faint and dull,
-/// and mostly comes through the doorway, which pathing finds.
-const TABLE: [(&str, Bands, f32, Bands); Material::ALL.len()] = [
-    ("air", [0.0, 0.0, 0.0], 0.0, [0.0, 0.0, 0.0]),
+/// and mostly comes through the doorway, which pathing finds. The relay rate
+/// follows how well the material conducts: dense and stiff (metal, glass,
+/// rock) carries a run along it, soft and porous (snow, cloth, leaves) does
+/// not.
+const TABLE: [(&str, Bands, f32, Bands, Bands); Material::ALL.len()] = [
+    (
+        "air",
+        [0.0, 0.0, 0.0],
+        0.0,
+        [0.0, 0.0, 0.0],
+        [1.0, 1.0, 1.0],
+    ),
     // Scattering is at block scale: worked and natural stone (cobble, cliffs, stepped terrain) is rough and
     // breaks a reflection up, so its echoes come back diffuse rather than mirror-clean.
     // Natural and worked stone is rough and porous, not sealed concrete: about rough rock and unglazed brick's
     // coefficients, so a bare stone room rings for a few seconds, as caves do, not ten.
-    ("rock", [0.05, 0.07, 0.10], 0.6, [35.0, 45.0, 55.0]),
-    ("wood", [0.15, 0.10, 0.08], 0.35, [20.0, 28.0, 35.0]),
-    ("glass", [0.18, 0.06, 0.04], 0.05, [22.0, 28.0, 30.0]),
-    ("cloth", [0.15, 0.55, 0.70], 0.5, [4.0, 8.0, 15.0]),
-    ("leaves", [0.10, 0.30, 0.50], 0.8, [1.0, 2.0, 4.0]),
-    ("soil", [0.15, 0.40, 0.55], 0.65, [30.0, 40.0, 50.0]),
-    ("sand", [0.20, 0.45, 0.60], 0.6, [25.0, 35.0, 45.0]),
-    ("metal", [0.08, 0.05, 0.04], 0.1, [30.0, 40.0, 50.0]),
+    (
+        "rock",
+        [0.05, 0.07, 0.10],
+        0.6,
+        [35.0, 45.0, 55.0],
+        [0.80, 0.72, 0.60],
+    ),
+    (
+        "wood",
+        [0.15, 0.10, 0.08],
+        0.35,
+        [20.0, 28.0, 35.0],
+        [0.75, 0.65, 0.55],
+    ),
+    (
+        "glass",
+        [0.18, 0.06, 0.04],
+        0.05,
+        [22.0, 28.0, 30.0],
+        [0.85, 0.78, 0.65],
+    ),
+    (
+        "cloth",
+        [0.15, 0.55, 0.70],
+        0.5,
+        [4.0, 8.0, 15.0],
+        [0.40, 0.30, 0.22],
+    ),
+    (
+        "leaves",
+        [0.10, 0.30, 0.50],
+        0.8,
+        [1.0, 2.0, 4.0],
+        [0.80, 0.70, 0.55],
+    ),
+    (
+        "soil",
+        [0.15, 0.40, 0.55],
+        0.65,
+        [30.0, 40.0, 50.0],
+        [0.55, 0.45, 0.35],
+    ),
+    (
+        "sand",
+        [0.20, 0.45, 0.60],
+        0.6,
+        [25.0, 35.0, 45.0],
+        [0.50, 0.42, 0.32],
+    ),
+    (
+        "metal",
+        [0.08, 0.05, 0.04],
+        0.1,
+        [30.0, 40.0, 50.0],
+        [0.92, 0.88, 0.80],
+    ),
     // Bulk water passes sound almost as well as air does — whales call across
     // oceans — so nearly nothing per block. The air–water *surface* is what
     // blocks sound, and `transmission` charges it once per crossing.
-    ("water", [0.01, 0.01, 0.02], 0.05, [0.0, 0.005, 0.01]),
-    ("lava", [0.05, 0.05, 0.05], 0.1, [30.0, 40.0, 50.0]),
-    ("ice", [0.02, 0.02, 0.03], 0.05, [25.0, 35.0, 45.0]),
-    ("snow", [0.45, 0.70, 0.85], 0.6, [6.0, 12.0, 20.0]),
+    (
+        "water",
+        [0.01, 0.01, 0.02],
+        0.05,
+        [0.0, 0.005, 0.01],
+        [1.0, 0.95, 0.90],
+    ),
+    (
+        "lava",
+        [0.05, 0.05, 0.05],
+        0.1,
+        [30.0, 40.0, 50.0],
+        [0.55, 0.45, 0.35],
+    ),
+    (
+        "ice",
+        [0.02, 0.02, 0.03],
+        0.05,
+        [25.0, 35.0, 45.0],
+        [0.85, 0.78, 0.68],
+    ),
+    (
+        "snow",
+        [0.45, 0.70, 0.85],
+        0.6,
+        [6.0, 12.0, 20.0],
+        [0.55, 0.45, 0.35],
+    ),
     // A thin layer of textile or fresh snow on something hard: not much of a
     // wall, but it takes the highs out of a room's ring and out of the floor's
     // slap back. Coefficients are about a heavy carpet's.
-    ("rug", [0.15, 0.35, 0.60], 0.65, [1.0, 2.0, 3.0]),
+    (
+        "rug",
+        [0.15, 0.35, 0.60],
+        0.65,
+        [1.0, 2.0, 3.0],
+        [0.85, 0.78, 0.70],
+    ),
 ];
 
 static ACOUSTICS: LazyLock<[Acoustics; Material::ALL.len()]> = LazyLock::new(|| {
-    TABLE.map(|(_, absorption, scattering, loss_db)| Acoustics {
-        absorption,
-        scattering,
-        transmission: loss_db.map(|db| 10f32.powf(-db / 10.0)),
-    })
+    TABLE.map(
+        |(_, absorption, scattering, loss_db, structure)| Acoustics {
+            absorption,
+            scattering,
+            transmission: loss_db.map(|db| 10f32.powf(-db / 10.0)),
+            structure,
+        },
+    )
 });
 
 impl Material {
