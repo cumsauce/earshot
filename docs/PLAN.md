@@ -261,10 +261,11 @@ Five gaps between the voxel sim and the situations players actually build and ex
 
 - **The room trace fit on a Java thread's stack (done):** client gametests had died intermittently inside `earshot_room_at`, sigsegv with frames smeared past the guard page and none in Java above. The cause was the trace's tally: its two energy-decay histograms were inline (3 bands × 4096 one-millisecond bins each, 192 KB a tally), and `measure_with_early` moved them *by value* through `Tally::merge` in a fold, so a Java thread measuring a space with the JVM's default stack (a fraction of a megabyte) ran off the end. They are boxed now, `merge` takes `&Tally`, and two tests hold the line: one pins `size_of::<Tally>()` under 4 KB so the histograms can never creep back onto the stack, and one measures a room on a deliberately 256 KB stack, which overflows the old code and fits the new. The room traces themselves are unchanged: the golden scenes and the BRAS seminar room reproduce exactly.
 
-## Remaining work (2026-10-16)
+## Milestone list (closed 2026-10-17)
 
-Milestones R0-R6, in the order they should land. R0 settles a known suspected defect; R1-R4 are the
-acoustic model's remaining audible gaps, most-audible first; R5-R6 are polish and cleanup.
+R0-R6, all settled. R0 fixed a known suspected defect; R1-R4 closed the acoustic model's remaining
+audible gaps, most-audible first; R5-R6 were polish and cleanup. R2 is the one milestone deliberately
+left undone, and it stays below with the reason rather than being deleted.
 
 ### R0. The convolution comb (done)
 
@@ -315,13 +316,17 @@ and both ends stand over ground. The ground's lift over hard ground rides the so
 (`SoundShaper.lift`), since the mixer's filter cannot pass one. Design and tests:
 `docs/ground-reflection-design.md`.
 
-### R2. SOFA personalization
+### R2. SOFA personalization (not pursued)
 
 Alpha.42 downloads named SOFA files and converts them with makemhr; it cannot yet take a player's own
-measured file. OpenAL Soft lists SOFA datasets from its hrtf directory by itself, so the work is to let
-a player drop a `.sofa` into `config/earshot/hrtf`, show it beside the bundled and downloaded sets in
-the HRTF picker and the listening test, and keep Earshot's own folder first in the search order so a
-personal file overrides a same-named download. Mostly Java IO and screen work; the sim is untouched.
+measured file. OpenAL Soft lists SOFA datasets from its hrtf directory by itself, so the work would be
+to let a player drop a `.sofa` into `config/earshot/hrtf`, show it beside the bundled and downloaded
+sets in the HRTF picker and the listening test, and keep Earshot's own folder first in the search order
+so a personal file overrides a same-named download.
+
+Left undone deliberately. It is the only milestone that is mostly UI plumbing rather than acoustic
+modelling, and the bundled and downloaded sets already cover the common case. Revisit only if someone
+actually wants to supply their own measured HRTF.
 
 ### R3. Temperature-dependent speed of sound (done)
 
@@ -350,11 +355,12 @@ open early reflections through walls. Junction flanking, sound leaving one room 
 floor or corner into another, is not started. Design and tests:
 `docs/flanking-leakage-design.md`.
 
-### R5. Modrinth publishing
+### R5. Modrinth publishing (done)
 
-The release workflow already POSTs to Modrinth (`project_id: GnuooDgr`) gated on a `MODRINTH_TOKEN`
-secret that is not set, so only the GitHub release happens. Add the token and the next tag publishes
-there too. Ops, not code.
+The release workflow POSTs to Modrinth (`project_id: GnuooDgr`) gated on a `MODRINTH_TOKEN` secret.
+This section was written while that secret was still unset, so it said only the GitHub release
+happened. It has since been set: every tag now runs both the GitHub release and the Modrinth release
+step, and the alpha.54 and alpha.55 runs each completed both. Ops, not code, and finished.
 
 ### R6. Tidy-up (done)
 
