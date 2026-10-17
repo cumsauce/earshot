@@ -1,4 +1,4 @@
-use earshot_world::{BANDS, Bands, Vec3, World, transmission};
+use earshot_world::{BANDS, Bands, Vec3, World, flank_transmission};
 
 use crate::Field;
 use crate::ground::ground_gain;
@@ -56,7 +56,7 @@ pub fn occlusion(world: &World, listener: Vec3, source: Vec3, rays: u32) -> Band
         return [1.0; BANDS];
     }
     if rays == 1 {
-        return transmission(world, listener, source);
+        return flank_transmission(world, listener, source);
     }
     let helper = if dir.x.abs() < 0.9 {
         Vec3::new(1.0, 0.0, 0.0)
@@ -77,7 +77,7 @@ pub fn occlusion(world: &World, listener: Vec3, source: Vec3, rays: u32) -> Band
     };
     let mut sum = [0.0f32; BANDS];
     for &offset in offsets {
-        let through = transmission(world, listener, source + offset);
+        let through = flank_transmission(world, listener, source + offset);
         for (sum, through) in sum.iter_mut().zip(through) {
             *sum += through;
         }
@@ -239,7 +239,7 @@ fn cross(a: Vec3, b: Vec3) -> Vec3 {
 
 #[cfg(test)]
 mod tests {
-    use earshot_world::Material;
+    use earshot_world::{Material, transmission};
 
     use super::*;
 
@@ -317,6 +317,23 @@ mod tests {
             "heard from the doorway's side: {round:?}"
         );
         assert!(round.path_length > 9.0);
+    }
+
+    #[test]
+    fn a_wall_between_two_offset_people_leaks_along_it() {
+        // A sealed wall with a listener and a source each touching one of
+        // its faces and offset along it: the mass law all but silences a
+        // line that spends its whole length inside the wall, but sound in
+        // a structure conducts along it and comes out by the far face.
+        let world = wall(None);
+        let listener = Vec3::new(5.0, 0.5, 0.5);
+        let source = Vec3::new(6.0, 0.5, 8.5);
+        let heard = occlusion(&world, listener, source, 1);
+        let mass_law = transmission(&world, listener, source);
+        assert!(heard[1] > mass_law[1], "{heard:?} against {mass_law:?}");
+        // Above an audibility floor, so the test proves the path is
+        // present rather than merely non-zero.
+        assert!(heard[1] > 1e-4, "{heard:?}");
     }
 
     #[test]
