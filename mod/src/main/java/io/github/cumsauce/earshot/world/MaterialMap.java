@@ -131,9 +131,9 @@ public final class MaterialMap {
 
 	/** Decides a state's material. */
 	static AcousticMaterial classify(BlockState state, MaterialOverrides overrides) {
-		if (state.isAir()) return AcousticMaterial.AIR;
 		AcousticMaterial set = overrides.find(state);
-		if (set == AcousticMaterial.AIR) return set;
+		if (set != null) return set;
+		if (state.isAir()) return AcousticMaterial.AIR;
 		Block block = state.getBlock();
 		FluidState fluid = state.getFluidState();
 		VoxelShape shape = state.getCollisionShape(EmptyBlockGetter.INSTANCE, BlockPos.ZERO);
@@ -166,7 +166,6 @@ public final class MaterialMap {
 		boolean panel = block instanceof DoorBlock || block instanceof TrapDoorBlock || block instanceof FenceGateBlock
 				|| block instanceof WallBlock;
 		if (!panel && volume(shape) < SOLID_VOLUME) return AcousticMaterial.AIR;
-		if (set != null) return set;
 
 		if (block instanceof LeavesBlock || state.is(BlockTags.LEAVES)) return AcousticMaterial.LEAVES;
 		if (block instanceof IceBlock || state.is(BlockTags.ICE)) return AcousticMaterial.ICE;

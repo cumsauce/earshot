@@ -5,11 +5,15 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 /**
  * The packed native byte: the material id in the low nibble, how full the block is in the high one (0 = full,
@@ -80,5 +84,25 @@ class MaterialMapTest {
 	void anOpenDoorIsAir() {
 		BlockState openDoor = Blocks.OAK_DOOR.defaultBlockState().setValue(BlockStateProperties.OPEN, true);
 		assertEquals(AcousticMaterial.AIR, MaterialMap.classify(openDoor));
+	}
+
+	/**
+	 * What lets sound through (an open doorway, a fence's gaps, a torch's thin base) stays open by the shape
+	 * guesses, but docs/GUIDE.md promises each stays settable: a material set by hand wins over them all.
+	 */
+	@Test
+	void aHandSetMaterialBeatsTheOpenShapeGuesses(@TempDir Path dir) throws IOException {
+		Path file = dir.resolve("materials.json");
+		Files.writeString(file, """
+				{"minecraft:oak_fence":"wood","minecraft:torch":"metal","minecraft:oak_door":"metal"}
+				""");
+		MaterialOverrides overrides = MaterialOverrides.load(file);
+		assertEquals(AcousticMaterial.WOOD, MaterialMap.classify(Blocks.OAK_FENCE.defaultBlockState(), overrides),
+				"a fence set by hand is not air");
+		assertEquals(AcousticMaterial.METAL, MaterialMap.classify(Blocks.TORCH.defaultBlockState(), overrides),
+				"a torch set by hand is not air");
+		BlockState openDoor = Blocks.OAK_DOOR.defaultBlockState().setValue(BlockStateProperties.OPEN, true);
+		assertEquals(AcousticMaterial.METAL, MaterialMap.classify(openDoor, overrides),
+				"an open door set by hand is not air");
 	}
 }

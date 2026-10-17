@@ -199,6 +199,9 @@ public final class ConvolutionReverb {
 	 */
 	private void forgetNames() {
 		generation++;
+		// A load this context was waiting on never finishes against the next one (its task may never even run),
+		// so the next context must be free to start one: the flag goes with the generation.
+		loading = false;
 		// A fresh context gets a fresh chance: what failed against the old one says nothing about the new.
 		failed = false;
 		java.util.Arrays.fill(slots, 0);
@@ -212,6 +215,21 @@ public final class ConvolutionReverb {
 	/** The executor responses are made on, for tests: {@link #release()} keeps it, {@link #contextClosing()} swaps it. */
 	synchronized ExecutorService loader() {
 		return loader;
+	}
+
+	/** Swaps the loader, for tests: one that discards its tasks stands in for a load a close dropped. */
+	synchronized void loader(ExecutorService loader) {
+		this.loader = loader;
+	}
+
+	/** Whether a response is being made, for tests. */
+	synchronized boolean loading() {
+		return loading;
+	}
+
+	/** Puts a load in flight without running one, for tests: a load whose task will never run. */
+	synchronized void loading(boolean loading) {
+		this.loading = loading;
 	}
 
 	private boolean make() {
@@ -275,7 +293,9 @@ public final class ConvolutionReverb {
 				// run while the response was being made. There is no separate "context closed" flag — both of them
 				// bump the generation, so this covers a context dying mid-load.
 				if (forGeneration != generation || ir.length == 0) {
-					loading = false;
+					// Only the current generation's load may clear the flag: a stale one would unlatch a load
+					// the next context has in flight.
+					if (forGeneration == generation) loading = false;
 					// Nothing to make it from yet: try again next time.
 					if (ir.length == 0) madeFrom = new double[0];
 					return;
@@ -323,7 +343,8 @@ public final class ConvolutionReverb {
 			}
 		} catch (RuntimeException e) {
 			synchronized (this) {
-				loading = false;
+				// A load from a closed generation never touches the new context's flag.
+				if (forGeneration == generation) loading = false;
 			}
 			// A buffer made before the failure is not bound to a live slot: delete it rather than leak it.
 			if (made != 0) AL10.alDeleteBuffers(made);
