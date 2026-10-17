@@ -264,8 +264,8 @@ fn block_of(point: Vec3) -> [i32; 3] {
 
 /// Dial's algorithm: Dijkstra with a ring of buckets, one per distance
 /// modulo the largest step, over a `padded`³ grid whose rim is shut. A
-/// diagonal step needs the blocks it passes beside open too: it never cuts a
-/// corner past a solid block.
+/// diagonal step needs every block sharing the edge or corner it crosses
+/// open too: it never slips past a solid block.
 ///
 /// Invariant: `start` is always the in-field centre (`half + 1`, with
 /// `half >= 0` asserted in `Field::build`) and the padded rim is never open,
@@ -274,21 +274,27 @@ fn block_of(point: Vec3) -> [i32; 3] {
 /// a bounds case for `flood` to handle.
 fn flood(open: &[bool], padded: i32, start: [i32; 3]) -> Vec<u16> {
     let stride = |[x, y, z]: [i32; 3]| ((x * padded + y) * padded + z) as isize;
-    // Each neighbour: its offset, its cost, and the offsets of the face
-    // neighbours it passes beside (none for a face step).
-    let steps: Vec<(isize, u16, [isize; 3], usize)> = NEIGHBOURS
+    // Each neighbour: its offset, its cost, and the offsets of the blocks it
+    // passes beside (none for a face step). An edge step passes beside the
+    // two blocks on its other axes; a corner step also grazes the three
+    // blocks diagonal across its pairs of axes, so all six must be open.
+    let steps: Vec<(isize, u16, [isize; 6], usize)> = NEIGHBOURS
         .iter()
         .map(|&(step, cost)| {
-            let axes = step.iter().filter(|&&s| s != 0).count();
-            let mut sides = [0; 3];
+            let axes: Vec<usize> = (0..3).filter(|&axis| step[axis] != 0).collect();
+            let mut sides = [0; 6];
             let mut beside = 0;
-            if axes > 1 {
-                for axis in (0..3).filter(|&axis| step[axis] != 0) {
-                    let mut side = [0; 3];
-                    side[axis] = step[axis];
-                    sides[beside] = stride(side);
-                    beside += 1;
+            // Every non-empty proper subset of the axes crossed: the blocks
+            // between this one and the neighbour that the step would clip.
+            for mask in 1..(1usize << axes.len()) - 1 {
+                let mut side = [0; 3];
+                for (bit, &axis) in axes.iter().enumerate() {
+                    if mask & (1 << bit) != 0 {
+                        side[axis] = step[axis];
+                    }
                 }
+                sides[beside] = stride(side);
+                beside += 1;
             }
             (stride(step), cost, sides, beside)
         })
@@ -401,13 +407,18 @@ mod tests {
             }
             for (step, cost) in NEIGHBOURS {
                 let to = [at[0] + step[0], at[1] + step[1], at[2] + step[2]];
-                let diagonal = step.iter().filter(|&&s| s != 0).count() > 1;
-                let beside_open = !diagonal
-                    || (0..3).filter(|&a| step[a] != 0).all(|a| {
-                        let mut side = at;
-                        side[a] += step[a];
-                        open(side)
-                    });
+                let axes: Vec<usize> = (0..3).filter(|&a| step[a] != 0).collect();
+                // Every non-empty proper subset of the axes crossed: the
+                // blocks the step would clip along its edge or corner.
+                let beside_open = (1..(1usize << axes.len()) - 1).all(|mask| {
+                    let mut side = at;
+                    for (bit, &axis) in axes.iter().enumerate() {
+                        if mask & (1 << bit) != 0 {
+                            side[axis] += step[axis];
+                        }
+                    }
+                    open(side)
+                });
                 let nd = d + u32::from(cost);
                 if open(to) && beside_open && nd < u32::from(dist[index(to)]) {
                     dist[index(to)] = nd as u16;
@@ -569,6 +580,18 @@ mod tests {
         let field = Field::build(&world, LISTENER, 4);
         // Not 1.4 straight through the crack: round, at least 2.
         assert!(field.distance([1, 0, 1]).unwrap() >= 2.0);
+    }
+
+    #[test]
+    fn diagonal_steps_dont_cut_past_a_block_at_a_corner() {
+        let mut world = World::new();
+        // (1, 1, 0) touches the line from the listener's block to (1, 1, 1)
+        // at its corner. The three face neighbours are open, so a step that
+        // checked only those would squeeze through the corner.
+        world.set_block(1, 1, 0, Material::Rock);
+        let field = Field::build(&world, LISTENER, 2);
+        // Not 1.7 straight through the corner: round, at least 2.
+        assert!(field.distance([1, 1, 1]).unwrap() >= 2.0);
     }
 
     #[test]
