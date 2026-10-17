@@ -258,12 +258,21 @@ pub fn flank_transmission(world: &World, from: Vec3, to: Vec3) -> Bands {
         // structure; the fill scales both, as the mass law scales the one.
         let through = (length * across) as f32 * step.fill;
         let along = (length * (1.0 - across * across).max(0.0).sqrt()) as f32 * step.fill;
+        // What the mass law charges for the same block, for the floor below.
+        let mass = length as f32 * step.fill;
         let acoustics = step.material.acoustics();
         for (passing, (crossing, relay)) in passing
             .iter_mut()
             .zip(acoustics.transmission.into_iter().zip(acoustics.structure))
         {
-            *passing *= crossing.powf(through) * relay.powf(along);
+            // A relay never costs more than the crossing does, which the
+            // table cannot promise on its own: water's relay rate sits
+            // under its crossing share, and a run the ray starts inside
+            // has no face to charge a crossing against. So each block
+            // pays the worse of the relay and what the mass law charges
+            // for the same block.
+            let relay_cost = crossing.powf(through) * relay.powf(along);
+            *passing *= relay_cost.max(crossing.powf(mass));
         }
         if passing.iter().all(|&p| p < 1e-6) {
             return ControlFlow::Break(());
