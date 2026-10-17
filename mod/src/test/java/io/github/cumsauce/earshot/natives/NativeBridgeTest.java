@@ -48,6 +48,19 @@ class NativeBridgeTest {
 		assertTrue(NativeBridge.MAX_VOICE_STREAMS * 10L <= Integer.MAX_VALUE, "the info array must fit an int");
 	}
 
+	/**
+	 * The bundled names stay well inside the bound the bridge checks, so the guard never fires on a real call and
+	 * the first 1 KiB buffer is always enough. This is the evidence for {@link NativeBridge#MAX_MATERIAL_JSON_BYTES}.
+	 */
+	@Test
+	void theMaterialNamesFitTheBoundTheBridgeChecks(@TempDir Path configDir) throws Exception {
+		NativeBridge bridge = new NativeBridge(NativeLoader.load(configDir));
+		String json = bridge.materialNames();
+		assertTrue(json.length() <= NativeBridge.MAX_MATERIAL_JSON_BYTES, json.length() + " bytes: " + json);
+		assertTrue(json.length() <= 1024, "one buffer should suffice: " + json.length() + " bytes");
+		assertEquals(AcousticMaterial.values().length, json.split(",").length, json);
+	}
+
 	@Test
 	void aMirroredWallMuffles(@TempDir Path configDir) throws Exception {
 		NativeBridge bridge = new NativeBridge(NativeLoader.load(configDir));

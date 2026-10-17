@@ -80,6 +80,12 @@ public final class NativeBridge {
 	 * 4096 is an absurd ceiling that still keeps the {@code (int)} cast and the arrays made for it exact.
 	 */
 	static final int MAX_VOICE_STREAMS = 4096;
+	/**
+	 * The most bytes {@link #materialNames} may be told the JSON takes. The table has one short lowercase name per
+	 * material (14 today), so the bundled payload is a few hundred bytes; 4096 is that with ample room, and low
+	 * enough that a corrupt length never sizes an allocation.
+	 */
+	static final int MAX_MATERIAL_JSON_BYTES = 4096;
 
 	// size_t is 64 bits on every platform Minecraft runs on.
 	private static final ValueLayout.OfLong SIZE_T = JAVA_LONG;
@@ -200,6 +206,9 @@ public final class NativeBridge {
 				MemorySegment buf = arena.allocate(cap);
 				check((int) invoke(materialNames, buf, cap, needed));
 				long length = needed.get(SIZE_T, 0);
+				// Guard before the comparison: a negative length passes `length <= cap`, and an absurd one
+				// would size the next buffer.
+				checkNativeLength(length, MAX_MATERIAL_JSON_BYTES, "material names bytes");
 				if (length <= cap) {
 					return new String(buf.asSlice(0, length).toArray(JAVA_BYTE), StandardCharsets.UTF_8);
 				}

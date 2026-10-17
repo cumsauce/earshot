@@ -101,7 +101,9 @@ public final class SourceState {
 			double seconds = (nanos - lastNanos) / 1e9;
 			if (last != null && seconds > 0.005) {
 				Vec3 moved = position.subtract(last).scale(1 / seconds);
-				velocity = moved.length() > MAX_SPEED ? Vec3.ZERO : velocity.lerp(moved, SMOOTHING);
+				// A step that is not finite, or too far to be motion, is a jump: zeroing it is what stops a bad
+				// position from lerping the velocity to NaN for good.
+				velocity = usable(moved) && moved.length() <= MAX_SPEED ? velocity.lerp(moved, SMOOTHING) : Vec3.ZERO;
 			}
 			if (last == null || seconds > 0.005) {
 				last = position;
