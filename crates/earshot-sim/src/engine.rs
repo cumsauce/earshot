@@ -220,7 +220,14 @@ impl Engine {
     }
 
     /// How much to trace from now on. The worker picks it up within a tick.
+    /// A preset outside [`Quality::is_valid`] is refused and the last good
+    /// one stands: a zero measurement interval would divide the cost stat by
+    /// zero, a negative field extent would panic the worker, and an enormous
+    /// ray count would never finish.
     pub fn set_quality(&self, quality: Quality) {
+        if !quality.is_valid() {
+            return;
+        }
         *self
             .shared
             .quality
@@ -768,6 +775,35 @@ mod tests {
         }
         let stats = engine.stats();
         assert!(stats.room_rays > 0 && stats.room_cost > 0.0, "{stats:?}");
+    }
+
+    #[test]
+    fn an_invalid_quality_is_refused_before_it_reaches_the_worker() {
+        let engine = Engine::start();
+        let broken = Quality {
+            room_rays: u32::MAX,
+            room_every: Duration::ZERO,
+            field_half: -1,
+            budget: 0.0,
+            ..Quality::DEFAULT
+        };
+        assert!(!broken.is_valid());
+        engine.set_quality(broken);
+        assert_eq!(
+            engine.quality(),
+            Quality::DEFAULT,
+            "the bad preset was stored instead of refused"
+        );
+        // The worker is still alive: it builds a field for the valid default.
+        engine.set_listener(Vec3::new(0.5, 0.5, 0.5));
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while engine.field().is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "no field: the worker died on the bad preset"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     #[test]
