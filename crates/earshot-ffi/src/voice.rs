@@ -125,8 +125,9 @@ struct Ring {
     written: AtomicUsize,
     read: AtomicUsize,
     floor: AtomicUsize,
-    /// Set by the writer to have the reader drop all that's queued.
-    clear: AtomicBool,
+    /// Where a stream ended: everything written before it is dropped, and
+    /// everything after it is the reconnected speaker's and must play.
+    cut: AtomicUsize,
 }
 
 impl Default for Ring {
@@ -136,7 +137,7 @@ impl Default for Ring {
             written: AtomicUsize::new(0),
             read: AtomicUsize::new(0),
             floor: AtomicUsize::new(0),
-            clear: AtomicBool::new(false),
+            cut: AtomicUsize::new(0),
         }
     }
 }
@@ -147,6 +148,7 @@ impl Ring {
         self.read
             .load(Ordering::Acquire)
             .max(self.floor.load(Ordering::Acquire))
+            .max(self.cut.load(Ordering::Acquire))
     }
 
     fn len(&self) -> usize {
@@ -178,13 +180,8 @@ impl Ring {
             .store(start + n.min(self.len()), Ordering::Release);
     }
 
-    /// The reader: takes up to `out.len()` into `out`; how many. Drops
-    /// everything first if the writer asked.
+    /// The reader: takes up to `out.len()` into `out`; how many.
     fn pop(&self, out: &mut [f32]) -> usize {
-        if self.clear.swap(false, Ordering::Acquire) {
-            self.read
-                .store(self.written.load(Ordering::Acquire), Ordering::Release);
-        }
         let read = self.start();
         let n = self.len().min(out.len());
         for (i, out) in out[..n].iter_mut().enumerate() {
@@ -232,20 +229,22 @@ static VOICE: LazyLock<Voice> = LazyLock::new(Voice::default);
 #[derive(Debug, Default)]
 struct Clock {
     start: Option<Instant>,
-    frames: u32,
+    /// Counted in u64 because a session can outlast a u32 of 20 ms frames
+    /// (about 994 days); a u32 would wrap and stall the clock for as long.
+    frames: u64,
 }
 
 impl Clock {
     fn due(&mut self, now: Instant) -> bool {
         let start = *self.start.get_or_insert(now);
         let elapsed = now.duration_since(start) + LEAD;
-        let elapsed_frames = (elapsed.as_millis() / 20) as u32;
+        let elapsed_frames = u64::try_from(elapsed.as_millis() / 20).unwrap_or(u64::MAX);
         // After a stall, skip ahead rather than rush a backlog.
         self.frames = self
             .frames
-            .max(elapsed_frames.saturating_sub(MAX_BACKLOG_FRAMES));
+            .max(elapsed_frames.saturating_sub(u64::from(MAX_BACKLOG_FRAMES)));
         if self.frames <= elapsed_frames {
-            self.frames += 1;
+            self.frames = self.frames.saturating_add(1);
             true
         } else {
             false
@@ -275,10 +274,6 @@ pub fn streams() -> Vec<([u8; 16], Info, usize)> {
 /// silence after them if the queue runs dry.
 pub fn pull(stream: &Stream, out: &mut [f32]) {
     let queue = &stream.queue;
-    if queue.clear.load(Ordering::Acquire) {
-        queue.pop(&mut []);
-        stream.primed.store(false, Ordering::Relaxed);
-    }
     if !stream.primed.load(Ordering::Relaxed) {
         if queue.len() < PRIME {
             out.fill(0.0);
@@ -368,7 +363,13 @@ unsafe extern "C" fn stream_end(_user: *mut c_void, uuid: *const u8) {
             let uuid: [u8; 16] = unsafe { std::ptr::read_unaligned(uuid.cast()) };
             if let Some(stream) = lock(&VOICE.streams).get(&uuid) {
                 lock(&stream.info).ended = true;
-                stream.queue.clear.store(true, Ordering::Release);
+                // Cut at the samples already written: the new link starts
+                // from here, and frames queued after this call survive.
+                stream.queue.cut.fetch_max(
+                    stream.queue.written.load(Ordering::Acquire),
+                    Ordering::AcqRel,
+                );
+                stream.primed.store(false, Ordering::Relaxed);
             }
         },
         (),
@@ -620,6 +621,38 @@ mod tests {
         let info = streams().into_iter().find(|s| s.0 == uuid).unwrap().1;
         assert!(info.ended);
         assert_eq!(info.flags, VOICE_GROUP | VOICE_UNPOSITIONED);
+    }
+
+    #[test]
+    fn a_frame_after_a_stream_end_is_played_not_dropped() {
+        let uuid = [14; 16];
+        deliver(uuid, &[1.0; FRAME], 0);
+        deliver(uuid, &[1.0; FRAME], 0);
+        // SAFETY: `uuid` is 16 readable bytes.
+        unsafe { (SINK.0.stream_end.unwrap())(std::ptr::null_mut(), uuid.as_ptr()) };
+        deliver(uuid, &[3.0; FRAME], 0);
+        deliver(uuid, &[3.0; FRAME], 0);
+        let mut out = vec![9.0; 2 * FRAME];
+        pull(&stream(uuid), &mut out);
+        assert!(
+            out.iter().all(|&s| s == 1.5),
+            "the frames after the end play, without silence or old audio"
+        );
+    }
+
+    #[test]
+    fn the_clock_keeps_its_place_past_a_full_u32_of_frames() {
+        let mut clock = Clock::default();
+        let start = Instant::now();
+        clock.start = Some(start);
+        clock.frames = u64::from(u32::MAX);
+        // About 994 days in: past where a u32 frame count would wrap to 0.
+        let later = start + Duration::from_millis(20 * (u64::from(u32::MAX) + 1) - 40);
+        assert!(
+            clock.due(later),
+            "the clock is still due past a u32 of frames"
+        );
+        assert_eq!(clock.frames, u64::from(u32::MAX) + 1);
     }
 
     #[test]
