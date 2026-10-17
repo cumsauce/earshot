@@ -26,8 +26,9 @@
  * 13: `earshot_hear` adds the opening's size.
  * 14: section and block bytes pack the fill fraction into the high nibble.
  * 15: `earshot_set_quality` takes the diffraction standard.
+ * 16: `earshot_set_air`.
  */
-#define EARSHOT_ABI_VERSION 15
+#define EARSHOT_ABI_VERSION 16
 
 #define EARSHOT_OK 0
 
@@ -220,6 +221,18 @@ int32_t earshot_transmission(struct EarshotEngine *engine,
  * `engine` must be live; `listener` must point to 3 doubles.
  */
 int32_t earshot_set_listener(struct EarshotEngine *engine, const double *listener);
+
+/**
+ * How warm the air is for the timing paths, in °C (see
+ * [`earshot_sim::speed_of_sound`]), called on the same clock as
+ * [`earshot_set_listener`]. Must be finite and within −60..=60; anything
+ * else is refused rather than stored, so a bad reading from the game never
+ * reaches the speed maths.
+ *
+ * # Safety
+ * `engine` must be live.
+ */
+int32_t earshot_set_air(struct EarshotEngine *engine, double celsius);
 
 /**
  * How each of `count` sources reaches `listener`: straight through whatever

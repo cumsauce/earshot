@@ -31,7 +31,7 @@ import java.util.UUID;
  */
 public final class NativeBridge {
 	/** Must equal {@code EARSHOT_ABI_VERSION} in {@code earshot.h}. */
-	public static final int ABI_VERSION = 15;
+	public static final int ABI_VERSION = 16;
 	/** Blocks in a section, in Minecraft's order. */
 	public static final int SECTION_BLOCKS = 4096;
 	/** Doubles per traced leg: from x, y, z, to x, y, z, energy, escaped (1 or 0). */
@@ -96,6 +96,7 @@ public final class NativeBridge {
 	private final MethodHandle transmission;
 	private final MethodHandle tracePaths;
 	private final MethodHandle setListener;
+	private final MethodHandle setAir;
 	private final MethodHandle hear;
 	private final MethodHandle room;
 	private final MethodHandle roomAt;
@@ -137,6 +138,8 @@ public final class NativeBridge {
 				critical);
 		setListener = linker.downcallHandle(find(library, "earshot_set_listener"),
 				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS), critical);
+		setAir = linker.downcallHandle(find(library, "earshot_set_air"),
+				FunctionDescriptor.of(JAVA_INT, ADDRESS, JAVA_DOUBLE), critical);
 		hear = linker.downcallHandle(find(library, "earshot_hear"),
 				FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS, ADDRESS, SIZE_T, ADDRESS), critical);
 		room = linker.downcallHandle(find(library, "earshot_room"), FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS),
@@ -268,6 +271,14 @@ public final class NativeBridge {
 	public void setListener(MemorySegment engine, double[] listener) {
 		requireLength(listener, 3, "listener");
 		check((int) invoke(setListener, engine, MemorySegment.ofArray(listener)));
+	}
+
+	/**
+	 * How warm the air is for the timing paths, in °C, between -60 and 60. Called on the same clock as
+	 * {@link #setListener}.
+	 */
+	public void setAir(MemorySegment engine, double celsius) {
+		check((int) invoke(setAir, engine, celsius));
 	}
 
 	/**

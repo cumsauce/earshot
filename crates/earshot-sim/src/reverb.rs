@@ -4,6 +4,19 @@ use crate::{Reflection, Segment, sphere_directions, trace_directions};
 
 /// Speed of sound, in blocks (metres) per second.
 pub const SPEED_OF_SOUND: f64 = 343.0;
+
+/// Speed of sound in air at `celsius`, in blocks (metres) per second: the
+/// textbook `331.3 + 0.606·T` (T in °C), which is why a 40 °C desert carries
+/// sound about 2 % faster than a snowy biome at −10 °C. Both ends clamp, and
+/// each for the same reason: a reading no real weather produces must not
+/// reach the timing maths. The temperature clamps to the band weather stays
+/// in (−60 to 60 °C), and the result to 300..=370 m/s, so nothing calling
+/// this can ever divide by a zero or negative speed. Room measurement keeps
+/// the fixed [`SPEED_OF_SOUND`]; the timing paths (echo and reflection
+/// delays) take this instead.
+pub fn speed_of_sound(celsius: f64) -> f64 {
+    (331.3 + 0.606 * celsius.clamp(-60.0, 60.0)).clamp(300.0, 370.0)
+}
 /// `6 ln 10`: the natural-log drop of a 60 dB decay.
 const SIXTY_DB: f64 = 13.815_510_557_964_274;
 /// The shortest and longest decays reported, in seconds (EAX reverb's range).
@@ -521,6 +534,35 @@ mod tests {
             }
         }
         world
+    }
+
+    #[test]
+    fn speed_of_sound_matches_the_textbook_curve() {
+        // The textbook line c = 331.3 + 0.606·T: still air at 0 °C, and
+        // 343.42 m/s at 20 °C, the room-air default within a tenth of a
+        // percent of the fixed SPEED_OF_SOUND.
+        assert_eq!(speed_of_sound(0.0), 331.3);
+        assert!(
+            (speed_of_sound(20.0) - 343.42).abs() < 1e-9,
+            "{}",
+            speed_of_sound(20.0)
+        );
+        // Past where real weather goes the temperature clamps, so a desert
+        // or an arctic reading can never run the curve away.
+        assert_eq!(speed_of_sound(60.0), speed_of_sound(1e9));
+        assert_eq!(speed_of_sound(-60.0), speed_of_sound(-1e9));
+        // The result stays inside a sane band however absurd the input, so
+        // a division by it can never see a zero or a negative speed.
+        for celsius in [-1e9, -60.0, 0.0, 20.0, 60.0, 1e9] {
+            let speed = speed_of_sound(celsius);
+            assert!(
+                (300.0..=370.0).contains(&speed),
+                "speed at {celsius} °C: {speed}"
+            );
+        }
+        // The cold end falls to the band's floor: the curve alone would
+        // give 294.94 m/s at −60 °C.
+        assert_eq!(speed_of_sound(-60.0), 300.0);
     }
 
     /// Eyring's decay for a box of side `size` built of `material` in

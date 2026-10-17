@@ -42,7 +42,8 @@ use crate::guard::{FfiError, array_arg, guard, guard_value, out_arg, slice_arg, 
 /// 13: `earshot_hear` adds the opening's size.
 /// 14: section and block bytes pack the fill fraction into the high nibble.
 /// 15: `earshot_set_quality` takes the diffraction standard.
-pub const EARSHOT_ABI_VERSION: u32 = 15;
+/// 16: `earshot_set_air`.
+pub const EARSHOT_ABI_VERSION: u32 = 16;
 
 pub const EARSHOT_OK: i32 = 0;
 /// A null pointer, unknown material or out-of-range value.
@@ -374,6 +375,32 @@ pub unsafe extern "C" fn earshot_set_listener(
         with_engine(engine, |e| {
             // SAFETY: the caller guarantees `listener` points to 3 doubles.
             e.engine.set_listener(point_arg(listener, "listener")?);
+            Ok(())
+        })
+    }
+}
+
+/// How warm the air is for the timing paths, in °C (see
+/// [`earshot_sim::speed_of_sound`]), called on the same clock as
+/// [`earshot_set_listener`]. Must be finite and within −60..=60; anything
+/// else is refused rather than stored, so a bad reading from the game never
+/// reaches the speed maths.
+///
+/// # Safety
+/// `engine` must be live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn earshot_set_air(engine: *mut EarshotEngine, celsius: f64) -> i32 {
+    // SAFETY: the caller guarantees `engine` is live.
+    unsafe {
+        with_engine(engine, |e| {
+            // `contains` is false for NaN and for both infinities too, so
+            // this one range check rejects every unusable reading.
+            if !(-60.0..=60.0).contains(&celsius) {
+                return Err(FfiError::invalid(format!(
+                    "air temperature {celsius} not in -60..=60"
+                )));
+            }
+            e.engine.set_air(celsius);
             Ok(())
         })
     }
@@ -1378,6 +1405,29 @@ mod tests {
             earshot_destroy(engine);
         }
         assert!(stats.iter().all(|v| v.is_finite()), "{stats:?}");
+    }
+
+    #[test]
+    fn air_temperature_is_accepted_in_band_and_refused_outside() {
+        let engine = engine();
+        // SAFETY: `engine` is live.
+        unsafe {
+            assert_eq!(earshot_set_air(engine, 12.5), EARSHOT_OK, "a sane reading");
+            // Both ends of the band are inside it.
+            for edge in [-60.0, 60.0] {
+                assert_eq!(earshot_set_air(engine, edge), EARSHOT_OK, "{edge} °C");
+            }
+            for absurd in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 200.0, -200.0] {
+                assert_eq!(
+                    earshot_set_air(engine, absurd),
+                    EARSHOT_ERR_INVALID_ARGUMENT,
+                    "{absurd}"
+                );
+            }
+            // The engine still takes work afterwards.
+            assert_eq!(earshot_set_air(engine, 18.0), EARSHOT_OK);
+            earshot_destroy(engine);
+        }
     }
 
     #[test]

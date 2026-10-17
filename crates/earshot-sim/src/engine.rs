@@ -54,12 +54,27 @@ struct Shared {
     world_version: AtomicU64,
     listener: Mutex<Option<Vec3>>,
     quality: RwLock<Quality>,
+    /// The air's temperature, sampled from the listener's biome.
+    air: RwLock<Air>,
     stats: Mutex<Stats>,
     field: RwLock<Option<Arc<Built>>>,
     room: RwLock<Option<Room>>,
     /// The early reflections from the latest measurement.
     early: RwLock<Vec<Reflection>>,
     stop: AtomicBool,
+}
+
+/// The air's temperature in °C, clamped to the band real weather stays in
+/// (−60 to 60). The default 20 °C gives `speed_of_sound(20.0)` = 343.42 m/s,
+/// the fixed `SPEED_OF_SOUND` within a tenth of a percent, so the timing
+/// paths do not move until a climate actually differs.
+#[derive(Debug, Clone, Copy)]
+struct Air(f64);
+
+impl Default for Air {
+    fn default() -> Air {
+        Air(20.0)
+    }
 }
 
 /// A change to the world, waiting for the lock.
@@ -219,6 +234,32 @@ impl Engine {
             .quality
             .read()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// How warm the air is, in °C, for the timing paths (see
+    /// [`crate::speed_of_sound`]), sampled from the listener's biome. A
+    /// reading outside the band real weather stays in (−60 to 60) is
+    /// clamped to it, and a non-finite one refused outright, so the engine
+    /// can never hold a temperature the speed maths would turn silly; the
+    /// last real reading stands instead.
+    pub fn set_air(&self, celsius: f64) {
+        if !celsius.is_finite() {
+            return;
+        }
+        *self
+            .shared
+            .air
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = Air(celsius.clamp(-60.0, 60.0));
+    }
+
+    /// The air's temperature in °C: 20 by default (see [`Self::set_air`]).
+    pub fn air_celsius(&self) -> f64 {
+        self.shared
+            .air
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .0
     }
 
     /// What the engine is spending.
@@ -896,5 +937,23 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn the_air_starts_at_room_temperature_and_clamps_to_weather() {
+        let engine = Engine::start();
+        assert_eq!(engine.air_celsius(), 20.0, "comfortable room air");
+        engine.set_air(40.0);
+        assert_eq!(engine.air_celsius(), 40.0);
+        engine.set_air(1e9);
+        assert_eq!(engine.air_celsius(), 60.0, "the warm end of the band");
+        engine.set_air(-1e9);
+        assert_eq!(engine.air_celsius(), -60.0, "the cold end of the band");
+        engine.set_air(f64::NAN);
+        assert_eq!(
+            engine.air_celsius(),
+            -60.0,
+            "a non-finite reading is no climate: the last real one stands"
+        );
     }
 }
