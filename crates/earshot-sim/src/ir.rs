@@ -91,9 +91,12 @@ pub fn impulse_response(
     room.early_decay = room.early_decay.map(|t60| t60.min(1.5 * max_seconds));
     let room = &room;
     // Long enough for the room's decay, and for the last echo to be heard.
+    // Edge sources count here too: an edge past the room's decay but inside
+    // `max_seconds` still has to land inside the buffer, or its tap is cut.
     let last_echo = early
         .iter()
         .map(|r| r.delay + FADE + 0.02)
+        .chain(edge.iter().map(|e| e.delay + FADE + 0.02))
         .fold(0.0, f32::max);
     let length = (room.decay[1].max(last_echo).min(max_seconds).max(0.1) * rate) as usize;
     let mut out = vec![0.0f32; length * IR_CHANNELS];
@@ -278,8 +281,10 @@ fn bucket_jitter(bin: u32, direction: u8) -> f32 {
 /// grid: one tap a bin, a regular impulse grid the ear hears as a steady
 /// metallic comb. The jitter scatters the fused taps off that grid; a
 /// lone reflection keeps its true time, only the summary of many rays is
-/// moved. The result is sorted by delay, so the taps are written in the
-/// same order however the buckets come out of the map.
+/// moved. The result is sorted by delay, and on a tie by direction then
+/// energy, so the taps are written in the same order however the buckets
+/// come out of the map: two equidistant walls on different axes share a
+/// delay exactly, and the map's own iteration order is random per instance.
 fn merge(early: &[Reflection]) -> Vec<Reflection> {
     let mut merged: std::collections::HashMap<(u32, u8), (f32, Vec3, f32, u32)> =
         std::collections::HashMap::new();
@@ -319,7 +324,14 @@ fn merge(early: &[Reflection]) -> Vec<Reflection> {
             }
         })
         .collect();
-    taps.sort_by(|a, b| a.delay.total_cmp(&b.delay));
+    taps.sort_by(|a, b| {
+        a.delay
+            .total_cmp(&b.delay)
+            .then_with(|| a.direction.x.total_cmp(&b.direction.x))
+            .then_with(|| a.direction.y.total_cmp(&b.direction.y))
+            .then_with(|| a.direction.z.total_cmp(&b.direction.z))
+            .then_with(|| a.energy.total_cmp(&b.energy))
+    });
     taps
 }
 
@@ -1079,6 +1091,65 @@ mod tests {
             worst < 0.5,
             "the tap train correlates with itself at lag {at} samples: {worst}"
         );
+    }
+
+    /// An edge source can echo long after the room's own decay has run out
+    /// and still inside `max_seconds`: its tap must reach the buffer rather
+    /// than fall off the end and vanish.
+    #[test]
+    fn a_late_edge_tap_reaches_the_buffer() {
+        let r = room([0.1; 3], 4.0, 0.2);
+        let edge = EdgeSource {
+            direction: Vec3::new(1.0, 0.0, 0.0),
+            delay: 0.3,
+            energy: [0.25; BANDS],
+        };
+        let ir = impulse_response(&r, &[], &[edge], 48_000, 1.0, SPEED_OF_SOUND, 4);
+        let at = (0.3 * 48_000.0) as usize * IR_CHANNELS;
+        assert!(ir.len() > at + IR_CHANNELS);
+        assert!(ir[at + 2] < 0.0);
+    }
+
+    /// Six walls at exactly one distance away share a delay to the bit, so
+    /// a delay-only sort would leave their order up to the map's random
+    /// iteration seed. They must come out in one order every time.
+    #[test]
+    fn equal_delay_taps_keep_one_order() {
+        let dirs = [
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(-1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, -1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(0.0, 0.0, -1.0),
+        ];
+        let early: Vec<Reflection> = dirs
+            .iter()
+            .map(|&direction| Reflection {
+                direction,
+                delay: 0.01,
+                energy: 0.01,
+            })
+            .collect();
+        let first = merge(&early);
+        // The tiebreak is the direction, x then y then z, so the taps read
+        // from the most negative wall to the most positive one.
+        let want = [
+            [-1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0],
+            [0.0, 0.0, -1.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+        ];
+        let got: Vec<[f64; 3]> = first
+            .iter()
+            .map(|t| [t.direction.x, t.direction.y, t.direction.z])
+            .collect();
+        assert_eq!(got, want, "six equal-delay taps must keep one order");
+        for _ in 0..50 {
+            assert_eq!(merge(&early), first);
+        }
     }
 
     /// The same input always merges to the same taps, bitwise — the golden
