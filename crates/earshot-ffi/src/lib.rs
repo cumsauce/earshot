@@ -18,7 +18,8 @@ mod voice;
 use std::ffi::c_void;
 
 use earshot_sim::{
-    DiffractionStandard, Engine, Heard, Quality, Room, early_reflections, eax_reverb, trace_paths,
+    DiffractionStandard, Engine, Heard, Quality, Room, early_reflections, eax_reverb,
+    speed_of_sound, trace_paths,
 };
 use earshot_world::{BANDS, MAX_REACH_METRES, Material, SECTION_BLOCKS, SectionPos, Vec3, World};
 
@@ -489,7 +490,8 @@ pub unsafe extern "C" fn earshot_room(engine: *mut EarshotEngine, out: *mut f64)
             // SAFETY: the caller guarantees `out` is writable for
             // `EARSHOT_ROOM_DOUBLES` doubles.
             let out = slice_mut_arg(out, EARSHOT_ROOM_DOUBLES, "out")?;
-            write_room(&e.engine.room().unwrap_or(Room::OPEN_AIR), out);
+            let speed = speed_of_sound(e.engine.air_celsius());
+            write_room(&e.engine.room().unwrap_or(Room::OPEN_AIR), out, speed);
             Ok(())
         })
     }
@@ -526,11 +528,12 @@ pub unsafe extern "C" fn earshot_early(
             // SAFETY: the caller guarantees `out` is writable for `len` doubles.
             let out = slice_mut_arg(out, len, "out")?;
             e.world(|world| {
+                let speed = speed_of_sound(e.engine.air_celsius());
                 for (&[x, y, z], out) in points
                     .iter()
                     .zip(out.as_chunks_mut::<EARSHOT_EARLY_DOUBLES>().0)
                 {
-                    let early = early_reflections(world, listener, Vec3::new(x, y, z));
+                    let early = early_reflections(world, listener, Vec3::new(x, y, z), speed);
                     let d = early.direction;
                     *out = [
                         f64::from(early.energy),
@@ -576,14 +579,18 @@ pub unsafe extern "C" fn earshot_room_at(
             if !(1..=1 << 14).contains(&rays) || bounces > 64 {
                 return Err(FfiError::invalid("rays or bounces out of range"));
             }
-            write_room(&e.engine.room_at(at, rays, bounces, seed), out);
+            write_room(
+                &e.engine.room_at(at, rays, bounces, seed),
+                out,
+                speed_of_sound(e.engine.air_celsius()),
+            );
             Ok(())
         })
     }
 }
 
 /// Writes `room` and the EAX reverb for it as `earshot_room` does.
-fn write_room(room: &Room, out: &mut [f64]) {
+fn write_room(room: &Room, out: &mut [f64], speed: f64) {
     let [low, mid, high] = room.decay.map(f64::from);
     out[..7].copy_from_slice(&[
         low,
@@ -594,7 +601,7 @@ fn write_room(room: &Room, out: &mut [f64]) {
         room.first_reflection,
         f64::from(room.scattering),
     ]);
-    for (out, value) in out[7..].iter_mut().zip(eax_reverb(room).to_array()) {
+    for (out, value) in out[7..].iter_mut().zip(eax_reverb(room, speed).to_array()) {
         *out = f64::from(value);
     }
 }

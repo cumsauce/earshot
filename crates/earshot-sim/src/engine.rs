@@ -7,7 +7,7 @@ use earshot_world::{Vec3, World};
 
 use crate::{
     Field, Heard, Quality, Reflection, Room, Stats, early_taps, echoes, edge_sources, hear,
-    impulse_response, measure, measure_threads, measure_with_early,
+    impulse_response, measure, measure_threads, measure_with_early, speed_of_sound,
 };
 
 /// The field is rebuilt once the listener moves this far from where it was
@@ -313,6 +313,7 @@ impl Engine {
             &[],
             sample_rate,
             max_seconds,
+            speed_of_sound(self.air_celsius()),
             seed,
         ))
     }
@@ -348,9 +349,10 @@ impl Engine {
             .lock()
             .unwrap_or_else(PoisonError::into_inner))?;
         let room = self.room_at(source, rays, bounces, seed);
+        let speed = speed_of_sound(self.air_celsius());
         let (taps, edge) = self.world(|world| {
-            let taps = early_taps(world, listener, source);
-            let edge = edge_sources(world, listener, source, &taps);
+            let taps = early_taps(world, listener, source, speed);
+            let edge = edge_sources(world, listener, source, &taps, speed);
             (taps, edge)
         });
         Some(impulse_response(
@@ -359,6 +361,7 @@ impl Engine {
             &edge,
             sample_rate,
             max_seconds,
+            speed,
             seed,
         ))
     }
@@ -597,7 +600,12 @@ impl RoomTrace {
             );
             // Echoes off walls farther than the trace reaches, and back and
             // forth between facing ones.
-            early.extend(echoes(&world, listener, quality.room_reach));
+            early.extend(echoes(
+                &world,
+                listener,
+                quality.room_reach,
+                speed_of_sound(shared.air.read().unwrap_or_else(PoisonError::into_inner).0),
+            ));
             (measured, early)
         };
         // Spread over threads, it takes their time together.

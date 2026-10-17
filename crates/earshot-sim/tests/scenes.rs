@@ -9,7 +9,9 @@
 //! models but tight enough to catch a regression — a decay that jumps by
 //! half, a room that stops being enclosed, a doorway that stops routing.
 
-use earshot_sim::{DiffractionStandard, MAX_APERTURE, Room, hear, impulse_response, measure};
+use earshot_sim::{
+    DiffractionStandard, MAX_APERTURE, Room, SPEED_OF_SOUND, hear, impulse_response, measure,
+};
 use earshot_world::{Material, Vec3, World};
 
 /// How a scene's numbers are expected to come out.
@@ -256,7 +258,7 @@ fn the_scenes_measure_as_recorded() {
 
         // The scene's response: long enough for its decay, at its rate, and
         // holding no more energy than the room sent in.
-        let ir = impulse_response(&room, &[], &[], 48_000, 2.0, 1);
+        let ir = impulse_response(&room, &[], &[], 48_000, 2.0, SPEED_OF_SOUND, 1);
         let seconds = ir.len() as f32 / 48_000.0;
         // `impulse_response` clamps the room's decay to `1.5 * max_seconds`
         // and caps the response length at `max_seconds`. With max_seconds =
@@ -298,7 +300,7 @@ fn a_short_max_seconds_caps_the_response_at_the_clamped_decay() {
         volume: 1.0,
     };
     let max = 0.4;
-    let ir = impulse_response(&room, &[], &[], 48_000, max, 1);
+    let ir = impulse_response(&room, &[], &[], 48_000, max, SPEED_OF_SOUND, 1);
     // The IR is interleaved across `IR_CHANNELS` (W, X, Y, Z); divide by
     // both to get seconds. With `max = 0.4`, the response is one sample per
     // channel per 1/48_000 s, capped to 0.4 s.
@@ -380,7 +382,7 @@ fn a_ravine_answers_in_echoes_and_its_room_stays_open() {
     let listener = Vec3::new(10.0, 1.5, 0.5);
     let room = measure(&world, listener, 1024, 16, 64.0, 1);
     assert!(room.enclosure < 0.7, "{room:?}");
-    let ir = impulse_response(&room, &[], &[], 48_000, 1.5, 1);
+    let ir = impulse_response(&room, &[], &[], 48_000, 1.5, SPEED_OF_SOUND, 1);
     // Energy well after the direct sound, where the cliff answers.
     let window = |from: f32, to: f32| {
         ir[(from * 48_000.0) as usize * 4..(to * 48_000.0) as usize * 4]
@@ -568,8 +570,8 @@ fn a_doorway_leaks_high_band_around_its_edges() {
 
     // The wired entry point: same path `impulse_response_for` takes.
     let room = measure(&world, source, 256, 8, 32.0, 1);
-    let taps = early_taps(&world, listener, source);
-    let edges = edge_sources(&world, listener, source, &taps);
+    let taps = early_taps(&world, listener, source, SPEED_OF_SOUND);
+    let edges = edge_sources(&world, listener, source, &taps, SPEED_OF_SOUND);
     assert!(
         !edges.is_empty(),
         "test setup: the doorway should have at least one edge source"
@@ -605,8 +607,8 @@ fn a_doorway_leaks_high_band_around_its_edges() {
             .map(|x| x * x)
             .sum()
     };
-    let direct_with_edges = impulse_response(&room, &taps, &edges, 48_000, 0.05, 1);
-    let direct_without_edges = impulse_response(&room, &taps, &[], 48_000, 0.05, 1);
+    let direct_with_edges = impulse_response(&room, &taps, &edges, 48_000, 0.05, SPEED_OF_SOUND, 1);
+    let direct_without_edges = impulse_response(&room, &taps, &[], 48_000, 0.05, SPEED_OF_SOUND, 1);
     let direct_with = energy_window(&direct_with_edges);
     let direct_without = energy_window(&direct_without_edges);
     let wired_at = energy_window(&wired);

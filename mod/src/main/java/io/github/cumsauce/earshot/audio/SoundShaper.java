@@ -300,15 +300,21 @@ public final class SoundShaper {
 
 	/**
 	 * Moves the air absorption towards what the climate where the listener is gives (ISO 9613-1, {@link Air}), over
-	 * about a second, so walking out of a desert doesn't click.
+	 * about a second, so walking out of a desert doesn't click, and tells the native engine the air's temperature,
+	 * which sets the speed of sound and so the timing of every echo (a desert carries them a couple of percent
+	 * sooner than a snowy biome).
 	 */
 	private void followClimate(Minecraft minecraft, Vec3 eye) {
-		if (!airAbsorptionOn || minecraft.level == null) return;
+		if (minecraft.level == null) return;
 		var pos = net.minecraft.core.BlockPos.containing(eye);
 		var biome = minecraft.level.getBiome(pos).value();
 		boolean rains = biome.hasPrecipitation();
-		float target = Air.factorForBiome(biome.getBaseTemperature(), rains, rains && minecraft.level.isRaining());
-		airAbsorption += (target - airAbsorption) * 0.05f;
+		double celsius = Math.clamp(20.0 * biome.getBaseTemperature(), -30, 50);
+		if (airAbsorptionOn) {
+			float target = Air.factor(celsius, Air.humidityFor(celsius, rains, rains && minecraft.level.isRaining()));
+			airAbsorption += (target - airAbsorption) * 0.05f;
+		}
+		call(() -> bridge.setAir(engine, celsius));
 	}
 
 	/** The wanted reverb, if the game's OpenAL can do it, else the best it can; underwater, EAX's preset. */

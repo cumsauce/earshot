@@ -1,4 +1,4 @@
-use crate::{Room, SPEED_OF_SOUND};
+use crate::Room;
 
 /// EFX's EAX reverb parameters (`AL_EAXREVERB_*`), each within its range in
 /// `efx.h`. The reflection and late reverb pans are left centred.
@@ -56,8 +56,10 @@ const ECHO_PATH: f64 = 20.0;
 /// come straight from the measured per-band decays. The level grows with
 /// how enclosed the listener is (squared, so open ground is nearly dry).
 /// Early reflections come sooner and louder the nearer the walls, the late
-/// reverb after one mean free path, and a big enclosed space echoes.
-pub fn eax_reverb(room: &Room) -> EaxReverb {
+/// reverb after one mean free path, and a big enclosed space echoes. The
+/// three delay figures are travel times, so they take the air's `speed`
+/// (see [`crate::speed_of_sound`]): warm air carries the echoes sooner.
+pub fn eax_reverb(room: &Room, speed: f64) -> EaxReverb {
     let [low, mid, high] = room.decay;
     let enclosure = room.enclosure.clamp(0.0, 1.0);
     let echo = ((room.mean_free_path - ECHO_PATH) / 60.0).clamp(0.0, 0.5) as f32 * enclosure;
@@ -75,10 +77,10 @@ pub fn eax_reverb(room: &Room) -> EaxReverb {
         decay_hf_ratio: (high / mid).clamp(0.1, 2.0),
         decay_lf_ratio: (low / mid).clamp(0.1, 2.0),
         reflections_gain: (enclosure / (1.0 + room.first_reflection as f32 / 8.0)).clamp(0.0, 3.16),
-        reflections_delay: (2.0 * room.first_reflection / SPEED_OF_SOUND).clamp(0.0, 0.3) as f32,
+        reflections_delay: (2.0 * room.first_reflection / speed).clamp(0.0, 0.3) as f32,
         late_reverb_gain: (1.26 * enclosure).clamp(0.0, 10.0),
-        late_reverb_delay: (room.mean_free_path / SPEED_OF_SOUND).clamp(0.0, 0.1) as f32,
-        echo_time: (2.0 * room.mean_free_path / SPEED_OF_SOUND).clamp(0.075, 0.25) as f32,
+        late_reverb_delay: (room.mean_free_path / speed).clamp(0.0, 0.1) as f32,
+        echo_time: (2.0 * room.mean_free_path / speed).clamp(0.075, 0.25) as f32,
         echo_depth: echo,
     }
 }
@@ -86,6 +88,7 @@ pub fn eax_reverb(room: &Room) -> EaxReverb {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::SPEED_OF_SOUND;
 
     fn room(decay: [f32; 3], mean_free_path: f64, enclosure: f32) -> Room {
         Room {
@@ -107,7 +110,7 @@ mod tests {
             room([30.0, 25.0, 40.0], 200.0, 1.0),
             room([1.0, 1.0, 1.0], 10.0, 0.5),
         ] {
-            let e = eax_reverb(&r);
+            let e = eax_reverb(&r, SPEED_OF_SOUND);
             let ranges = [
                 (e.density, 0.0, 1.0),
                 (e.diffusion, 0.0, 1.0),
@@ -133,8 +136,8 @@ mod tests {
 
     #[test]
     fn open_ground_is_nearly_dry_and_a_closed_hall_rings() {
-        let open = eax_reverb(&room([0.3, 0.2, 0.15], 6.0, 0.5));
-        let hall = eax_reverb(&room([3.0, 2.5, 1.5], 25.0, 1.0));
+        let open = eax_reverb(&room([0.3, 0.2, 0.15], 6.0, 0.5), SPEED_OF_SOUND);
+        let hall = eax_reverb(&room([3.0, 2.5, 1.5], 25.0, 1.0), SPEED_OF_SOUND);
         assert!(open.gain < hall.gain / 3.0);
         assert!(hall.decay_time == 2.5 && hall.decay_hf_ratio < 1.0 && hall.decay_lf_ratio > 1.0);
         assert!(hall.echo_depth > 0.0 && open.echo_depth == 0.0);
@@ -170,17 +173,36 @@ mod tests {
     #[test]
     fn under_open_sky_the_tail_is_drawn_towards_a_short_outdoor_one() {
         let measured = [2.0, 2.0, 2.0];
-        let open = eax_reverb(&room(measured, 10.0, 0.0));
+        let open = eax_reverb(&room(measured, 10.0, 0.0), SPEED_OF_SOUND);
         assert!((open.decay_time - OPEN_DECAY).abs() < 1e-6, "{open:?}");
-        let shut = eax_reverb(&room(measured, 10.0, 1.0));
+        let shut = eax_reverb(&room(measured, 10.0, 1.0), SPEED_OF_SOUND);
         assert!((shut.decay_time - 2.0).abs() < 1e-6, "{shut:?}");
         // A measured decay shorter than the outdoor tail stands as measured.
-        let brisk = eax_reverb(&room([0.3, 0.3, 0.3], 10.0, 0.0));
+        let brisk = eax_reverb(&room([0.3, 0.3, 0.3], 10.0, 0.0), SPEED_OF_SOUND);
         assert!((brisk.decay_time - 0.3).abs() < 1e-6, "{brisk:?}");
         // The delays follow the room's distances: the helper's first
         // reflection is half the mean free path.
         let expected = (10.0 / SPEED_OF_SOUND) as f32;
         assert!((shut.late_reverb_delay - expected).abs() < 1e-9);
         assert!((shut.reflections_delay - expected).abs() < 1e-9);
+    }
+
+    /// The delays are travel times, so warm air brings them sooner: the EAX fields follow the speed the engine hands
+    /// in, in inverse proportion.
+    #[test]
+    fn the_eax_delays_follow_the_air() {
+        let r = room([2.0, 2.0, 2.0], 10.0, 1.0);
+        let cold = eax_reverb(&r, crate::speed_of_sound(-20.0));
+        let hot = eax_reverb(&r, crate::speed_of_sound(40.0));
+        assert!(cold.reflections_delay > hot.reflections_delay);
+        assert!(cold.late_reverb_delay > hot.late_reverb_delay);
+        let cold_speed = crate::speed_of_sound(-20.0);
+        let hot_speed = crate::speed_of_sound(40.0);
+        assert!(
+            (f64::from(cold.late_reverb_delay) / f64::from(hot.late_reverb_delay)
+                - hot_speed / cold_speed)
+                .abs()
+                < 1e-4
+        );
     }
 }

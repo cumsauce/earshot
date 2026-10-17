@@ -80,6 +80,7 @@ pub fn impulse_response(
     edge: &[EdgeSource],
     sample_rate: u32,
     max_seconds: f32,
+    speed: f64,
     seed: u64,
 ) -> Vec<f32> {
     let rate = sample_rate as f32;
@@ -99,7 +100,7 @@ pub fn impulse_response(
 
     // The diffuse tail: three bands of decorrelated noise per channel, each
     // fading at its band's decay, starting after one mean free path.
-    let onset = ((room.mean_free_path / SPEED_OF_SOUND) as f32 * rate) as usize;
+    let onset = ((room.mean_free_path / speed) as f32 * rate) as usize;
     let level = late_energy(room).sqrt();
     // Two slopes: the tail falls at the traced early decay until the knee
     // — where that slope reaches 10 dB — then at the room's own decay. A
@@ -153,7 +154,7 @@ pub fn impulse_response(
         }
         let a = reflection.energy.sqrt();
         let d = reflection.direction;
-        let air = air_absorption(reflection.delay * SPEED_OF_SOUND as f32);
+        let air = air_absorption(reflection.delay * speed as f32);
         let mut bands = Bands3::new(rate);
         // The split's low band still rings a few milliseconds after the
         // click; five is many lifetimes of it at these crossovers.
@@ -417,7 +418,7 @@ mod merge_tests {
                 energy: 0.2 / 4000.0,
             })
             .collect();
-        let ir = impulse_response(&room, &early, &[], 48_000, 1.5, 1);
+        let ir = impulse_response(&room, &early, &[], 48_000, 1.5, SPEED_OF_SOUND, 1);
         let w: Vec<f32> = ir.iter().step_by(IR_CHANNELS).copied().collect();
         let energy: f32 = w.iter().map(|s| s * s).sum();
         // The response's gain at 0 Hz against its overall (energy) gain.
@@ -454,7 +455,15 @@ mod tests {
     #[test]
     fn the_tail_decays_at_the_rooms_rate() {
         let rate = 48_000;
-        let ir = impulse_response(&room([1.0, 1.0, 1.0], 8.0, 1.0), &[], &[], rate, 2.0, 1);
+        let ir = impulse_response(
+            &room([1.0, 1.0, 1.0], 8.0, 1.0),
+            &[],
+            &[],
+            rate,
+            2.0,
+            SPEED_OF_SOUND,
+            1,
+        );
         assert_eq!(ir.len(), rate as usize * IR_CHANNELS);
         // 60 dB in a second: about 6 dB per 100 ms window.
         let windows = envelope(&ir, 4800);
@@ -465,7 +474,15 @@ mod tests {
     #[test]
     fn highs_die_first_when_the_room_absorbs_them() {
         let rate = 48_000;
-        let ir = impulse_response(&room([2.0, 1.0, 0.3], 8.0, 1.0), &[], &[], rate, 1.0, 2);
+        let ir = impulse_response(
+            &room([2.0, 1.0, 0.3], 8.0, 1.0),
+            &[],
+            &[],
+            rate,
+            1.0,
+            SPEED_OF_SOUND,
+            2,
+        );
         // Low and high band energy of W early (50–250 ms) and late (500–900 ms).
         let mut bands = Bands3::new(rate as f32);
         let mut energy = [[0.0f32; 2]; 2];
@@ -498,7 +515,15 @@ mod tests {
             delay: 0.4,
             energy: 0.01,
         };
-        let ir = impulse_response(&room([0.1; 3], 4.0, 0.2), &[echo], &[], 48_000, 1.5, 4);
+        let ir = impulse_response(
+            &room([0.1; 3], 4.0, 0.2),
+            &[echo],
+            &[],
+            48_000,
+            1.5,
+            SPEED_OF_SOUND,
+            4,
+        );
         let at = (0.4 * 48_000.0) as usize * IR_CHANNELS;
         assert!(
             ir.len() > at + IR_CHANNELS,
@@ -542,7 +567,7 @@ mod tests {
         // Short enough to fit the response whole, so none is cut off.
         for (t60, mfp) in [(0.6, 3.0), (0.8, 8.0), (1.0, 20.0)] {
             let r = room([t60; 3], mfp, 1.0);
-            let ir = impulse_response(&r, &[], &[], 48_000, 1.5, 1);
+            let ir = impulse_response(&r, &[], &[], 48_000, 1.5, SPEED_OF_SOUND, 1);
             // Energy in W is half the field's (FuMa's 1/√2).
             let energy = 2.0 * ir.iter().step_by(IR_CHANNELS).map(|s| s * s).sum::<f32>();
             let wanted = late_energy(&r).min(MAX_ENERGY);
@@ -566,6 +591,7 @@ mod tests {
             &[],
             48_000,
             1.0,
+            SPEED_OF_SOUND,
             3,
         );
         let at = 480 * IR_CHANNELS;
@@ -591,10 +617,10 @@ mod tests {
     #[test]
     fn the_same_seed_makes_the_same_response_and_a_different_one_rebalances() {
         let r = room([1.5, 1.0, 0.6], 6.0, 1.0);
-        let a = impulse_response(&r, &[], &[], 48_000, 1.5, 5);
-        let b = impulse_response(&r, &[], &[], 48_000, 1.5, 5);
+        let a = impulse_response(&r, &[], &[], 48_000, 1.5, SPEED_OF_SOUND, 5);
+        let b = impulse_response(&r, &[], &[], 48_000, 1.5, SPEED_OF_SOUND, 5);
         assert_eq!(a, b);
-        let c = impulse_response(&r, &[], &[], 48_000, 1.5, 6);
+        let c = impulse_response(&r, &[], &[], 48_000, 1.5, SPEED_OF_SOUND, 6);
         assert_ne!(a, c);
         let energy = |ir: &[f32]| 2.0 * ir.iter().step_by(IR_CHANNELS).map(|s| s * s).sum::<f32>();
         assert!(
@@ -608,11 +634,11 @@ mod tests {
     #[test]
     fn every_sample_is_finite_the_length_bounded_and_the_end_faded() {
         let r = room([2.0, 1.0, 0.5], 8.0, 1.0);
-        let ir = impulse_response(&r, &[], &[], 48_000, 1.5, 1);
+        let ir = impulse_response(&r, &[], &[], 48_000, 1.5, SPEED_OF_SOUND, 1);
         assert!(ir.iter().all(|s| s.is_finite()));
         // The mid decay of a second sets the length.
         assert_eq!(ir.len(), 48_000 * IR_CHANNELS);
-        let short = impulse_response(&r, &[], &[], 48_000, 0.25, 1);
+        let short = impulse_response(&r, &[], &[], 48_000, 0.25, SPEED_OF_SOUND, 1);
         assert_eq!(short.len(), 12_000 * IR_CHANNELS);
         // The fade-out at the end lands near silence.
         let peak = ir.iter().fold(0.0f32, |peak, s| peak.max(s.abs()));
@@ -632,7 +658,7 @@ mod tests {
             volume: 1.0,
         };
         assert!(late_energy(&r) >= 4.0, "the formula caps at 4 itself");
-        let ir = impulse_response(&r, &[], &[], 48_000, 1.5, 1);
+        let ir = impulse_response(&r, &[], &[], 48_000, 1.5, SPEED_OF_SOUND, 1);
         let energy = 2.0 * ir.iter().step_by(IR_CHANNELS).map(|s| s * s).sum::<f32>();
         assert!(energy <= MAX_ENERGY * 1.000_1, "{energy}");
     }
@@ -641,7 +667,7 @@ mod tests {
     fn each_band_of_the_tail_decays_at_its_own_measured_rate() {
         let rate = 48_000.0;
         let r = room([3.0, 1.5, 0.75], 8.0, 1.0);
-        let ir = impulse_response(&r, &[], &[], 48_000, 1.5, 8);
+        let ir = impulse_response(&r, &[], &[], 48_000, 1.5, SPEED_OF_SOUND, 8);
         // Band energies of W early (100–200 ms) and late (600–700 ms); the
         // windows are half a second apart.
         let mut bands = Bands3::new(rate);
@@ -695,7 +721,7 @@ mod tests {
             scattering: 0.3,
             volume: 0.0,
         };
-        let ir = impulse_response(&r, &[], &[], 48_000, 1.5, 8);
+        let ir = impulse_response(&r, &[], &[], 48_000, 1.5, SPEED_OF_SOUND, 8);
         let window = |from: f32, to: f32| {
             let mut energy = 0.0f32;
             for (i, &sample) in ir.iter().step_by(IR_CHANNELS).enumerate() {
@@ -739,7 +765,7 @@ mod tests {
             scattering: 0.3,
             volume: 0.0,
         };
-        let ir = impulse_response(&r, &[], &[], 48_000, 1.5, 8);
+        let ir = impulse_response(&r, &[], &[], 48_000, 1.5, SPEED_OF_SOUND, 8);
         assert!(ir.iter().all(|s| s.is_finite()));
         // W-channel energy in 50 ms windows, from just past the tail's
         // onset (8/343 ≈ 23 ms) to the response's end: nine windows, four
@@ -808,8 +834,16 @@ mod tests {
             early_decay: [f32::MAX; 3],
             ..base
         };
-        let held = impulse_response(&extreme, &[], &[], 48_000, max_seconds, 9);
-        let clamped = impulse_response(&at_the_clamp, &[], &[], 48_000, max_seconds, 9);
+        let held = impulse_response(&extreme, &[], &[], 48_000, max_seconds, SPEED_OF_SOUND, 9);
+        let clamped = impulse_response(
+            &at_the_clamp,
+            &[],
+            &[],
+            48_000,
+            max_seconds,
+            SPEED_OF_SOUND,
+            9,
+        );
         assert!(held.iter().all(|s| s.is_finite()));
         assert_eq!(held, clamped);
         let energy = 2.0 * held.iter().step_by(IR_CHANNELS).map(|s| s * s).sum::<f32>();
@@ -879,6 +913,7 @@ mod tests {
             &[],
             48_000,
             1.0,
+            SPEED_OF_SOUND,
             3,
         );
         let tap = |delay: f32| {
@@ -928,14 +963,14 @@ mod tests {
             scattering: 0.3,
             volume: 0.0,
         };
-        let taps = early_taps(&world, listener, source);
-        let edges = edge_sources(&world, listener, source, &taps);
+        let taps = early_taps(&world, listener, source, SPEED_OF_SOUND);
+        let edges = edge_sources(&world, listener, source, &taps, SPEED_OF_SOUND);
         assert!(
             !edges.is_empty(),
             "test setup: doorway should have at least one edge source"
         );
-        let with_edges = impulse_response(&room, &taps, &edges, 48_000, 0.05, 1);
-        let without_edges = impulse_response(&room, &taps, &[], 48_000, 0.05, 1);
+        let with_edges = impulse_response(&room, &taps, &edges, 48_000, 0.05, SPEED_OF_SOUND, 1);
+        let without_edges = impulse_response(&room, &taps, &[], 48_000, 0.05, SPEED_OF_SOUND, 1);
         // Sum W channel energy in a 1 ms window around the first edge's
         // delay. With edges the window has the edge's tap; without, it
         // has only the diffuse tail (which is small at 0.02 s with a
@@ -968,7 +1003,7 @@ mod tests {
     #[test]
     fn an_edge_tap_with_a_nan_delay_is_ignored() {
         let r = room([0.5; 3], 4.0, 1.0);
-        let clean = impulse_response(&r, &[], &[], 48_000, 0.5, 4);
+        let clean = impulse_response(&r, &[], &[], 48_000, 0.5, SPEED_OF_SOUND, 4);
         let bad = [
             EdgeSource {
                 direction: Vec3::new(1.0, 0.0, 0.0),
@@ -986,7 +1021,7 @@ mod tests {
                 energy: [0.25; BANDS],
             },
         ];
-        let ir = impulse_response(&r, &[], &bad, 48_000, 0.5, 4);
+        let ir = impulse_response(&r, &[], &bad, 48_000, 0.5, SPEED_OF_SOUND, 4);
         assert!(ir.iter().all(|s| s.is_finite()), "a non-finite sample");
         assert_eq!(ir, clean, "the bad taps changed the response");
     }
@@ -1140,7 +1175,7 @@ mod tests {
             scattering: 0.3,
             volume: 0.0,
         };
-        let ir = impulse_response(&r, &[near, far], &[], 48_000, 1.0, 7);
+        let ir = impulse_response(&r, &[near, far], &[], 48_000, 1.0, SPEED_OF_SOUND, 7);
         // The tap's energy through each band, over the 10 ms after it.
         let bands_after = |at: f32| {
             let mut split = Bands3::new(48_000.0);

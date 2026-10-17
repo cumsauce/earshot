@@ -1,6 +1,6 @@
 use earshot_world::{Material, Vec3, World, transmission};
 
-use crate::{EdgeSource, Reflection, SPEED_OF_SOUND};
+use crate::{EdgeSource, Reflection};
 
 /// How far from the source a wall may be to give a first reflection, in
 /// blocks.
@@ -61,8 +61,8 @@ impl Early {
 /// both legs are mostly clear. Its energy is the wall's mirrored share,
 /// `(1 - absorption) * (1 - scattering)`, times the inverse-square loss of
 /// the longer way against the direct one.
-pub fn early_reflections(world: &World, listener: Vec3, source: Vec3) -> Early {
-    let mut taps = early_taps(world, listener, source);
+pub fn early_reflections(world: &World, listener: Vec3, source: Vec3, speed: f64) -> Early {
+    let mut taps = early_taps(world, listener, source, speed);
     // One copy of the sound a millisecond or two behind it (the ground under a
     // sound and its listener) only combs it, as a single delay line; the ear
     // fuses it with the direct sound, and the room's reverb has it.
@@ -86,7 +86,7 @@ pub fn early_reflections(world: &World, listener: Vec3, source: Vec3) -> Early {
 /// `source` heard at `listener`, from the point where it bounces, as late
 /// as its way is longer than the direct one, with its energy relative to
 /// the direct sound in the open.
-pub fn early_taps(world: &World, listener: Vec3, source: Vec3) -> Vec<Reflection> {
+pub fn early_taps(world: &World, listener: Vec3, source: Vec3, speed: f64) -> Vec<Reflection> {
     let direct = (source - listener).length().max(0.5);
     let mut taps = Vec::new();
     for axis in 0..3 {
@@ -120,7 +120,7 @@ pub fn early_taps(world: &World, listener: Vec3, source: Vec3) -> Vec<Reflection
             let mirrored = (1.0 - acoustics.absorption[1]) * (1.0 - acoustics.scattering);
             taps.push(Reflection {
                 direction: (point - listener).normalized(),
-                delay: ((way - direct) / SPEED_OF_SOUND) as f32,
+                delay: ((way - direct) / speed) as f32,
                 energy: mirrored * (direct / way).powi(2) as f32,
             });
         }
@@ -139,6 +139,7 @@ pub fn edge_sources(
     listener: Vec3,
     source: Vec3,
     taps: &[Reflection],
+    speed: f64,
 ) -> Vec<EdgeSource> {
     let direct = (source - listener).length().max(0.5);
     let mut edges = Vec::new();
@@ -208,7 +209,7 @@ pub fn edge_sources(
                     }
                     edges.push(EdgeSource {
                         direction: (edge - listener).normalized(),
-                        delay: (two_way / SPEED_OF_SOUND) as f32,
+                        delay: (two_way / speed) as f32,
                         energy,
                     });
                 }
@@ -262,7 +263,7 @@ const WALL_SPAN: i32 = 2;
 /// walls ring, a ravine's answer. Taps sooner than [`MIN_TAP_DELAY`] count
 /// as nothing, and first ones within `traced` blocks are left out: the room
 /// trace already has those.
-pub fn echoes(world: &World, listener: Vec3, traced: f64) -> Vec<Reflection> {
+pub fn echoes(world: &World, listener: Vec3, traced: f64, speed: f64) -> Vec<Reflection> {
     let mut out = Vec::new();
     for axis in 0..3 {
         // The wall each way: its distance and how much of a reflection it
@@ -288,7 +289,7 @@ pub fn echoes(world: &World, listener: Vec3, traced: f64) -> Vec<Reflection> {
             };
             let (mut position, mut energy, mut wall) = (2.0 * d, r, first);
             for order in 1..=ECHO_ORDER {
-                let delay = position / SPEED_OF_SOUND;
+                let delay = position / speed;
                 if delay >= MIN_TAP_DELAY && (order > 1 || d > traced) {
                     let sign = if wall == 0 { -1.0 } else { 1.0 };
                     out.push(Reflection {
@@ -366,6 +367,7 @@ mod tests {
     use earshot_world::Material;
 
     use super::*;
+    use crate::SPEED_OF_SOUND;
 
     /// A floor of `material` under y = 0, 40 blocks square.
     fn floor(material: Material) -> World {
@@ -382,7 +384,7 @@ mod tests {
     fn a_floor_gives_one_reflection_from_below_a_little_later() {
         let world = floor(Material::Rock);
         let (listener, source) = (Vec3::new(0.5, 5.5, 0.5), Vec3::new(8.5, 5.5, 0.5));
-        let early = early_reflections(&world, listener, source);
+        let early = early_reflections(&world, listener, source, SPEED_OF_SOUND);
         assert_eq!(early.count, 1, "{early:?}");
         // Image at y = -5.5: the way is sqrt(8² + 11²) = 13.6 against 8.
         let expected = ((8.0f64.powi(2) + 121.0).sqrt() - 8.0) / SPEED_OF_SOUND;
@@ -394,18 +396,23 @@ mod tests {
         // Rough rock scatters 60 % of it, and the longer way loses some more.
         assert!(early.energy > 0.08 && early.energy < 0.4, "{early:?}");
         // Close above the ground, it comes too soon to be told apart.
-        let low = early_reflections(&world, Vec3::new(0.5, 1.5, 0.5), Vec3::new(8.5, 1.5, 0.5));
+        let low = early_reflections(
+            &world,
+            Vec3::new(0.5, 1.5, 0.5),
+            Vec3::new(8.5, 1.5, 0.5),
+            SPEED_OF_SOUND,
+        );
         assert_eq!(low, Early::NONE);
     }
 
     #[test]
     fn soft_walls_reflect_less_and_open_air_not_at_all() {
         let (listener, source) = (Vec3::new(0.5, 5.5, 0.5), Vec3::new(8.5, 5.5, 0.5));
-        let rock = early_reflections(&floor(Material::Rock), listener, source);
-        let cloth = early_reflections(&floor(Material::Cloth), listener, source);
+        let rock = early_reflections(&floor(Material::Rock), listener, source, SPEED_OF_SOUND);
+        let cloth = early_reflections(&floor(Material::Cloth), listener, source, SPEED_OF_SOUND);
         assert!(cloth.energy < 0.7 * rock.energy, "{cloth:?} vs {rock:?}");
         assert_eq!(
-            early_reflections(&World::new(), listener, source),
+            early_reflections(&World::new(), listener, source, SPEED_OF_SOUND),
             Early::NONE
         );
     }
@@ -426,7 +433,7 @@ mod tests {
     #[test]
     fn a_ravine_sends_echoes_back_and_forth() {
         let (world, listener) = ravine(40, 10.0);
-        let echoes = echoes(&world, listener, 0.0);
+        let echoes = echoes(&world, listener, 0.0, SPEED_OF_SOUND);
         let delays: Vec<f64> = echoes
             .iter()
             .map(|e| f64::from(e.delay) * SPEED_OF_SOUND)
@@ -465,7 +472,7 @@ mod tests {
             }
         }
         let listener = Vec3::new(1.5, 0.5, 0.5);
-        let taps = echoes(&world, listener, 64.0);
+        let taps = echoes(&world, listener, 64.0, SPEED_OF_SOUND);
         let delays: Vec<f64> = taps
             .iter()
             .map(|e| f64::from(e.delay) * SPEED_OF_SOUND)
@@ -491,7 +498,7 @@ mod tests {
             }
         }
         let energy = |list: &[Reflection]| list.iter().map(|t| t.energy).sum::<f32>();
-        let rock = energy(&echoes(&stone, listener, 64.0));
+        let rock = energy(&echoes(&stone, listener, 64.0, SPEED_OF_SOUND));
         assert!(
             rock < energy(&taps) / 2.0,
             "rock {rock} vs wood {}",
@@ -506,13 +513,13 @@ mod tests {
             world.set_block(30, y, 0, Material::Rock);
         }
         assert!(
-            echoes(&world, Vec3::new(0.5, 0.5, 0.5), 0.0).is_empty(),
+            echoes(&world, Vec3::new(0.5, 0.5, 0.5), 0.0, SPEED_OF_SOUND).is_empty(),
             "a pillar is no wall"
         );
         // A wall 5 blocks off answers within 50 ms — as flutter now, when
         // nothing else has covered it (the trace reached nowhere).
         let (world, listener) = ravine(200, 5.0);
-        let untraced = echoes(&world, listener, 0.0);
+        let untraced = echoes(&world, listener, 0.0, SPEED_OF_SOUND);
         assert!(
             untraced.iter().any(|e| f64::from(e.delay) < 0.05),
             "{untraced:?}"
@@ -520,9 +527,9 @@ mod tests {
         // But the room trace's own first reflections stand in for it: traced
         // that far, nothing is added a second time.
         let (world, listener) = ravine(200, 30.0);
-        assert!(echoes(&world, listener, 64.0).is_empty());
+        assert!(echoes(&world, listener, 64.0, SPEED_OF_SOUND).is_empty());
         let (world, listener) = ravine(200, 5.0);
-        assert!(echoes(&world, listener, 64.0).is_empty());
+        assert!(echoes(&world, listener, 64.0, SPEED_OF_SOUND).is_empty());
     }
 
     #[test]
@@ -534,7 +541,12 @@ mod tests {
             }
         }
         // The source's +x wall is between it and the listener's side.
-        let early = early_reflections(&world, Vec3::new(8.5, 0.5, 0.5), Vec3::new(2.5, 0.5, 0.5));
+        let early = early_reflections(
+            &world,
+            Vec3::new(8.5, 0.5, 0.5),
+            Vec3::new(2.5, 0.5, 0.5),
+            SPEED_OF_SOUND,
+        );
         assert_eq!(early.count, 0, "{early:?}");
     }
 
@@ -542,7 +554,7 @@ mod tests {
     fn a_floors_reflection_carries_its_image_sources_energy() {
         let world = floor(Material::Rock);
         let (listener, source) = (Vec3::new(0.5, 5.5, 0.5), Vec3::new(8.5, 5.5, 0.5));
-        let taps = early_taps(&world, listener, source);
+        let taps = early_taps(&world, listener, source, SPEED_OF_SOUND);
         assert_eq!(taps.len(), 1, "{taps:?}");
         let acoustics = Material::Rock.acoustics();
         let mirrored = (1.0 - acoustics.absorption[1]) * (1.0 - acoustics.scattering);
@@ -572,7 +584,7 @@ mod tests {
             }
         }
         let (listener, source) = (Vec3::new(0.5, 3.5, 0.5), Vec3::new(8.5, 3.5, 0.5));
-        let early = early_reflections(&world, listener, source);
+        let early = early_reflections(&world, listener, source, SPEED_OF_SOUND);
         assert_eq!(early.count, 2, "{early:?}");
         // One from below and one from above, mostly cancelling: the listener
         // is nearer the floor, so it answers first.
@@ -590,7 +602,7 @@ mod tests {
         let (world, listener) = ravine(40, 10.0);
         let acoustics = Material::Rock.acoustics();
         let mirrored = (1.0 - acoustics.absorption[1]) * (1.0 - acoustics.scattering);
-        let echoes = echoes(&world, listener, 0.0);
+        let echoes = echoes(&world, listener, 0.0, SPEED_OF_SOUND);
         let at = |blocks: f64| {
             echoes
                 .iter()
@@ -613,9 +625,9 @@ mod tests {
             }
         }
         let listener = Vec3::new(10.0, 0.5, 0.5);
-        let soft = echoes(&cloth, listener, 0.0);
+        let soft = echoes(&cloth, listener, 0.0, SPEED_OF_SOUND);
         let (rock, listener) = ravine(40, 10.0);
-        let hard = echoes(&rock, listener, 0.0);
+        let hard = echoes(&rock, listener, 0.0, SPEED_OF_SOUND);
         let first =
             |list: &[Reflection]| list.iter().map(|e| e.energy).fold(f32::INFINITY, f32::min);
         assert!(first(&soft) < 0.7 * first(&hard), "{soft:?} vs {hard:?}");
@@ -633,8 +645,8 @@ mod tests {
             world
         };
         // ECHO_REACH is 128: a wall there answers, one farther doesn't.
-        assert!(!echoes(&wall_at(128), Vec3::new(0.5, 0.5, 0.5), 0.0).is_empty());
-        assert!(echoes(&wall_at(129), Vec3::new(0.5, 0.5, 0.5), 0.0).is_empty());
+        assert!(!echoes(&wall_at(128), Vec3::new(0.5, 0.5, 0.5), 0.0, SPEED_OF_SOUND).is_empty());
+        assert!(echoes(&wall_at(129), Vec3::new(0.5, 0.5, 0.5), 0.0, SPEED_OF_SOUND).is_empty());
     }
 
     /// A 3×3 rock wall in the YZ plane at x=4, with a 1×1 doorway in the middle
@@ -659,8 +671,8 @@ mod tests {
         let world = doorway_world();
         let listener = Vec3::new(-2.0, 0.5, 0.5);
         let source = Vec3::new(2.0, 0.5, 0.5);
-        let taps = early_taps(&world, listener, source);
-        let edges = edge_sources(&world, listener, source, &taps);
+        let taps = early_taps(&world, listener, source, SPEED_OF_SOUND);
+        let edges = edge_sources(&world, listener, source, &taps, SPEED_OF_SOUND);
         let high: f32 = edges.iter().map(|e| e.energy[2]).sum();
         assert!(
             high > 0.0,
@@ -684,8 +696,8 @@ mod tests {
         }
         let listener = Vec3::new(-2.0, 0.5, 0.5);
         let source = Vec3::new(2.0, 0.5, 0.5);
-        let taps = early_taps(&world, listener, source);
-        let edges = edge_sources(&world, listener, source, &taps);
+        let taps = early_taps(&world, listener, source, SPEED_OF_SOUND);
+        let edges = edge_sources(&world, listener, source, &taps, SPEED_OF_SOUND);
         for b in 0..3 {
             let total: f32 = edges.iter().map(|e| e.energy[b]).sum();
             let parent: f32 = taps.iter().map(|t| t.energy).sum();
@@ -704,7 +716,7 @@ mod tests {
         let world = doorway_world();
         let listener = Vec3::new(-2.0, 0.5, 0.5);
         let source = Vec3::new(2.0, 0.5, 0.5);
-        let edges = edge_sources(&world, listener, source, &[]);
+        let edges = edge_sources(&world, listener, source, &[], SPEED_OF_SOUND);
         assert!(!edges.is_empty(), "{edges:?}");
         for e in &edges {
             let band: f32 = e.energy.iter().sum();
@@ -722,7 +734,7 @@ mod tests {
         let source = Vec3::new(3.9, 0.9, 0.05);
         // With no taps the cap is half a full energy's worth: the edges' own
         // sum is under that, so they come back as computed.
-        let raw = edge_sources(&world, listener, source, &[]);
+        let raw = edge_sources(&world, listener, source, &[], SPEED_OF_SOUND);
         assert!(!raw.is_empty(), "{raw:?}");
         let raw_sum: f32 = raw.iter().map(|e| e.energy[1]).sum();
         assert!(raw_sum < EDGE_TOTAL_CAP, "{raw:?}");
@@ -734,7 +746,7 @@ mod tests {
             delay: 0.0,
             energy: 4.0 * raw_sum,
         }];
-        let edges = edge_sources(&world, listener, source, &taps);
+        let edges = edge_sources(&world, listener, source, &taps, SPEED_OF_SOUND);
         assert!(
             edges
                 .iter()
@@ -746,5 +758,30 @@ mod tests {
             (sum - raw_sum).abs() <= 1e-6 * raw_sum,
             "{sum} vs {raw_sum}: {edges:?}"
         );
+    }
+
+    /// Cold air carries sound slower, so every reflection arrives later by the ratio of the speeds. The engine feeds
+    /// the temperature's speed in (see `crate::speed_of_sound`); an echo of a given geometry is the direct evidence.
+    #[test]
+    fn colder_air_delays_an_echo() {
+        let (world, listener) = ravine(200, 5.0);
+        let cold = crate::speed_of_sound(-20.0);
+        let hot = crate::speed_of_sound(40.0);
+        let cold_taps = echoes(&world, listener, 0.0, cold);
+        let hot_taps = echoes(&world, listener, 0.0, hot);
+        assert_eq!(cold_taps.len(), hot_taps.len());
+        assert!(!cold_taps.is_empty());
+        for (cold_tap, hot_tap) in cold_taps.iter().zip(&hot_taps) {
+            // The same distance divided by a slower speed is a longer time, by the speed ratio exactly.
+            let ratio = f64::from(cold_tap.delay) / f64::from(hot_tap.delay);
+            assert!(
+                (ratio - hot / cold).abs() < 1e-5,
+                "{} vs {} at {} / {}",
+                cold_tap.delay,
+                hot_tap.delay,
+                cold,
+                hot
+            );
+        }
     }
 }

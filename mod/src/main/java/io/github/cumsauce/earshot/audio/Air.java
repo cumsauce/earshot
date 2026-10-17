@@ -37,7 +37,11 @@ final class Air {
 	 */
 	static float factorForBiome(float temperature, boolean rains, boolean raining) {
 		double celsius = Math.clamp(20.0 * temperature, -30, 50);
-		double humidity = raining ? 95 : !rains ? 15 : temperature >= 0.95f ? 80 : 55;
-		return factor(celsius, humidity);
+		return factor(celsius, humidityFor(celsius, rains, raining));
+	}
+
+	/** The humidity the absorption uses at {@code celsius}: near saturation in rain, and the rest as above. */
+	static double humidityFor(double celsius, boolean rains, boolean raining) {
+		return raining ? 95 : !rains ? 15 : celsius >= 19 ? 80 : 55;
 	}
 }
