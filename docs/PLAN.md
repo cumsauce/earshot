@@ -323,14 +323,15 @@ a player drop a `.sofa` into `config/earshot/hrtf`, show it beside the bundled a
 the HRTF picker and the listening test, and keep Earshot's own folder first in the search order so a
 personal file overrides a same-named download. Mostly Java IO and screen work; the sim is untouched.
 
-### R3. Temperature-dependent speed of sound
+### R3. Temperature-dependent speed of sound (done)
 
-The plan fixes c at 343 m/s, while alpha.13 already reads a temperature from the biome for air
-absorption. `c ≈ 331.3 + 0.606 · T °C`, so a desert's warm air carries echoes a couple of per cent
-faster than a snowy biome's, and the Nether's heat again. Echo and early-reflection delays, the mean
-free path behind the decay, and Doppler's base frequency all shift with it: one parameter threaded from
-the biome sample into the timing. Audibly a slight change of pitch and echo timing between climates, so
-it belongs in an A/B listening pass rather than a test.
+`c ≈ 331.3 + 0.606 · T °C`, threaded from the biome the listener is in into the sim
+(`Engine::set_air`, through `earshot_set_air`; the ABI went 15 to 16). The timing paths
+take it: early reflections and edge sources, wall echoes, the impulse response's onset and
+air-absorption path lengths, the EAX delays, and the ground reflection's wavenumber. The
+room measurement keeps the fixed 343 m/s, so the golden scenes and BRAS do not move: a
+room's decay is measured, its echoes are the air's. Design and tests:
+`docs/temperature-design.md`.
 
 ### R4. Flanking leakage
 
