@@ -187,6 +187,97 @@ pub fn transmission(world: &World, from: Vec3, to: Vec3) -> Bands {
     passing
 }
 
+/// The share of sound energy, per band, that gets from `from` to `to` with
+/// a wall's loss taken the way a shallow crossing really pays it: over the
+/// thickness the ray cuts through the structure at [`Acoustics::transmission`]
+/// and over the run along the structure at [`Acoustics::structure`], the
+/// material's own relay rate (docs/flanking-leakage-design.md). Same walk,
+/// end-block skip, water surface toll and early-out as [`transmission`];
+/// the difference is only how a block's travel is split. The solid blocks
+/// are grouped into contiguous runs, and every block of a run is charged
+/// against the run's entry face, the face the ray entered the run through.
+/// Head on, along is 0 and this is [`transmission`] bit for bit; grazing,
+/// the thickness pays the wall's loss and the long way along it pays the
+/// structure's, which is the leak the mass law misses. [`transmission`]
+/// itself stays as it was: the room traces and the clear-line gates want
+/// the mass law's stricter answer.
+pub fn flank_transmission(world: &World, from: Vec3, to: Vec3) -> Bands {
+    let delta = to - from;
+    let distance = delta.length();
+    let mut passing = [1.0f32; BANDS];
+    if distance == 0.0 {
+        return passing;
+    }
+    let dir = delta * (1.0 / distance);
+    let ends = [floor(from), floor(to)];
+    // The face the run is charged against, and where the last visited
+    // block left the ray: a run holds together while each block enters
+    // exactly where the previous one exited.
+    let mut run_normal = [0i32; 3];
+    let mut previous_exit: Option<f64> = None;
+    walk_solid(world, from, dir, distance, |step| {
+        // The first visited block starts a run, and so does any block the
+        // walk meets after a gap of air or a jumped section.
+        let contiguous = previous_exit.is_some_and(|exit| (step.enter - exit).abs() < RUN_EPSILON);
+        if !contiguous {
+            run_normal = step.normal;
+        }
+        previous_exit = Some(step.exit);
+        if ends.contains(&step.block) {
+            return ControlFlow::Continue(());
+        }
+        if step.material == Material::Water {
+            // The surface's toll is per crossing, not per block: charged on
+            // each face of a water block that borders another medium, so a
+            // submerged path pays nothing and an air bubble pays twice.
+            let mut surface = |neighbour: [i32; 3]| {
+                if world.block(neighbour[0], neighbour[1], neighbour[2]) != Material::Water {
+                    for (passing, db) in passing.iter_mut().zip(WATER_INTERFACE_DB) {
+                        *passing *= 10f32.powf(-db / 10.0);
+                    }
+                }
+            };
+            if step.normal != [0; 3] {
+                surface([
+                    step.block[0] + step.normal[0],
+                    step.block[1] + step.normal[1],
+                    step.block[2] + step.normal[2],
+                ]);
+            }
+            surface(exit_neighbour(from, dir, step));
+        }
+        let length = step.exit - step.enter;
+        // How square on the run's face the ray strikes: 1 head on, 0
+        // grazing. The dot is with an axis unit vector (or zero for a run
+        // the ray starts inside), so it is that axis component's size.
+        let across = (dir.x * f64::from(run_normal[0])
+            + dir.y * f64::from(run_normal[1])
+            + dir.z * f64::from(run_normal[2]))
+        .abs();
+        // The thickness the crossing pays for, and the run along the
+        // structure; the fill scales both, as the mass law scales the one.
+        let through = (length * across) as f32 * step.fill;
+        let along = (length * (1.0 - across * across).max(0.0).sqrt()) as f32 * step.fill;
+        let acoustics = step.material.acoustics();
+        for (passing, (crossing, relay)) in passing
+            .iter_mut()
+            .zip(acoustics.transmission.into_iter().zip(acoustics.structure))
+        {
+            *passing *= crossing.powf(through) * relay.powf(along);
+        }
+        if passing.iter().all(|&p| p < 1e-6) {
+            return ControlFlow::Break(());
+        }
+        ControlFlow::Continue(())
+    });
+    passing
+}
+
+/// How far two ends of a visit may sit apart and still count as one
+/// continuous run of blocks. The walk lands each enter exactly on the
+/// previous exit; this slop only absorbs rounding across a section jump.
+const RUN_EPSILON: f64 = 1e-9;
+
 /// What crossing the air–water surface costs, once per crossing, per band.
 /// The plane-wave figure for the impedance jump (water is some 3600× air,
 /// which passes a tenth of a percent of the energy) is 29.5 dB flat; the
@@ -818,6 +909,121 @@ mod tests {
                     "{material:?} band {band}"
                 );
             }
+        }
+        // On a ray that runs along a wall, the flank walk hands back at
+        // least what the mass law gives, band by band.
+        let world = shallow_wall();
+        let flank = flank_transmission(&world, Vec3::new(0.5, 0.5, 0.5), Vec3::new(7.5, 0.5, 21.5));
+        let mass = transmission(&world, Vec3::new(0.5, 0.5, 0.5), Vec3::new(7.5, 0.5, 21.5));
+        for band in 0..BANDS {
+            assert!(
+                flank[band] >= mass[band],
+                "band {band}: {flank:?} vs {mass:?}"
+            );
+        }
+    }
+
+    /// A rock wall two blocks thick, x from 4 to 5, y from -2 to 2 and z
+    /// from 0 to 44: what the shallow crossings are measured against.
+    fn shallow_wall() -> World {
+        let mut world = World::new();
+        for x in 4..=5 {
+            for y in -2..=2 {
+                for z in 0..=44 {
+                    world.set_block(x, y, z, Material::Rock);
+                }
+            }
+        }
+        world
+    }
+
+    #[test]
+    fn an_axis_aligned_crossing_is_unchanged() {
+        // Only a ray exactly along an axis has across = 1 in every block of
+        // the run, so only it is bit for bit; the distances are powers of
+        // two so the direction's component comes out exactly 1.
+        let mut world = World::new();
+        for y in -2..=2 {
+            for z in -2..=2 {
+                world.set_block(4, y, z, Material::Rock);
+            }
+        }
+        let flank = flank_transmission(&world, Vec3::new(0.5, 0.5, 0.5), Vec3::new(8.5, 0.5, 0.5));
+        let plain = transmission(&world, Vec3::new(0.5, 0.5, 0.5), Vec3::new(8.5, 0.5, 0.5));
+        assert_eq!(flank, plain);
+        // The same across water, where the surface toll runs as well.
+        let water = water_slab(0, 4);
+        let flank = flank_transmission(&water, Vec3::new(-3.5, 0.5, 0.5), Vec3::new(4.5, 0.5, 0.5));
+        let plain = transmission(&water, Vec3::new(-3.5, 0.5, 0.5), Vec3::new(4.5, 0.5, 0.5));
+        assert_eq!(flank, plain);
+    }
+
+    #[test]
+    fn a_shallow_crossing_beats_the_mass_law() {
+        let world = shallow_wall();
+        let from = Vec3::new(0.5, 0.5, 0.5);
+        // The same wall, the same straight run, crossed once at a slope of
+        // 3 and once at 6: the second is the shallower crossing.
+        let moderate = Vec3::new(7.5, 0.5, 21.5);
+        let shallow = Vec3::new(7.5, 0.5, 42.5);
+        let flank_moderate = flank_transmission(&world, from, moderate);
+        let mass_moderate = transmission(&world, from, moderate);
+        let flank_shallow = flank_transmission(&world, from, shallow);
+        let mass_shallow = transmission(&world, from, shallow);
+        for band in 0..BANDS {
+            // The flank walk passes strictly more than the mass law at
+            // both angles, in every band.
+            assert!(
+                flank_moderate[band] > mass_moderate[band],
+                "band {band}: {flank_moderate:?} vs {mass_moderate:?}"
+            );
+            assert!(
+                flank_shallow[band] > mass_shallow[band],
+                "band {band}: {flank_shallow:?} vs {mass_shallow:?}"
+            );
+            // Passing itself falls with shallowness in both models; what
+            // grows is how far the flank walk stays ahead of the mass law.
+            assert!(
+                flank_shallow[band] < flank_moderate[band],
+                "band {band}: {flank_shallow:?} vs {flank_moderate:?}"
+            );
+            let ratio_moderate = flank_moderate[band] / mass_moderate[band];
+            let ratio_shallow = flank_shallow[band] / mass_shallow[band];
+            assert!(
+                ratio_shallow > ratio_moderate,
+                "band {band}: {ratio_shallow} vs {ratio_moderate}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_partial_block_grazed_lengthwise_scales_with_its_fill() {
+        let mut world = World::new();
+        world.set_block(5, 0, 0, Material::Rock);
+        // One block crossed on the diagonal: it pays the crossing over the
+        // full block of thickness in x and the relay over the 0.625 it
+        // runs along z.
+        let from = Vec3::new(4.5, 0.5, 0.05);
+        let to = Vec3::new(6.5, 0.5, 1.30);
+        let full = flank_transmission(&world, from, to);
+        world.set_block_fill(5, 0, 0, Material::Rock, 0.5);
+        let slab = flank_transmission(&world, from, to);
+        let rock = Material::Rock.acoustics();
+        for band in 0..BANDS {
+            let crossing = rock.transmission[band];
+            let relay = rock.structure[band].powf(0.625);
+            // The half fill halves both exponents, so the slab passes the
+            // square root of what the full block does, and it passes more
+            // than the full block in every band.
+            assert!(
+                (full[band] - crossing * relay).abs() < 1e-3 * crossing * relay,
+                "band {band}: {full:?}"
+            );
+            assert!(
+                (slab[band] - (crossing * relay).sqrt()).abs() < 1e-3 * (crossing * relay).sqrt(),
+                "band {band}: {slab:?}"
+            );
+            assert!(slab[band] > full[band], "band {band}: {slab:?} vs {full:?}");
         }
     }
 
