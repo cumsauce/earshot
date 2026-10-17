@@ -356,12 +356,29 @@ The release workflow already POSTs to Modrinth (`project_id: GnuooDgr`) gated on
 secret that is not set, so only the GitHub release happens. Add the token and the next tag publishes
 there too. Ops, not code.
 
-### R6. Tidy-up
+### R6. Tidy-up (done)
 
-- `v0.1.0-alpha.42` is a dangling tag: it points at a commit whose subject says alpha.42 but which is
-  one commit before that version's bump. Delete it, or leave it.
-- The `docs/convolution-comb-investigation.md` retained while R0 is open; fold its conclusion into this
-  list and delete it once the comb is settled.
+Two loose ends, both now closed. The first had already settled itself before this milestone was
+reached; the second turned out to be a different problem than it was written up as.
+
+**The convolution comb investigation.** `docs/convolution-comb-investigation.md` was written while R0
+was open and deleted in `24828c4` ("The tail's bands change slope at one time, not three"), with its
+conclusion folded into R0 above. Nothing left to do.
+
+**The tags.** The write-up said `v0.1.0-alpha.42` was a dangling tag pointing one commit before its
+bump. Checking the history showed the opposite: `b7463ff` is that version's bump (41 to 42 across
+Cargo.toml, Cargo.lock and gradle.properties), so the tag was placed exactly as every other tag is.
+What was actually wrong was two different things:
+
+- Five tags had no GitHub release and no jar behind them, so the tag list advertised versions that
+  were never shipped: `v0.1.0-alpha.19`, `.24`, `.27`, `.42` and `.44`. These were deleted locally and
+  from origin. Nothing downloadable was lost, since there was nothing to download.
+- `v0.1.0-alpha.43` is tagged on `051ab61`, one commit after its bump (`6d150b2`), so that release
+  carries one extra test commit. It was left alone: its release works and is published, and moving a
+  tag out from under a release people may already have fetched is a worse disturbance than the slip
+  it would correct.
+
+Every tag now remaining has a release and a jar behind it.
 
 ## Approaches considered
 
