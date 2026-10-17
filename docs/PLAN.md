@@ -333,13 +333,22 @@ room measurement keeps the fixed 343 m/s, so the golden scenes and BRAS do not m
 room's decay is measured, its echoes are the air's. Design and tests:
 `docs/temperature-design.md`.
 
-### R4. Flanking leakage
+### R4. Flanking leakage (done)
 
 Per-frequency transmission was left alone after #5, since the material table already carries
 coincidence's flattening; what is still missing there is flanking leakage, sound that leaves one room
 through a shared structure and reaches another without crossing either room's air. Voxel rays partly
-follow it already through wall transmission. Needs a concrete design: where a shared structure is
-detected, and how its transmission adds a path the room trace cannot see.
+follow it already through wall transmission.
+
+What landed is the direct-line half of it: a wall crossed at a shallow angle used to raise the
+wall's loss to the long diagonal through the block and collapse to nothing, when sound really pays
+the wall's loss over its thickness and then travels the rest of the way along the material at its own
+structure-borne rate. The material table gained a structure column, and `flank_transmission` splits
+each solid run's travel by the run's entry face normal so the thickness pays a crossing and the
+lateral run pays the relay. `hear` takes it; `early.rs` keeps the plain walk so grazing lines cannot
+open early reflections through walls. Junction flanking, sound leaving one room through a shared
+floor or corner into another, is not started. Design and tests:
+`docs/flanking-leakage-design.md`.
 
 ### R5. Modrinth publishing
 
