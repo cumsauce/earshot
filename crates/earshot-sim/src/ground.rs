@@ -328,9 +328,16 @@ pub(crate) fn ground_gain(
         // Under the surface itself is not an open-air path above ground.
         return None;
     }
-    // v1 accepts any solid block under the source within the cap, rather
-    // than demanding its plane match the listener's to the block.
-    ground_under(world, source)?;
+    // The source must stand in the air above the ground it is scanned to. A
+    // top face above the source means the scan found the block the source
+    // itself is inside (a note block, a chest, a jukebox, an eye point in a
+    // slab), and there is no air path down to a ground plane from in there.
+    // v1 still accepts a source on its own rise rather than demanding the
+    // listener's plane to the block.
+    let (source_plane, _) = ground_under(world, source)?;
+    if source_plane > source.y {
+        return None;
+    }
     let d = (source.x - listener.x).hypot(source.z - listener.z);
     let sigma = flow_resistivity(material);
     Some(band_gains(sigma, h_s, h_r, d))
@@ -443,6 +450,43 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_source_inside_a_block_has_no_ground() {
+        // A rock floor whose top face is y = 64, with one wooden block
+        // sitting on it at the source's column. The listener stands on the
+        // floor; a source whose eye point is inside that block (a note
+        // block, a chest, a jukebox, an eye in a slab) has its scan find the
+        // block's own top face above it, and no air path down to ground.
+        let mut world = World::new();
+        for x in 0..=12 {
+            for y in 0..64 {
+                world.set_block(x, y, 0, Material::Rock);
+            }
+        }
+        world.set_block(10, 64, 0, Material::Wood);
+        let listener = Vec3::new(0.5, 65.0, 0.5);
+        let inside = Vec3::new(10.5, 64.5, 0.5);
+        assert_eq!(
+            ground_under(&world, inside).map(|(plane, _)| plane),
+            Some(65.0),
+            "the scan finds the block the source is in"
+        );
+        let reflected = ground_gain(&world, listener, inside, 0.0);
+        assert!(
+            reflected.is_none(),
+            "a source inside a block gets no reflection: {reflected:?}"
+        );
+        // The same source in the air above that block still reflects, so
+        // the gate rejects only the inside-the-block case.
+        let above = Vec3::new(10.5, 65.2, 0.5);
+        let reflected =
+            ground_gain(&world, listener, above, 0.0).expect("air above ground reflects");
+        assert!(
+            reflected.iter().any(|gain| (gain - 1.0).abs() > 1e-4),
+            "{reflected:?}"
+        );
     }
 
     #[test]
