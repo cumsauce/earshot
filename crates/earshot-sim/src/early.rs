@@ -166,18 +166,22 @@ pub fn edge_sources(
             normal[axis] = -f64::from(sign);
             let normal = Vec3::new(normal[0], normal[1], normal[2]);
             let acoustics = wall.acoustics();
-            // The wall block's 4 vertical edges: the corners of the block at the face
-            // plane. For a face on the -x side (axis=0, sign=+1), the corners are at
-            // x = behind.x, y ∈ {cell[1], cell[1]+1}, z ∈ {cell[2], cell[2]+1}. The
-            // wall's x is `behind`; only the y and z corners vary.
-            let cy = cell[1] as f64;
-            let cz = cell[2] as f64;
-            let corners_y = [cy, cy + 1.0];
-            let corners_z = [cz, cz + 1.0];
-            for &ey in &corners_y {
-                for &ez in &corners_z {
-                    let edge = with(behind, 1, ey);
-                    let edge = with(edge, 2, ez);
+            // The wall block's 4 corners at the face plane. The two axes across the
+            // face are u and v, so the corners vary in those and hold the wall's own
+            // axis at the plane. For a face on the -x side (axis=0, sign=+1), the
+            // corners are at x = behind.x, y ∈ {cell[1], cell[1]+1}, z ∈ {cell[2],
+            // cell[2]+1}. For a z-facing wall the same rule keeps z at the plane and
+            // varies x and y, which the old fixed y and z axes got wrong.
+            let u = (axis + 1) % 3;
+            let v = (axis + 2) % 3;
+            let cu = cell[u] as f64;
+            let cv = cell[v] as f64;
+            let corners_u = [cu, cu + 1.0];
+            let corners_v = [cv, cv + 1.0];
+            for &eu in &corners_u {
+                for &ev in &corners_v {
+                    let edge = with(behind, u, eu);
+                    let edge = with(edge, v, ev);
                     // The line from listener to edge, and edge to source, must be clear.
                     if transmission(world, listener, edge)[1] < CLEAR {
                         continue;
@@ -209,7 +213,12 @@ pub fn edge_sources(
                     }
                     edges.push(EdgeSource {
                         direction: (edge - listener).normalized(),
-                        delay: (two_way / speed) as f32,
+                        // Count from the direct sound, as a reflection does: the
+                        // impulse response starts the direct sound at zero, so an
+                        // absolute flight time would land a whole direct path too
+                        // late and the fuse would compare a gap against an absolute
+                        // time. `detour` is the clamped excess over the direct path.
+                        delay: (detour / speed) as f32,
                         energy,
                     });
                 }
@@ -758,6 +767,69 @@ mod tests {
             (sum - raw_sum).abs() <= 1e-6 * raw_sum,
             "{sum} vs {raw_sum}: {edges:?}"
         );
+    }
+
+    #[test]
+    fn a_doorway_in_a_z_wall_diffracts_from_the_faces_corners() {
+        // The same doorway as `doorway_world`, turned to face along z: the
+        // wall blocks sit at z = 4 with a hole at (0, 1, 4). Its edges are
+        // at the corners of the wall face, half a block either side of the
+        // listener's line, so the edge taps must not all point straight
+        // down the z axis.
+        let mut world = World::new();
+        for x in -1..=1 {
+            for y in 0..=2 {
+                if y == 1 && x == 0 {
+                    continue;
+                }
+                world.set_block(x, y, 4, Material::Rock);
+            }
+        }
+        let listener = Vec3::new(0.5, 0.5, -2.0);
+        let source = Vec3::new(0.5, 0.5, 2.0);
+        let taps = early_taps(&world, listener, source, SPEED_OF_SOUND);
+        let edges = edge_sources(&world, listener, source, &taps, SPEED_OF_SOUND);
+        assert!(!edges.is_empty(), "{edges:?}");
+        assert!(
+            edges.iter().any(|e| e.direction.x.abs() > 0.05),
+            "the doorway's corners lie off the x = 0.5 line: {edges:?}"
+        );
+    }
+
+    #[test]
+    fn edge_delays_count_from_the_direct_sound() {
+        // An edge source arrives when its way round the doorframe is longer
+        // than the direct path, just as a reflection does; the impulse
+        // response starts the direct sound at zero. An absolute flight time
+        // would put every edge tap a whole direct path too late.
+        let world = doorway_world();
+        let listener = Vec3::new(-2.0, 0.5, 0.5);
+        let source = Vec3::new(2.0, 0.5, 0.5);
+        let taps = early_taps(&world, listener, source, SPEED_OF_SOUND);
+        let edges = edge_sources(&world, listener, source, &taps, SPEED_OF_SOUND);
+        assert!(!edges.is_empty(), "{edges:?}");
+        let direct = (source - listener).length();
+        for edge in &edges {
+            // The wall block behind the bounce point is (4, 0, 0): its face
+            // corners are at x = 4.01, y and z in {0, 1}.
+            let expected = [(0.0, 0.0), (0.0, 1.0), (1.0, 0.0), (1.0, 1.0)].map(|(y, z)| {
+                let corner = Vec3::new(4.01, y, z);
+                ((listener - corner).length() + (source - corner).length() - direct)
+                    / SPEED_OF_SOUND
+            });
+            assert!(
+                expected
+                    .iter()
+                    .any(|e| (f64::from(edge.delay) - e).abs() < 1e-6),
+                "edge at {} s is not an excess delay ({}): {edges:?}",
+                edge.delay,
+                expected
+                    .iter()
+                    .map(|e| format!("{e:.6}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
     }
 
     /// Cold air carries sound slower, so every reflection arrives later by the ratio of the speeds. The engine feeds
