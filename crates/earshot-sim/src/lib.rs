@@ -6,6 +6,7 @@
 mod early;
 mod eax;
 mod engine;
+mod ground;
 mod hear;
 mod ir;
 mod pathing;

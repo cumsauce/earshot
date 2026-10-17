@@ -145,7 +145,12 @@ fn scenes() -> Vec<Scene> {
                 mid_decay: (0.1, 0.3),
                 mean_free_path: (1.0, 8.0),
                 order: ["high", "mid", "low"],
-                outside_mid_gain: (0.95, 1.0),
+                // The direct path over open soil is free field plus the
+                // ground's reflected wave. Over soil that reflection lifts
+                // the mid band by about 3.2 dB (the Lloyd's-mirror crest):
+                // the free-field gain this held before the ground
+                // reflection, about 0.97, is now about 1.44.
+                outside_mid_gain: (1.30, 1.60),
             },
         },
         Scene {
@@ -613,4 +618,58 @@ fn a_doorway_leaks_high_band_around_its_edges() {
         wired_at > direct_without,
         "the wired engine path matches a hand-built IR with edges: {wired_at} vs {direct_without}"
     );
+}
+
+/// The ground reflection reaches `hear`: over open soil the direct sound is
+/// changed by the ground, while a listener shut in (the room trace owns the
+/// floor) or one with no ground under foot (open sky) hears it unchanged.
+/// The band-by-band shape is pinned in `ground.rs`'s own tests, since it
+/// turns over with a fraction of a block of height.
+#[test]
+fn the_ground_reflection_reaches_the_hearing() {
+    let mut world = World::new();
+    for x in -40..40 {
+        for z in -40..40 {
+            world.set_block(x, -1, z, Material::Soil);
+        }
+    }
+    let listener = Vec3::new(0.5, 1.5, 0.5);
+    let source = Vec3::new(0.5, 1.5, -19.5);
+    // Open sky: enclosure 0, so the ground reflection is folded in.
+    let open = hear(
+        &world,
+        None,
+        listener,
+        source,
+        5,
+        0.0,
+        DiffractionStandard::Iso9613_2,
+    );
+    assert_ne!(
+        open.gains, [1.0; 3],
+        "the ground changes the direct sound: {:?}",
+        open.gains
+    );
+    // Shut in: the floor is the room's business, so nothing is added.
+    let shut_in = hear(
+        &world,
+        None,
+        listener,
+        source,
+        5,
+        1.0,
+        DiffractionStandard::Iso9613_2,
+    );
+    assert_eq!(shut_in.gains, [1.0; 3], "{:?}", shut_in.gains);
+    // No ground under foot at all: sky, so no reflection.
+    let sky = hear(
+        &World::new(),
+        None,
+        listener,
+        source,
+        5,
+        0.0,
+        DiffractionStandard::Iso9613_2,
+    );
+    assert_eq!(sky.gains, [1.0; 3], "{:?}", sky.gains);
 }

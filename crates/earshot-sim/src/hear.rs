@@ -1,6 +1,7 @@
 use earshot_world::{BANDS, Bands, Vec3, World, transmission};
 
 use crate::Field;
+use crate::ground::ground_gain;
 use crate::quality::DiffractionStandard;
 
 /// How far around the source the extra occlusion rays go, in blocks, so a
@@ -31,6 +32,9 @@ const CLEAR: f32 = 0.9;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Heard {
     /// The share of the energy that arrives, per band, besides distance.
+    /// Over open ground the direct share can rise above full: the
+    /// ground's reflection meets the straight line and adds to it, up to
+    /// the hard ground's double (see `crate::ground`).
     pub gains: Bands,
     /// Where it seems to come from: the source itself, or a point towards the
     /// opening it comes round through.
@@ -106,6 +110,16 @@ pub fn hear(
         };
     }
     let direct = occlusion(world, listener, source, rays);
+    // Outdoors the ground answers the sound that crosses it: its
+    // reflection meets the straight line with a phase set by both
+    // heights, which is exactly the excess attenuation the ground model
+    // measures, so the direct bands take the ground's factor. The way
+    // round is a different path with its own reflections, and is left
+    // alone (docs/ground-reflection-design.md, "The fold").
+    let direct = match ground_gain(world, listener, source, enclosure) {
+        Some(factor) => std::array::from_fn(|band| direct[band] * factor[band]),
+        None => direct,
+    };
     let straight = Heard {
         gains: direct,
         heard_from: source,
@@ -319,6 +333,60 @@ mod tests {
     }
 
     #[test]
+    fn the_ground_lifts_grazing_sound_over_hard_ground() {
+        // A rock floor at y = -1 under open sky: rock has no entry in the
+        // flow-resistivity table, so it is hard ground and mirrors the
+        // source outright.
+        let mut world = World::new();
+        for x in -40..40 {
+            for z in -40..40 {
+                world.set_block(x, -1, z, Material::Rock);
+            }
+        }
+        let listener = Vec3::new(0.5, 0.5, 0.5);
+        let near = Vec3::new(20.5, 0.5, 0.5);
+        // Both ends a block above the floor, 20 blocks apart: the direct
+        // and mirrored paths nearly agree in length, so over rigid ground
+        // they add and the mid band lands above the free-field value.
+        let free = occlusion(&world, listener, near, 5);
+        let grazing = hear(
+            &world,
+            None,
+            listener,
+            near,
+            5,
+            0.0,
+            DiffractionStandard::Iso9613_2,
+        );
+        assert!(grazing.gains[1] > free[1], "{grazing:?} against {free:?}");
+        // Shut in, the same floor is the room's business and adds nothing.
+        let shut_in = hear(
+            &world,
+            None,
+            listener,
+            near,
+            5,
+            1.0,
+            DiffractionStandard::Iso9613_2,
+        );
+        assert_eq!(shut_in.gains, free, "{shut_in:?}");
+        // A high source ten blocks up: the mirrored path is now half a
+        // wavelength longer than the straight one at the mid band, the two
+        // fight, and the ground takes sound away instead of adding it.
+        let high = Vec3::new(20.5, 10.5, 0.5);
+        let overhead = hear(
+            &world,
+            None,
+            listener,
+            high,
+            5,
+            0.0,
+            DiffractionStandard::Iso9613_2,
+        );
+        assert!(overhead.gains[1] < free[1], "{overhead:?} against {free:?}");
+    }
+
+    #[test]
     fn the_ray_count_sets_how_soft_edges_are_and_none_turns_occlusion_off() {
         let mut world = World::new();
         for z in -10..=0 {
@@ -503,7 +571,11 @@ mod tests {
                     DiffractionStandard::Iso9613_2,
                 );
                 for gain in heard.gains {
-                    assert!((0.0..=1.0).contains(&gain), "{heard:?}");
+                    // The direct bands carry the ground's factor outdoors,
+                    // and hard ground's mirror can double them, so the
+                    // bound is silence to that ceiling rather than to free
+                    // field alone; the round path never exceeds full.
+                    assert!((0.0..=2.0).contains(&gain), "{heard:?}");
                 }
                 assert!(
                     [heard.heard_from.x, heard.heard_from.y, heard.heard_from.z]

@@ -51,12 +51,12 @@ Delany-Bazley; preferred below the fit range, which is where outdoor ground at t
 bands sits). With `X = f / σ` (σ the effective flow resistivity, Pa·s/m²):
 
 ```
-Z(f) = 1 + 0.070 X^(-0.632) - i 0.107 X^(-0.632)
+Z(f) = 1 + 0.070 X^(-0.632) + i 0.107 X^(-0.632)
 ```
 
-(Imaginary part negated from the published `e^{+iωt}` form into this `e^{-iωt}`
-convention, so a passive ground has Im Z > 0. The builder confirms the sign against the
-two pinned limits below.)
+(Imaginary part negated from the published `e^{+iωt}` form, where it is negative, into
+this `e^{-iωt}` convention, so a passive ground has Im Z > 0. The sign was confirmed
+against the two pinned limits below: only `+i` makes a porous ground dip.)
 
 Weyl-Van der Pol (Attenborough 2.40c, Salomons D.58), with `β = 1/Z` the normalised
 admittance:
@@ -155,8 +155,10 @@ Unit (`ground.rs`), pure functions, no world needed:
 1. `a_hard_ground_gives_the_six_decibel_boost_at_grazing` — `|Z| → ∞`, small heights:
    `EA = +6.02 dB`.
 2. `a_porous_ground_dips_the_low_band` — `σ = 200_000`, `h_s = h_r = 1.6` m, `d = 20` m:
-   the 250 Hz band's `EA` is a null, deeper than the 4 kHz band's (pins the null's depth
-   and which band it lands in); assert the exact dB against the model's own value.
+   the 250 Hz band's `EA` is a null (−2.44 dB), the mid band rides the crest
+   (+3.20 dB), and the deepest null of the three lands in the 4 kHz band (−3.81 dB),
+   because Miki's ground stiffens toward low frequency; assert the band pattern and
+   pin each dB against the model's own value.
 3. `grazing_over_a_porous_ground_stays_finite` — heights → 0: `EA` finite and above a
    sane floor, matching the ground-wave limit.
 4. `the_ground_effect_is_reciprocal` — swap `h_s`, `h_r`: identical.
@@ -172,8 +174,20 @@ Integration (`hear.rs`):
 
 Scene (`tests/scenes.rs`):
 
-8. an open field: a source a metre and a half up and 20 m away, the low band carrying the
-   ground's null while a source high overhead does not — held as a range like the others.
+8. `the_ground_reflection_reaches_the_hearing` (scenes.rs): over open soil the direct
+   gains change, while a shut-in listener and a listener over no ground hear them
+   unchanged. The band-by-band shape is pinned in the unit tests, not here: it turns over
+   with a fraction of a block of height.
 
-And the existing `gains_stay_between_silence_and_full_however_it_gets_there` keeps holding
-(the ground factor is bounded).
+`gains_stay_between_silence_and_full_however_it_gets_there` now allows gains up to 2
+(the hard ground's +6 dB lift), not 1: over open ground the direct share can exceed full.
+
+## Known follow-up: the mixer only attenuates
+
+`SoundShaper.filter` applies the direct gain as an EFX lowpass, whose gain is valid in
+`[0, 1]` (`Math.clamp(gains[0], 0f, 1f)` in `SoundShaper.java`), so the ground's **nulls**
+(gain below one) are heard but its hard-ground **lift** (gain above one, up to +6 dB) is
+clamped away. The porous-ground null, the audible point of this milestone, works. Making
+the lift audible needs the excess above one applied as a source gain (the game's
+`AL_GAIN`), which interacts with the game's own per-sound volume: a separate change, and a
+Java one, deliberately not taken here.
