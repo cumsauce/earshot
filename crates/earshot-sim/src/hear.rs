@@ -24,7 +24,7 @@ const HJ24_POWER: f64 = 0.187;
 /// Grid steps' lengths, in blocks: through a face, an edge and a corner, as
 /// the pathing field counts them.
 const STEPS: [f64; 3] = [1.0, 1.4, 1.7];
-/// Above this much of the mid band straight through, the way round can't do
+/// Above this much of every band straight through, the way round can't do
 /// better, so it isn't looked for.
 const CLEAR: f32 = 0.9;
 
@@ -87,10 +87,11 @@ pub fn occlusion(world: &World, listener: Vec3, source: Vec3, rays: u32) -> Band
 
 /// How a sound at `source` reaches `listener`: straight through whatever is in
 /// the way (over `rays` occlusion rays), or round it along `field`'s shortest
-/// path, whichever loses less in the mid band. Round, it seems to come from
-/// the opening, and loses what [`round_loss`] says for how `enclosure`d the
-/// listener's space is. With no rays, nothing is in the way. The
-/// `diffraction` standard selects which curve the way round an edge follows.
+/// path. Each band takes the better of the two; the mid band decides where it
+/// seems to come from, since that is where direction is judged. Round, it
+/// loses what [`round_loss`] says for how `enclosure`d the listener's space is.
+/// With no rays, nothing is in the way. The `diffraction` standard selects
+/// which curve the way round an edge follows.
 pub fn hear(
     world: &World,
     field: Option<&Field>,
@@ -126,24 +127,32 @@ pub fn hear(
         path_length,
         aperture: crate::MAX_APERTURE,
     };
-    if direct[1] >= CLEAR {
+    if direct.iter().all(|gain| *gain >= CLEAR) {
         return straight;
     }
     let Some(route) = field.and_then(|field| field.route(world, source)) else {
         return straight;
     };
-    let around = round_loss(
-        detour(route.length, listener, source),
-        route.bend,
-        enclosure,
-        diffraction,
-    );
-    if around[1] <= direct[1] {
+    let extra = detour(route.length, listener, source);
+    let around = round_loss(extra, route.bend, enclosure, diffraction);
+    let round_is_better = around[1] > direct[1];
+    // A route no longer than the straight run has gone round nothing, so
+    // it is not a second path: its loss describes the same straight line
+    // without the materials on it, and must not fill their bands back in.
+    if !round_is_better && extra <= 0.0 {
         return straight;
     }
+    // Every band takes the better of the two paths. A curtain, cloth or
+    // leaves can pass the mid band while stopping the highs, and the way
+    // round it is then the louder high band even when it loses in the mid.
     let mut gains = direct;
     for (gain, around) in gains.iter_mut().zip(around) {
         *gain = gain.max(around);
+    }
+    if !round_is_better {
+        // The mid band carries where a sound seems to come from, so a
+        // route that only wins in a muffled band does not move it.
+        return Heard { gains, ..straight };
     }
     Heard {
         gains,
@@ -633,6 +642,122 @@ mod tests {
         );
         assert_eq!(coincident.gains, [1.0; BANDS]);
         assert_eq!(coincident.heard_from, LISTENER);
+    }
+
+    /// Rock ground at y = -1 and a cloth curtain on it at x = 5, z from -10
+    /// to 10, y from 0 to 9, with a two high doorway at z = `door`.
+    fn curtain(door: i32) -> World {
+        let mut world = World::new();
+        for x in -16..=16 {
+            for z in -16..=16 {
+                world.set_block(x, -1, z, Material::Rock);
+            }
+        }
+        for y in 0..=9 {
+            for z in -10..=10 {
+                if (0..2).contains(&y) && z == door {
+                    continue;
+                }
+                world.set_block(5, y, z, Material::Cloth);
+            }
+        }
+        world
+    }
+
+    #[test]
+    fn the_high_band_hears_the_way_round_a_curtain() {
+        // Cloth passes the mid band far better than the highs, and the hole
+        // keeps the way round short. The high band should arrive that way
+        // even though the mid band still comes straight through, and the
+        // source's direction should stay put because the mid band prefers
+        // the straight path.
+        let world = curtain(-1);
+        let field = Field::build(&world, LISTENER, 16);
+        let enclosure = 0.5;
+        let direct = occlusion(&world, LISTENER, SOURCE, 5);
+        let direct = match ground_gain(&world, LISTENER, SOURCE, enclosure) {
+            Some(factor) => std::array::from_fn(|band| direct[band] * factor[band]),
+            None => direct,
+        };
+        let route = field.route(&world, SOURCE).unwrap();
+        let around = round_loss(
+            detour(route.length, LISTENER, SOURCE),
+            route.bend,
+            enclosure,
+            DiffractionStandard::Iso9613_2,
+        );
+        // The scene's point: the curtain is hardest on the highs, and the
+        // way round carries more high band than the direct line does.
+        assert!(direct[1] > 5.0 * direct[2], "{direct:?}");
+        assert!(around[2] > direct[2], "{direct:?} against {around:?}");
+        let heard = hear(
+            &world,
+            Some(&field),
+            LISTENER,
+            SOURCE,
+            5,
+            enclosure,
+            DiffractionStandard::Iso9613_2,
+        );
+        // No band may be left below a path that was available.
+        for band in 0..BANDS {
+            assert!(
+                heard.gains[band] >= direct[band].max(around[band]) - 1e-6,
+                "band {band}: {heard:?} against {direct:?} and {around:?}"
+            );
+        }
+        assert_eq!(heard.heard_from, SOURCE, "{heard:?}");
+    }
+
+    #[test]
+    fn a_clear_mid_band_does_not_stop_the_highs_coming_round() {
+        // A single leaf block stops the highs more than the middles, and a
+        // low source over hard ground lifts the mid band to nearly clear.
+        // The mid gate alone would hide the way round the leaf, which is
+        // louder in the high band.
+        let mut world = World::new();
+        for x in -50..=50 {
+            for z in -50..=50 {
+                world.set_block(x, -1, z, Material::Rock);
+            }
+        }
+        world.set_block(5, 0, 0, Material::Leaves);
+        let listener = Vec3::new(0.5, 2.5, 0.5);
+        let source = Vec3::new(6.5, 0.5, 0.5);
+        let field = Field::build(&world, listener, 16);
+        let enclosure = 0.6;
+        let direct = occlusion(&world, listener, source, 5);
+        let direct = match ground_gain(&world, listener, source, enclosure) {
+            Some(factor) => std::array::from_fn(|band| direct[band] * factor[band]),
+            None => direct,
+        };
+        // The scene must be one the mid gate closes on, or it proves
+        // nothing about the gate.
+        assert!(direct[1] >= CLEAR, "{direct:?}");
+        let route = field.route(&world, source).unwrap();
+        let around = round_loss(
+            detour(route.length, listener, source),
+            route.bend,
+            enclosure,
+            DiffractionStandard::Iso9613_2,
+        );
+        assert!(around[2] > direct[2], "{direct:?} against {around:?}");
+        let heard = hear(
+            &world,
+            Some(&field),
+            listener,
+            source,
+            5,
+            enclosure,
+            DiffractionStandard::Iso9613_2,
+        );
+        // No band may be left below a path that was available.
+        for band in 0..BANDS {
+            assert!(
+                heard.gains[band] >= direct[band].max(around[band]) - 1e-6,
+                "band {band}: {heard:?} against {direct:?} and {around:?}"
+            );
+        }
     }
 
     #[test]
