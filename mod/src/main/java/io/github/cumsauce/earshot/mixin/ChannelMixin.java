@@ -58,6 +58,11 @@ abstract class ChannelMixin implements ShapedChannel {
 		earshot$range = distance;
 	}
 
+	@Inject(method = "setVolume", at = @At("HEAD"))
+	private void earshot$rememberVolume(float volume, CallbackInfo ci) {
+		earshot$state.volume(volume);
+	}
+
 	@Inject(method = "destroy", at = @At("HEAD"))
 	private void earshot$release(CallbackInfo ci) {
 		SoundShaper.release(this);

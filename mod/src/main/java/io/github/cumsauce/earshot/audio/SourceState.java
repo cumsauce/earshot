@@ -44,6 +44,11 @@ public final class SourceState {
 	boolean realistic;
 	private boolean started;
 	private final float[] gains = {1, 1, 1};
+	/**
+	 * The game's own volume for this source, from {@code Channel.setVolume}: a ground lift rides on it (the mixer's
+	 * filter cannot pass one) rather than replacing it.
+	 */
+	private float volume = 1f;
 	private Vec3 offset = Vec3.ZERO;
 	private final Motion motion = new Motion();
 
@@ -69,6 +74,16 @@ public final class SourceState {
 	/** The smoothed gains, low to high. */
 	float[] gains() {
 		return gains.clone();
+	}
+
+	/** Remembers the game's volume, so a lift can ride it instead of overwriting it. Called from {@code Channel}. */
+	public void volume(float volume) {
+		this.volume = volume;
+	}
+
+	/** The game's volume as last set; the source's gain is this times any lift. */
+	float volume() {
+		return volume;
 	}
 
 	/** How fast the source moves, in blocks a second, from where it was at the last update. */

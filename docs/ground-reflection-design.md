@@ -182,12 +182,13 @@ Scene (`tests/scenes.rs`):
 `gains_stay_between_silence_and_full_however_it_gets_there` now allows gains up to 2
 (the hard ground's +6 dB lift), not 1: over open ground the direct share can exceed full.
 
-## Known follow-up: the mixer only attenuates
+## The lift rides the source's own gain
 
-`SoundShaper.filter` applies the direct gain as an EFX lowpass, whose gain is valid in
-`[0, 1]` (`Math.clamp(gains[0], 0f, 1f)` in `SoundShaper.java`), so the ground's **nulls**
-(gain below one) are heard but its hard-ground **lift** (gain above one, up to +6 dB) is
-clamped away. The porous-ground null, the audible point of this milestone, works. Making
-the lift audible needs the excess above one applied as a source gain (the game's
-`AL_GAIN`), which interacts with the game's own per-sound volume: a separate change, and a
-Java one, deliberately not taken here.
+`SoundShaper.filter` applies the direct gain as an EFX low-pass, whose gain is valid in
+`[0, 1]`. So the band **shape** (attenuation) goes through the filter, and the part of the
+gain above one, the ground's **lift** over hard ground, rides the source's own `AL_GAIN`
+instead: the source gain is the game's volume (`Channel.setVolume`, remembered by the
+`Channel` mixin into `SourceState`) times `SoundShaper.lift(gains)`, and the filter takes
+`gains[0] / lift`. The two are exactly equivalent to the filter-only path for gains of one
+or less, so nothing indoors changes. Voices are left alone: a voice's gain is
+`VoicePlayer`'s own.

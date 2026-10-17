@@ -298,22 +298,22 @@ Still worth a glance: the intended 5-tick crossfade during a room change (`Convo
 feeds one source two convolvers for ~250 ms; the tint was steady so this is not it, but it may be audible
 on room changes.
 
-### R1. Outdoor ground reflection
+### R1. Outdoor ground reflection (done)
 
-Open ground is dry today: reverb gain is enclosure², so outside it almost vanishes, and the direct
-path takes the ground as one more occluder. Real ground over grass, soil or water reflects coherently,
+Open ground is dry today: reverb gain is enclosure², so outside it almost vanishes, and
+the direct path takes the ground as one more occluder. Real ground over grass, soil or water reflects coherently,
 and the interference between that reflection and the direct wave puts a deep null in the low band,
 moving with the source's and the listener's heights. This is the most audible gap left for outdoor
 play. The sim is energy-based per band, so the interference cannot be traced; the route is a per-band
 ground-loss curve folded into the direct path wherever source and listener stand over one absorbing
 surface.
 
-**Design first (the user asked for a full design doc):** read Attenborough's ground-effect model and a
-Delany-Bazley / Miki impedance curve for the porous surface; write the formulas, where each input comes
-from (the ground's material, the two heights, the excess length, the band), the fold into the direct
-path, and the test plan (an `earshot-sim` test pinning the null's depth and frequency against the
-model at known heights). Then implement. No FFI/Java change expected — it is one more per-band direct
-path factor.
+**Done:** `crates/earshot-sim/src/ground.rs` computes the Weyl-Van der Pol excess attenuation at each
+band centre (250 Hz, 1 kHz, 4 kHz) with Miki's surface impedance (and the Faddeeva function by
+Weideman's approximation), and `hear` folds it into the direct path when the listener is not shut in
+and both ends stand over ground. The ground's lift over hard ground rides the source's own gain
+(`SoundShaper.lift`), since the mixer's filter cannot pass one. Design and tests:
+`docs/ground-reflection-design.md`.
 
 ### R2. SOFA personalization
 

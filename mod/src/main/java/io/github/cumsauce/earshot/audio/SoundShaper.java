@@ -448,8 +448,15 @@ public final class SoundShaper {
 				float fade = falloff(target.source(), state, target.range(), (float) straight);
 				for (int band = 0; band < gains.length; band++) gains[band] *= fade;
 			}
+			// The ground's reflection can bring the direct sound above free field, and the mixer's low-pass cannot
+			// pass one: the lift rides the source's own gain (times the game's volume) and the filter takes the rest.
+			// A voice's gain is VoicePlayer's own, so a voice takes no lift here.
+			float boost = target.voice() == null ? lift(gains) : 1f;
+			if (target.voice() == null) {
+				AL10.alSourcef(target.source(), AL10.AL_GAIN, state.volume() * boost);
+			}
 			if (efx) {
-				filter(target.source(), state, gains);
+				filter(target.source(), state, gains, boost);
 				send(target.source(), state, gains, ownSends[i] != null ? ownSends[i] : sends, spaceSlot,
 						portalShare((float) heard[at + 7]));
 				sendEarly(target.source(), state, earlySlots[i]);
@@ -682,18 +689,32 @@ public final class SoundShaper {
 		}
 	}
 
+	/** The most the mixer will lift a source above the game's own volume: the hard ground's +6 dB. */
+	private static final float MAX_LIFT = 2f;
+
+	/**
+	 * How much of a direct gain above one must ride the source's own gain rather than the filter: an EFX low-pass
+	 * cannot pass more than one, so the ground's reflection (which can bring the direct sound above free field) has
+	 * nowhere else to go. One for an ordinary gain, so nothing indoors changes.
+	 */
+	static float lift(float[] gains) {
+		float most = Math.max(1f, Math.max(gains[0], Math.max(gains[1], gains[2])));
+		return Math.min(most, MAX_LIFT);
+	}
+
 	/**
 	 * Sets the source's direct filter: a low-pass whose gain is the low band and whose high-frequency gain brings the
-	 * high band down to its own value. OpenAL copies a filter when it is attached, so it is attached again each time.
+	 * high band down to its own value, with any `lift` already taken out of the source's own gain. OpenAL copies a
+	 * filter when it is attached, so it is attached again each time.
 	 */
-	private void filter(int source, SourceState state, float[] gains) {
+	private void filter(int source, SourceState state, float[] gains, float lift) {
 		if (state.filter == 0) {
 			state.filter = EXTEfx.alGenFilters();
 			EXTEfx.alFilteri(state.filter, EXTEfx.AL_FILTER_TYPE, EXTEfx.AL_FILTER_LOWPASS);
 		}
 		AL10.alSourcef(source, EXTEfx.AL_AIR_ABSORPTION_FACTOR, airAbsorption);
-		float low = Math.clamp(gains[0], 0f, 1f);
-		float highRatio = low > 0 ? Math.clamp(gains[2] / low, 0f, 1f) : 0f;
+		float low = Math.clamp(gains[0] / lift, 0f, 1f);
+		float highRatio = low > 0 ? Math.clamp(gains[2] / gains[0], 0f, 1f) : 0f;
 		EXTEfx.alFilterf(state.filter, EXTEfx.AL_LOWPASS_GAIN, low);
 		EXTEfx.alFilterf(state.filter, EXTEfx.AL_LOWPASS_GAINHF, highRatio);
 		AL10.alSourcei(source, EXTEfx.AL_DIRECT_FILTER, state.filter);

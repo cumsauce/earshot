@@ -126,4 +126,16 @@ class SoundShaperTest {
 		assertTrue(SoundShaper.freesConvolution(SoundShaper.ReverbMode.EAX));
 		assertTrue(SoundShaper.freesConvolution(SoundShaper.ReverbMode.OFF));
 	}
+
+	/** The mixer's filter cannot pass one, so a gain above one must ride the source's own gain instead. */
+	@Test
+	void a_gain_above_one_rides_the_source_gain() {
+		// An ordinary gain takes no lift: the filter carries it all, as before.
+		assertEquals(1f, SoundShaper.lift(new float[] {0.5f, 0.3f, 0.2f}), 1e-6f);
+		assertEquals(1f, SoundShaper.lift(new float[] {1f, 1f, 1f}), 1e-6f);
+		// The soil ground's mid-band crest over open ground: the lift is the peak band.
+		assertEquals(1.44f, SoundShaper.lift(new float[] {0.7f, 1.44f, 0.5f}), 1e-6f);
+		// Nothing lifts past the hard ground's double.
+		assertEquals(2f, SoundShaper.lift(new float[] {2.5f, 0.1f, 0.1f}), 1e-6f);
+	}
 }
