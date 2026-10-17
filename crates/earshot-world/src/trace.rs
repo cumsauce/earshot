@@ -53,7 +53,7 @@ pub fn walk(
     mut visit: impl FnMut(&Step) -> ControlFlow<()>,
 ) {
     let finite = [origin.x, origin.y, origin.z, dir.x, dir.y, dir.z, max];
-    if !finite.iter().all(|v| v.is_finite()) {
+    if !origin.is_usable() || !finite.iter().all(|v| v.is_finite()) {
         return;
     }
     // A larger reach would walk the block coordinates toward an i32
@@ -148,13 +148,18 @@ pub fn transmission(world: &World, from: Vec3, to: Vec3) -> Bands {
     let dir = delta * (1.0 / distance);
     let ends = [floor(from), floor(to)];
     walk_solid(world, from, dir, distance, |step| {
-        if ends.contains(&step.block) {
-            return ControlFlow::Continue(());
-        }
-        if step.material == Material::Water {
+        let at_end = ends.contains(&step.block);
+        // A block the ray only touches at a corner has no length, so it
+        // crosses no face: its surface toll would otherwise be charged twice
+        // for a walk that never enters the water.
+        if step.material == Material::Water && step.exit > step.enter {
             // The surface's toll is per crossing, not per block: charged on
             // each face of a water block that borders another medium, so a
-            // submerged path pays nothing and an air bubble pays twice.
+            // submerged path pays nothing and an air bubble pays twice. End
+            // blocks still pay: the source or listener may sit in the top
+            // block of a pond, and the surface it crosses is real. Only the
+            // end block's far face is skipped, because the ray stops before
+            // reaching it.
             let mut surface = |neighbour: [i32; 3]| {
                 if world.block(neighbour[0], neighbour[1], neighbour[2]) != Material::Water {
                     for (passing, db) in passing.iter_mut().zip(WATER_INTERFACE_DB) {
@@ -169,7 +174,13 @@ pub fn transmission(world: &World, from: Vec3, to: Vec3) -> Bands {
                     step.block[2] + step.normal[2],
                 ]);
             }
-            surface(exit_neighbour(from, dir, step));
+            let leaves_start = step.block == ends[0] && step.block != ends[1];
+            if !at_end || leaves_start {
+                surface(exit_neighbour(from, dir, step));
+            }
+        }
+        if at_end {
+            return ControlFlow::Continue(());
         }
         let length = (step.exit - step.enter) as f32;
         let through = step.material.acoustics().transmission;
@@ -223,13 +234,15 @@ pub fn flank_transmission(world: &World, from: Vec3, to: Vec3) -> Bands {
             run_normal = step.normal;
         }
         previous_exit = Some(step.exit);
-        if ends.contains(&step.block) {
-            return ControlFlow::Continue(());
-        }
-        if step.material == Material::Water {
+        let at_end = ends.contains(&step.block);
+        // A block the ray only touches at a corner has no length, so it
+        // crosses no face: its surface toll would otherwise be charged twice
+        // for a walk that never enters the water.
+        if step.material == Material::Water && step.exit > step.enter {
             // The surface's toll is per crossing, not per block: charged on
             // each face of a water block that borders another medium, so a
-            // submerged path pays nothing and an air bubble pays twice.
+            // submerged path pays nothing and an air bubble pays twice. End
+            // blocks still pay, and only an end block's far face is skipped.
             let mut surface = |neighbour: [i32; 3]| {
                 if world.block(neighbour[0], neighbour[1], neighbour[2]) != Material::Water {
                     for (passing, db) in passing.iter_mut().zip(WATER_INTERFACE_DB) {
@@ -244,7 +257,13 @@ pub fn flank_transmission(world: &World, from: Vec3, to: Vec3) -> Bands {
                     step.block[2] + step.normal[2],
                 ]);
             }
-            surface(exit_neighbour(from, dir, step));
+            let leaves_start = step.block == ends[0] && step.block != ends[1];
+            if !at_end || leaves_start {
+                surface(exit_neighbour(from, dir, step));
+            }
+        }
+        if at_end {
+            return ControlFlow::Continue(());
         }
         let length = step.exit - step.enter;
         // How square on the run's face the ray strikes: 1 head on, 0
@@ -316,7 +335,7 @@ fn walk_solid(
     mut visit: impl FnMut(&Step) -> ControlFlow<()>,
 ) {
     let finite = [origin.x, origin.y, origin.z, dir.x, dir.y, dir.z, max];
-    if !finite.iter().all(|v| v.is_finite()) {
+    if !origin.is_usable() || !finite.iter().all(|v| v.is_finite()) {
         return;
     }
     // A larger reach would walk the block coordinates toward an i32
@@ -481,6 +500,22 @@ mod tests {
             ControlFlow::Continue(())
         });
         steps
+    }
+
+    #[test]
+    fn a_walk_refuses_a_point_off_the_coordinate_bound() {
+        let world = World::new();
+        // `floor() as i32` saturates here, and one step past it would wrap
+        // the block index. Such a point is outside the range the sim can
+        // carry, so no block is visited and no cast is made.
+        let far = Vec3::new(f64::from(i32::MAX), 0.5, 0.5);
+        let mut visited = 0;
+        walk(&world, far, Vec3::new(1.0, 0.0, 0.0), 10.0, |_| {
+            visited += 1;
+            ControlFlow::Continue(())
+        });
+        assert_eq!(visited, 0);
+        assert!(cast(&world, far, Vec3::new(1.0, 0.0, 0.0), 10.0).is_none());
     }
 
     #[test]
@@ -798,6 +833,38 @@ mod tests {
         // And back up: the toll is the same either way.
         let up = transmission(&world, Vec3::new(1.5, 0.5, 0.5), Vec3::new(1.5, 5.5, 0.5));
         assert!((f64::from(up[1]) - mid).abs() < 1e-6, "{up:?} vs {down:?}");
+    }
+
+    #[test]
+    fn a_surface_crossing_at_an_end_block_still_costs_the_toll() {
+        let world = water_slab(0, 4);
+        let alone = 10f32.powf(-WATER_INTERFACE_DB[1] / 10.0);
+        // Starting in the water's top block and rising into the air crosses
+        // the surface at the start block's exit face.
+        let up = transmission(&world, Vec3::new(1.5, 4.5, 0.5), Vec3::new(1.5, 5.5, 0.5));
+        assert!((up[1] - alone).abs() < 1e-5, "{up:?}");
+        // Falling from the air and ending in that same top block crosses it
+        // at the end block's entry face.
+        let down = transmission(&world, Vec3::new(1.5, 5.5, 0.5), Vec3::new(1.5, 4.5, 0.5));
+        assert!((down[1] - alone).abs() < 1e-5, "{down:?}");
+        // The flanking walk skips the same end blocks for loss and must not
+        // skip the surface toll with them.
+        let flank = flank_transmission(&world, Vec3::new(1.5, 4.5, 0.5), Vec3::new(1.5, 5.5, 0.5));
+        assert!((flank[1] - alone).abs() < 1e-5, "{flank:?}");
+    }
+
+    #[test]
+    fn a_water_block_touched_only_at_a_corner_charges_nothing() {
+        let mut world = World::new();
+        // The ray runs through the corner at (-1, -1) with this block on one
+        // side of the corner; it never spends any length inside it, so it
+        // crosses no water surface.
+        world.set_block(-2, -1, 0, Material::Water);
+        let through = transmission(&world, Vec3::new(-1.5, -1.5, 0.5), Vec3::new(1.5, 1.5, 0.5));
+        assert_eq!(through, [1.0; BANDS], "{through:?}");
+        let flank =
+            flank_transmission(&world, Vec3::new(-1.5, -1.5, 0.5), Vec3::new(1.5, 1.5, 0.5));
+        assert_eq!(flank, [1.0; BANDS], "{flank:?}");
     }
 
     #[test]
