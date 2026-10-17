@@ -127,6 +127,30 @@ class SoundShaperTest {
 		assertTrue(SoundShaper.freesConvolution(SoundShaper.ReverbMode.OFF));
 	}
 
+	/**
+	 * A failed pass must take sends 0 and 1 off every target that holds them, not only own-reverb owners: the
+	 * listener's reverb slots sit on an ordinary target's sends too, and OpenAL will not delete a slot a source
+	 * still sends to.
+	 */
+	@Test
+	void every_target_with_a_send_filter_has_its_sends_taken_off() {
+		SourceState ordinary = new SourceState();
+		ordinary.sendFilter = 4;
+		SourceState owner = new SourceState();
+		owner.sendFilter = 5;
+		SourceState neverSent = new SourceState();
+		List<SoundShaper.Target> targets = List.of(
+				new SoundShaper.Target(11, ordinary, new Vec3(1, 2, 3), null, 16),
+				new SoundShaper.Target(22, owner, new Vec3(4, 5, 6), null, 16),
+				new SoundShaper.Target(33, neverSent, new Vec3(7, 8, 9), null, 16));
+
+		List<SoundShaper.Target> holders = SoundShaper.sendsToDetach(targets);
+
+		assertEquals(List.of(11, 22), holders.stream().map(SoundShaper.Target::source).toList(),
+				"the ordinary target's sends hold the listener's reverb as much as the own-reverb owner's do");
+		assertTrue(SoundShaper.sendsToDetach(List.of()).isEmpty(), "with no targets there is nothing to detach");
+	}
+
 	/** The mixer's filter cannot pass one, so a gain above one must ride the source's own gain instead. */
 	@Test
 	void a_gain_above_one_rides_the_source_gain() {

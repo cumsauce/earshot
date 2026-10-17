@@ -511,13 +511,14 @@ public final class SoundShaper {
 
 	/**
 	 * Lets go of the OpenAL resources an update made when no update will follow to let go of them: every space's
-	 * slot ({@code off}), the early slots, and both own reverbs, kept or not — unlike the end of a normal update,
-	 * where spaces stay while they have sounds, the early slots stay while reflections are on, and only the own
-	 * reverbs no sound kept are released. {@link #failed} has stopped {@link #tick} for now, so anything left
-	 * live here would stay so until the context closes. On the sound thread.
+	 * slot ({@code off}), the early slots, both own reverbs, kept or not, and the convolution reverb whatever the
+	 * mode still holds. A normal update's end keeps spaces while they have sounds, keeps the early slots while
+	 * reflections are on, releases only the own reverbs no sound kept, and lets the convolution slots go once the
+	 * mode has left convolution. {@link #failed} has stopped {@link #tick} for now, so anything left live here
+	 * would stay so until the context closes. On the sound thread.
 	 *
-	 * <p>Every tracked source's sends come off first: OpenAL won't free a slot a source still sends to, so the
-	 * frees below would fail and leave the slots mixing until the context closes.
+	 * <p>Every tracked source's sends come off first, sends 0 and 1 among them: OpenAL won't free a slot a source
+	 * still sends to, so the frees below would fail and leave the slots mixing until the context closes.
 	 */
 	private void releaseAll(List<Target> targets, long now, Vec3 ear, Axes axes) {
 		for (Target target : targets) {
@@ -533,6 +534,12 @@ public final class SoundShaper {
 						EarlyReflections.SEND, EXTEfx.AL_FILTER_NULL);
 				state.earlySent = false;
 			}
+		}
+		// Every target's sends 0 and 1 come off here, ordinary ones alike with own-reverb owners: the
+		// listener's reverb sits on them (an own reverb's slots in its owner's place), so a target left
+		// sending would keep the slot alive to the context's close, however often it was asked to free.
+		for (Target target : sendsToDetach(targets)) {
+			releaseFilters(target.source(), target.state());
 		}
 		for (int k = 0; k < OWN_REVERBS; k++) {
 			// An own reverb's slots sit on sends 0 and 1 of the one sound given it; one that has gone
@@ -550,7 +557,24 @@ public final class SoundShaper {
 		spaces.end(now, true, ear, axes.right(), axes.up(), axes.forward());
 		early.free();
 		for (ConvolutionReverb own : ownReverbs) own.release();
-		releaseConvolutionWhenOff();
+		// Not releaseConvolutionWhenOff(): failed has stopped every later pass, so while the mode still
+		// holds convolution nothing would come back to free the slots, and they would keep convolving
+		// (about a tenth of a core) with nothing sending to them until the context closes.
+		convolution.release();
+	}
+
+	/**
+	 * The targets whose sends 0 and 1 must come off before the reverb slots they hold are freed: every one with a
+	 * send filter, which is every one a shaping pass has sent, ordinary targets alike with own-reverb owners.
+	 * OpenAL will not delete a slot a source still sends to, so a target missing here would keep its slot mixing
+	 * to the context's close.
+	 */
+	static List<Target> sendsToDetach(List<Target> targets) {
+		List<Target> holders = new ArrayList<>(targets.size());
+		for (Target target : targets) {
+			if (target.state().sendFilter != 0) holders.add(target);
+		}
+		return holders;
 	}
 
 	/**
