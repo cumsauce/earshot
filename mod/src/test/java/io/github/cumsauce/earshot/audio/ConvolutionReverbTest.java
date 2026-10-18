@@ -20,6 +20,26 @@ class ConvolutionReverbTest {
 		return new ConvolutionReverb((madeFrom, seed) -> new float[0], (madeFrom, now) -> true);
 	}
 
+	/**
+	 * Policy constants, asserted so a change has to face the measurement behind them
+	 * (docs/investigations/2026-10-18-reverb-levels.md). Honest note: these assert constants, not behaviour —
+	 * the evidence is the before/after probe numbers in that doc; there is no OpenAL seam to test the slot
+	 * through.
+	 */
+	@Test
+	void the_slot_is_not_held_below_the_rooms_own_reverb() {
+		assertTrue(ConvolutionReverb.LEVEL >= 1.0f,
+				"the response already carries the room's late energy (ir.rs normalises to late_energy) and the EAX "
+						+ "slot runs at 1: LEVEL " + ConvolutionReverb.LEVEL + " attenuates the wet again");
+	}
+
+	@Test
+	void a_response_may_ring_as_long_as_the_room() {
+		assertTrue(ConvolutionReverb.MAX_SECONDS >= 3.0f,
+				"a 5 s cave decay steepened 40 dB by " + ConvolutionReverb.MAX_SECONDS
+						+ " s is the flat tail the report is about");
+	}
+
 	@Test
 	void releasing_a_reverb_keeps_its_loader() {
 		ConvolutionReverb reverb = reverb();

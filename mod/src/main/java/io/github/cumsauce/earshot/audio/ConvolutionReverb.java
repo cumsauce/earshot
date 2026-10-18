@@ -21,8 +21,13 @@ import org.lwjgl.openal.EXTEfx;
  * where the walls are.
  */
 public final class ConvolutionReverb {
-	/** The response's level: convolution sums every sound's send, so it is held at half. */
-	private static final float LEVEL = 0.5f;
+	/**
+	 * The response's level. The response already carries the room's own late energy (ir.rs normalises it to
+	 * `late_energy`), and the EAX reverb's slot runs at gain 1, so the slot must not attenuate it again: at 0.5 the
+	 * convolution wet sat 6 dB under the EAX wet for the same cave room, on top of the 1.5 s truncation — the "flat
+	 * in caves, like it's not applying" the measurements in docs/investigations/2026-10-18-reverb-levels.md show.
+	 */
+	static final float LEVEL = 1.0f;
 
 	/** {@code AL_SOFT_convolution_effect}, in-progress in OpenAL Soft and so not in LWJGL. */
 	private static final int AL_EFFECT_CONVOLUTION_SOFT = 0xA000;
@@ -30,8 +35,13 @@ public final class ConvolutionReverb {
 	/** AL_EXT_BFORMAT's float format. (0x20032 is its 16-bit one, which reads each float as two loud integers.) */
 	private static final int AL_FORMAT_BFORMAT3D_FLOAT32 = 0x20033;
 	private static final int SAMPLE_RATE = 48_000;
-	/** The longest response: longer ones double the cost (docs/PLAN.md, M0). */
-	private static final float MAX_SECONDS = 1.5f;
+	/**
+	 * The longest response. 3 s, so a cave's 5 s decay rings down instead of being steepened 40 dB by 1.5 s (an
+	 * effective RT60 of 2.25 s where the EAX path gives the room's full decay). The cost is the plan's benchmarked
+	 * 3 s row: 32 % of a core for two 3 s responses on 32 sources against 17 % at 1.5 s (docs/PLAN.md, M0), paid
+	 * only by rooms whose decay passes 1.5 s — the response is sized from the room's own decay (ir.rs).
+	 */
+	static final float MAX_SECONDS = 3.0f;
 	/** At most this often a new response is considered. */
 	private static final long CHECK_EVERY_NANOS = 500_000_000L;
 	/** The crossfade moves this much a tick: 5 ticks. */
