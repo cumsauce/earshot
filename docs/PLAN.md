@@ -386,6 +386,17 @@ What was actually wrong was two different things:
 
 Every tag now remaining has a release and a jar behind it.
 
+**The erased version.** `v0.1.0-alpha.57` was tagged on its bump and pushed, but its CI died before
+the release job: a one-line `org.gradle.java.home=/opt/homebrew/opt/openjdk@25` in
+`mod/gradle.properties` (a local convenience that should never have been committed) pointed Gradle at
+a Homebrew JDK path that does not exist on the runners, so every Java build failed and `release` was
+skipped. The line was dropped in `939ca6f` ("The JDK path is the machine's, not the build file's").
+Because alpha.57 never produced a jar, its tag was deleted locally and from origin rather than left as
+a version that advertised a download that does not exist, so the tag line reads alpha.56 -> alpha.58
+with alpha.57 consumed and erased. The fix was re-cut as alpha.58 (`4f03c20`), which shipped both
+releases clean. The one durable rule it leaves behind: nothing machine-specific belongs in a committed
+build file; the JDK comes from the environment.
+
 ## Approaches considered
 
 | Option | What it is | Verdict |
@@ -564,6 +575,20 @@ earshot/
   - A `v*` tag publishes a GitHub release.
 - **Players:** the same `--enable-native-access=ALL-UNNAMED` JVM flag that Yak VC already needs.
 - **Fabric metadata:** client environment, `breaks: sound_physics_remastered` (both drive EFX on the same sources), `suggests: yakvc`.
+
+**Docs.** Design write-ups sit flat as `docs/<topic>-design.md` (ground reflection, flanking leakage,
+temperature, the voice sink issue). Measurement and experiment records, which date a reading of how
+something behaved and are kept for the numbers rather than the argument, live in `docs/investigations/`
+as `YYYY-MM-DD-<topic>.md`; currently one file, `2026-10-18-reverb-levels.md`, the record behind
+`89f742e`'s convolution level and IR length change. The split is deliberate: a design doc is meant to
+go stale as the design moves, an investigation record is not.
+
+**Commit subjects.** Every subject is a bare noun-phrase ("The room trace keeps its tally off the
+stack") so the history reads as a list of what changed. There is exactly one historical exception,
+`89f742e` (`fix(reverb): hold the convolution slot at the room's own level and let it ring`), written
+under the conventional-commits style before the convention settled. It is left alone on purpose: it
+sits beneath several release tags, and rewriting published history is a bigger disturbance than one
+odd subject line.
 
 ## Testing
 
