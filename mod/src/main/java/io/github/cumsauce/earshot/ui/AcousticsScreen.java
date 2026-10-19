@@ -129,8 +129,9 @@ public final class AcousticsScreen extends OptionsSubScreen {
 
 	@Override
 	protected void init() {
-		// Back from the HRTF test, which may have picked one.
-		hrtf.set(EarshotClient.config().hrtf());
+		// Back from the HRTF test, which may have picked one. Not while a download is in flight: the dropdown shows
+		// the pick being fetched, and the config still holds the one before it.
+		if (sofaDownload == null) hrtf.set(EarshotClient.config().hrtf());
 		super.init();
 	}
 
@@ -285,8 +286,10 @@ public final class AcousticsScreen extends OptionsSubScreen {
 				Minecraft.getInstance().execute(() -> {
 					if (sofaDownload == null) return; // the screen closed and cancelled it
 					sofaDownload = null;
-					rebuildWidgets();
+					// Applied before the rebuild: init() sets the dropdown from the config, and would otherwise
+					// put it back on the HRTF from before the download.
 					EarshotClient.apply(EarshotClient.config().withHrtf(captured));
+					rebuildWidgets();
 				});
 			} catch (IOException | RuntimeException e) {
 				EarshotClient.LOGGER.warn("SOFA download failed for {}", captured, e);
@@ -304,12 +307,14 @@ public final class AcousticsScreen extends OptionsSubScreen {
 	public void removed() {
 		// A download outliving the screen must not apply a setting afterwards: the
 		// user is no longer looking at the dropdown that started it. Ask the read
-		// loop to stop, and let the file stay half-written for the next attempt.
+		// loop to stop (it deletes the partial file), and save the HRTF from before the pick, not the one that never
+		// arrived.
 		sofaCancel.set(true);
+		String hrtfChosen = sofaDownload != null ? previousHrtf : hrtf.get();
 		sofaDownload = null;
 		EarshotConfig next = new EarshotConfig(Preset.valueOf(preset.get().toUpperCase(Locale.ROOT)), occlusion.get(),
 				pathing.get(), Reverb.valueOf(reverb.get().toUpperCase(Locale.ROOT)), airAbsorption.get(),
-				underwater.get(), doppler.get(), voice.get(), hrtf.get(), ownVoice.get(), realisticFalloff.get(),
+				underwater.get(), doppler.get(), voice.get(), hrtfChosen, ownVoice.get(), realisticFalloff.get(),
 				Diffraction.valueOf(diffraction.get().toUpperCase(Locale.ROOT)));
 		if (!next.equals(initial)) EarshotClient.apply(next);
 		super.removed();

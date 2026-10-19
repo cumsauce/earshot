@@ -51,7 +51,8 @@ public final class DebugOverlay implements HudElement {
 	public static void toggle() {
 		shown = !shown;
 		// Built again on this frame rather than showing an empty panel for up to a tick, or the last look from before.
-		cachedAt = 0L;
+		// Dropped rather than aged: System.nanoTime() has no fixed origin, so no timestamp is reliably "long ago".
+		cached = null;
 	}
 
 	@Override

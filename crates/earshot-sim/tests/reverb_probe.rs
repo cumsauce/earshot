@@ -3,8 +3,8 @@
 //! game mixes them in?
 //!
 //! The game's listener IR is `Engine::impulse_response` = `measure`'s room and
-//! first reflections through `impulse_response` (48 kHz, 1.5 s max) — the same
-//! call this probe makes — and mixes it at `ConvolutionReverb.LEVEL = 0.5`
+//! first reflections through `impulse_response` (48 kHz, `MAX_SECONDS` max) —
+//! the same call this probe makes — and mixes it at `ConvolutionReverb.LEVEL`
 //! (`mod/src/main/java/io/github/cumsauce/earshot/audio/ConvolutionReverb.java`).
 //! The EAX path for the same room is `eax_reverb`'s 14 EFX parameters played
 //! through an EFX EAX reverb at slot gain 1. The EAX reverb body lives inside
@@ -13,7 +13,9 @@
 //! power is `(gain · late_reverb_gain)²` of the send. That model is stated in
 //! the output so the comparison's assumption is visible.
 //!
-//! Run with `--nocapture`; buffers land in `/tmp/*.f32` for the Python side
+//! Ignored by default: it asserts nothing and writes to `/tmp`, which a plain
+//! `cargo test` should not do (and Windows has no `/tmp`). Run it with
+//! `cargo test --test reverb_probe -- --ignored --nocapture`; buffers land in `/tmp/*.f32` for the Python side
 //! (`/tmp/reverb_probe.py`): total energy, energy-over-time (RT60) and band
 //! energies.
 
@@ -195,6 +197,7 @@ fn report(label: &str, world: &World, listener: Vec3, seed: u64) {
 }
 
 #[test]
+#[ignore = "investigation probe: writes /tmp, asserts nothing"]
 fn cave_wet_levels() {
     // A big closed chamber: the cave case the report is about.
     let cave = cavern(24, 10);
