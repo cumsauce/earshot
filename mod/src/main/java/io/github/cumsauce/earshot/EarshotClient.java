@@ -160,12 +160,15 @@ public final class EarshotClient implements ClientModInitializer {
 			LOGGER.info("Started the native engine (ABI version {})", nativeAbi);
 			WorldMirror mirror = new WorldMirror(bridge, engine);
 			mirror.materials().setOverrides(MaterialOverrides.load(materialsFile()));
-			mirror.register();
 			shaper = new SoundShaper(bridge, engine);
-			EarshotCommands.register(bridge, engine, mirror, shaper);
 			bridge.setQuality(engine, config.quality(64));
 			shaper.configure(config);
 			shaper.voice().configure(config.voice(), config.ownVoice());
+			// Registered only once everything fallible is behind us: their handlers
+			// hold this engine, and Fabric offers no way to take a registration
+			// back, so stop() cannot undo one that was given a freed pointer.
+			mirror.register();
+			EarshotCommands.register(bridge, engine, mirror, shaper);
 			EarshotClient.bridge = bridge;
 			EarshotClient.engine = engine;
 			EarshotClient.mirror = mirror;

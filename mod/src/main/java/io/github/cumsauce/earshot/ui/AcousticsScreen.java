@@ -255,7 +255,10 @@ public final class AcousticsScreen extends OptionsSubScreen {
 	 * engine stays on the previous HRTF.
 	 */
 	private void onHrtfPicked(String newValue) {
-		previousHrtf = hrtf.get().equals(newValue) ? previousHrtf : hrtf.get();
+		// The listener runs after OptionInstance has already stored the new value, so
+		// hrtf.get() is the choice, not the old one. The engine's arm is the old one:
+		// it only moves when a pick is applied, and a failed download never applies.
+		String prePick = EarshotClient.config().hrtf();
 		if (sofaDownload != null) return; // a download is in flight; ignore
 		if (newValue.isEmpty() || !HrtfFiles.SOFAS.containsKey(newValue)) {
 			EarshotClient.apply(EarshotClient.config().withHrtf(newValue));
@@ -267,6 +270,7 @@ public final class AcousticsScreen extends OptionsSubScreen {
 			return;
 		}
 		sofaDownload = newValue;
+		previousHrtf = prePick;
 		sofaCancel.set(false);
 		rebuildWidgets(); // shows the progress bar
 		String captured = newValue;
@@ -279,6 +283,7 @@ public final class AcousticsScreen extends OptionsSubScreen {
 					// grows on disk and the byte count is informational.
 				}, sofaCancel::get);
 				Minecraft.getInstance().execute(() -> {
+					if (sofaDownload == null) return; // the screen closed and cancelled it
 					sofaDownload = null;
 					rebuildWidgets();
 					EarshotClient.apply(EarshotClient.config().withHrtf(captured));
@@ -286,6 +291,7 @@ public final class AcousticsScreen extends OptionsSubScreen {
 			} catch (IOException | RuntimeException e) {
 				EarshotClient.LOGGER.warn("SOFA download failed for {}", captured, e);
 				Minecraft.getInstance().execute(() -> {
+					if (sofaDownload == null) return; // the screen closed; nothing to roll back
 					sofaDownload = null;
 					hrtf.set(previousHrtf);
 					rebuildWidgets();
@@ -296,6 +302,11 @@ public final class AcousticsScreen extends OptionsSubScreen {
 
 	@Override
 	public void removed() {
+		// A download outliving the screen must not apply a setting afterwards: the
+		// user is no longer looking at the dropdown that started it. Ask the read
+		// loop to stop, and let the file stay half-written for the next attempt.
+		sofaCancel.set(true);
+		sofaDownload = null;
 		EarshotConfig next = new EarshotConfig(Preset.valueOf(preset.get().toUpperCase(Locale.ROOT)), occlusion.get(),
 				pathing.get(), Reverb.valueOf(reverb.get().toUpperCase(Locale.ROOT)), airAbsorption.get(),
 				underwater.get(), doppler.get(), voice.get(), hrtf.get(), ownVoice.get(), realisticFalloff.get(),
