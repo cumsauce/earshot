@@ -198,8 +198,18 @@ public final class ConvolutionReverb {
 		forgetNames();
 		// A load in flight or queued would work against the closed context and its result is unreadable:
 		// stop it, then a fresh executor for the next context.
-		loader.shutdownNow();
+		java.util.concurrent.ExecutorService stopped = loader;
+		stopped.shutdownNow();
 		loader = newLoader();
+		// The game destroys the native engine right after this: a load still running would downcall on the
+		// freed engine pointer. Wait for it to unwind first.
+		try {
+			if (!stopped.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS)) {
+				EarshotClient.LOGGER.warn("A convolution load outlived the OpenAL context by 2 seconds");
+			}
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+		}
 	}
 
 	/**

@@ -356,11 +356,13 @@ public final class SoundShaper {
 			// A pass that dies part way must not repeat every tick: half of the sources would keep the filters
 			// and sends set on them, spaces.begin() would have no matching end(), and unusedOwn would never be
 			// released — and with failed unset, tick() would queue the same broken pass forever. Turn shaping
-			// off cleanly instead: failed stops tick(), voice.fail() frees the voices, and releaseAll takes
-			// every send off the tracked sources and frees the slots, whatever the pass had time to do.
+			// off cleanly instead: failed stops tick(), releaseAll takes every send off the tracked sources and
+			// frees the slots, and then voice.fail() frees the voices. The release comes first: voice.fail()
+			// deletes the voice sources, and detaching a send from a deleted source raises AL_INVALID_NAME into
+			// the context's shared error state, where another thread would blame its own call for it.
 			failed = true;
-			voice.fail();
 			releaseAll(targets, now, ear, axes);
+			voice.fail();
 		});
 	}
 
@@ -415,7 +417,10 @@ public final class SoundShaper {
 		}
 		double[] heard = new double[NativeBridge.HEARD_DOUBLES * count];
 		if (!call(() -> bridge.hear(engine, listener, sources, count, heard))) {
+			// On the tracked sources, before voice.fail() deletes the voice sources below: a send detached from
+			// a deleted source is an AL_INVALID_NAME into the context's shared error state.
 			releaseAll(targets, now, ear, axes);
+			voice.fail();
 			return;
 		}
 		// Each source's block is read straight out of heard below (heard[at] … heard[at + 7]), so a count
@@ -424,8 +429,8 @@ public final class SoundShaper {
 			failed = true;
 			EarshotClient.LOGGER.error("Sound shaping stopped: hear broke its contract, {} for {} sources, needing {}",
 					heard.length, count, (long) NativeBridge.HEARD_DOUBLES * count);
-			voice.fail();
 			releaseAll(targets, now, ear, axes);
+			voice.fail();
 			return;
 		}
 
@@ -461,11 +466,16 @@ public final class SoundShaper {
 			if (target.voice() == null) {
 				AL10.alSourcef(target.source(), AL10.AL_GAIN, state.volume() * boost);
 			}
-			if (efx) {
+			// The player's own voice is played dry and into the room's reverb only, as VoicePlayer set it: the
+			// heard gains here are the ones another listener would get, and writing them would play the voice
+			// straight back. Its sends and direct filter stay as they were, and it takes no early reflections.
+			if (efx && !ownVoice(target)) {
 				filter(target.source(), state, gains, boost);
 				send(target.source(), state, gains, ownSends[i] != null ? ownSends[i] : sends, spaceSlot,
 						portalShare((float) heard[at + 7]));
 				sendEarly(target.source(), state, earlySlots[i]);
+			} else if (efx) {
+				sendEarly(target.source(), state, 0);
 			}
 			AL10.alSource3f(target.source(), AL10.AL_POSITION, (float) heardFrom.x, (float) heardFrom.y,
 					(float) heardFrom.z);
@@ -594,6 +604,15 @@ public final class SoundShaper {
 			if (target.source() == source) return true;
 		}
 		return false;
+	}
+
+	/**
+	 * Whether {@code target} plays the player's own voice, which {@link VoicePlayer} plays dry and into the room's
+	 * reverb only: its direct and send filters were set for that, and shaping must leave them alone.
+	 */
+	static boolean ownVoice(Target target) {
+		VoicePlayer.Voice voice = target.voice();
+		return voice != null && voice.own;
 	}
 
 	/**

@@ -117,6 +117,7 @@ fn dump(name: &str, x: &[f32]) {
     std::fs::write(format!("/tmp/{name}.f32"), bytes).expect("write /tmp");
 }
 
+#[allow(clippy::chunks_exact_to_as_chunks)] // the 4-channel IR reads better chunked
 fn report(label: &str, world: &World, listener: Vec3, seed: u64) {
     let (room, early) = measure_with_early(world, listener, 1024, 8, 64.0, seed);
     let late = late_energy(&room);

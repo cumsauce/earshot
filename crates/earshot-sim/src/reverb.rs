@@ -306,6 +306,15 @@ impl Tally {
             self.elapsed = leg_end;
             return;
         }
+        // The air takes its own share of the energy as the ray travels this
+        // leg. The curve's slope must fall by that share too: `Tally::room`
+        // adds it as `AIR · mean_free_path` to the Eyring loss, so a curve
+        // that kept the air's energy would read an early decay longer than
+        // the room's own by the air's share of the loss. Not added to
+        // `absorbed` — that term is the air's, counted once there.
+        for (energy, air) in self.band_energy.iter_mut().zip(AIR) {
+            *energy *= (-air * length).exp();
+        }
         // Every bin the leg spans holds this ray's energy, but only for
         // the part of the bin the leg actually covers: a bin is a one
         // millisecond window, 0.343 m of travel, and a leg in a small room
@@ -346,10 +355,12 @@ impl Tally {
         // keeps its room's bass.
         let leak = 1.0
             - if segment.leaky {
-                acoustics.transmission[1] * segment.fill
+                f64::from(acoustics.transmission[1])
+                    .powf(f64::from(segment.thickness) * f64::from(segment.fill))
             } else {
                 0.0
             };
+        let leak = leak as f32;
         if segment.bounce == 0 {
             self.first_legs.push(length);
             self.firsts += 1;
@@ -375,7 +386,8 @@ impl Tally {
             // it and never comes back — where the way behind is open.
             let absorption = f64::from(absorption);
             let through = if segment.leaky {
-                f64::from(acoustics.transmission[band]).powf(f64::from(segment.fill))
+                f64::from(acoustics.transmission[band])
+                    .powf(f64::from(segment.thickness) * f64::from(segment.fill))
             } else {
                 0.0
             };
@@ -480,16 +492,34 @@ impl Tally {
 /// where the curve never drops a decibel (or drops so fast no slope can be
 /// fit).
 fn fit_early_decay(hist: &[f64], fallback: f32) -> f32 {
-    let peak = hist.first().copied().unwrap_or(0.0);
-    if peak <= 0.0 {
+    // The curve's own peak, not bin 0's: from a listener against a wall the
+    // first legs can be shorter than a bin, so the energy keeps arriving for
+    // a bin or two and the curve peaks past bin 0. Reading bin 0 as the peak
+    // there makes the fit start on a rising curve and biases its slope.
+    let peak = hist.iter().copied().fold(0.0, f64::max);
+    if peak <= 0.0 || !peak.is_finite() {
         return fallback;
     }
-    let level = |bin: usize| 10.0 * (hist[bin] / peak).max(f64::MIN_POSITIVE).log10();
+    // Where the curve reaches its peak: the fit window is read from there on,
+    // since before it the energy is still rising.
+    let peak_bin = hist
+        .iter()
+        .position(|&value| value == peak)
+        .unwrap_or_default();
+    let level = |bin: usize| {
+        let value = hist[bin];
+        // A bin that isn't a number has no level: treat it as silence rather
+        // than let `f64::max`'s NaN-swallowing turn it into −3076 dB.
+        if !value.is_finite() {
+            return f64::NEG_INFINITY;
+        }
+        10.0 * (value / peak).max(f64::MIN_POSITIVE).log10()
+    };
     // The fit runs from the first −1 dB, past the ramp of rays still
     // starting out, to the first −10 dB: ISO 3382's window for EDT.
     let (Some(first), Some(last)) = (
-        (0..HIST_BINS).find(|&bin| level(bin) <= -1.0),
-        (0..HIST_BINS).find(|&bin| level(bin) <= -10.0),
+        (peak_bin..HIST_BINS).find(|&bin| level(bin) <= -1.0),
+        (peak_bin..HIST_BINS).find(|&bin| level(bin) <= -10.0),
     ) else {
         return fallback;
     };
@@ -1149,15 +1179,19 @@ mod tests {
                     leaky: false,
                     bounce: 1,
                     normal: Vec3::new(0.0, 0.0, 1.0),
+                    thickness: 1.0,
                 },
                 1,
             );
             let leg_bins = (length / SPEED_OF_SOUND) / HIST_DT;
-            for band in 0..BANDS {
+            for (band, air) in AIR.iter().enumerate() {
                 let deposited: f64 = tally.hist[band].iter().sum();
+                // The leg's energy falls by the air's absorption over it, so
+                // the total is the leg's time in bins, less that share.
+                let air = (-air * length).exp();
                 assert!(
-                    (deposited - leg_bins).abs() < 1e-9,
-                    "a {length} m leg in band {band} is {leg_bins} bins long but deposited {deposited}"
+                    (deposited - leg_bins * air).abs() < 1e-9,
+                    "a {length} m leg in band {band} is {leg_bins} bins long but deposited {deposited} against {leg_bins} less the air's {air}"
                 );
             }
         }

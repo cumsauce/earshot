@@ -110,8 +110,19 @@ final class SpaceReverb {
 		// Every space is gone, so its measurements are too: a queued roomAt would run against the engine after
 		// its Space was dropped, so cancel what hasn't started (shutdown() would let it run) and interrupt what
 		// has. A fresh executor takes its place, as this SpaceReverb is reused when the context reopens.
-		measurer.shutdownNow();
+		java.util.concurrent.ExecutorService stopped = measurer;
+		stopped.shutdownNow();
 		measurer = newMeasurer();
+		// The game destroys the native engine right after this: a measurement still running would downcall on
+		// the freed engine pointer. Wait for it to unwind first.
+		try {
+			if (!stopped.awaitTermination(2, java.util.concurrent.TimeUnit.SECONDS)) {
+				io.github.cumsauce.earshot.EarshotClient.LOGGER.warn(
+						"A space measurement outlived the OpenAL context by 2 seconds");
+			}
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+		}
 	}
 
 	/** Starts an update: no sounds in any space yet. */

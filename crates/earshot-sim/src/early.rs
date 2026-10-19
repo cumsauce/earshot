@@ -71,6 +71,12 @@ pub fn early_reflections(world: &World, listener: Vec3, source: Vec3, speed: f64
         return Early::NONE;
     }
     let energy: f32 = taps.iter().map(|t| t.energy).sum();
+    // A tap whose energy is all gone (a material that absorbs or scatters
+    // everything) leaves nothing to weight a direction by: normalising by
+    // that zero would give a NaN direction.
+    if energy <= 0.0 {
+        return Early::NONE;
+    }
     let sum = taps
         .iter()
         .fold(Vec3::ZERO, |sum, t| sum + t.direction * f64::from(t.energy));

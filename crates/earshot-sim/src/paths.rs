@@ -31,6 +31,10 @@ pub struct Segment {
     pub bounce: u32,
     /// The outward normal of the face it ended on; zero when it escaped.
     pub normal: Vec3,
+    /// How far the ray travels through the block it ends on, in blocks:
+    /// `hit.exit - hit.distance`. Transmission loss scales with it (the
+    /// mass law: the loss is of the thickness). Zero for escaped legs.
+    pub thickness: f32,
 }
 
 /// What a path trace found.
@@ -154,6 +158,7 @@ pub fn trace_directions(
                     leaky: true,
                     bounce: leg,
                     normal: Vec3::ZERO,
+                    thickness: 0.0,
                 });
                 break;
             };
@@ -178,6 +183,7 @@ pub fn trace_directions(
                 leaky,
                 bounce: leg,
                 normal: hit.normal,
+                thickness: (hit.exit - hit.distance) as f32,
             });
             hit_lengths += hit.distance;
             hits += 1;
@@ -186,12 +192,14 @@ pub fn trace_directions(
             // the way behind is open — and the ray leaves the room. What it
             // takes besides the absorption is already on the tally, so the
             // encounter's expected loss comes out right whatever the draw.
+            let thickness = (hit.exit - hit.distance) as f32;
             let through = if leaky {
-                acoustics.transmission[1] * hit.fill
+                f64::from(acoustics.transmission[1])
+                    .powf(f64::from(thickness) * f64::from(hit.fill))
             } else {
                 0.0
             };
-            if rng.next_f64() < f64::from(through) {
+            if rng.next_f64() < through {
                 break;
             }
             energy *= 1.0 - acoustics.absorption[1];
