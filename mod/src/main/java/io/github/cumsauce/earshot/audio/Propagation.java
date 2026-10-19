@@ -52,6 +52,9 @@ public final class Propagation {
 
 	/** One tick on: the held sounds now due, taken out of the queue. */
 	public static synchronized List<SoundInstance> due() {
+		// Almost every tick holds nothing, and the queue is empty almost all the time: nothing to count down, and no
+		// list worth making. The game calls this at the head of every sound tick.
+		if (QUEUE.isEmpty()) return List.of();
 		List<SoundInstance> due = new ArrayList<>();
 		QUEUE.removeIf(waiting -> {
 			if (--waiting.ticks > 0) return false;

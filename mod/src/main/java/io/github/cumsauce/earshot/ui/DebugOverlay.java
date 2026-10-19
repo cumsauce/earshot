@@ -31,6 +31,18 @@ public final class DebugOverlay implements HudElement {
 
 	private static volatile boolean shown;
 
+	/** How long a built panel is left up, in nanoseconds. A tick is 50 ms, and the clock reads on wall time. */
+	private static final long REBUILD_NS = 50_000_000L;
+
+	/**
+	 * The lines as last built, inside an array so a reader never sees it half-built, and when they were built. The
+	 * panel is drawn every frame (60 to 120+ a second) but everything on it moves at the tick rate (20 a second) and
+	 * costs a native downcall, a sort and a page of formatting to read; the render thread takes the copy the last build
+	 * left rather than making its own. 26.3 exposes no tick counter to compare against, so the clock stands in.
+	 */
+	private static volatile Object[] cached;
+	private static long cachedAt;
+
 	/** Whether the overlay is on. */
 	public static boolean shown() {
 		return shown;
@@ -38,22 +50,37 @@ public final class DebugOverlay implements HudElement {
 
 	public static void toggle() {
 		shown = !shown;
+		// Built again on this frame rather than showing an empty panel for up to a tick, or the last look from before.
+		cachedAt = 0L;
 	}
 
 	@Override
 	public void extractRenderState(GuiGraphicsExtractor graphics, DeltaTracker deltaTracker) {
 		Minecraft minecraft = Minecraft.getInstance();
 		if (!shown || minecraft.player == null) return;
+		Object[] lines = shownLines(minecraft);
 		Font font = minecraft.font;
-		List<String> lines = lines(minecraft);
 		int y = 2;
-		for (String line : lines) {
-			int width = font.width(line);
+		for (Object line : lines) {
+			String text = (String) line;
+			int width = font.width(text);
 			int x = 2;
 			graphics.fill(x - 1, y - 1, x + width + 1, y + font.lineHeight - 1, BACKGROUND);
-			graphics.text(font, line, x, y, TEXT, false);
+			graphics.text(font, text, x, y, TEXT, false);
 			y += font.lineHeight;
 		}
+	}
+
+	/** The lines for this tick, built once: on the render thread frames within 50 ms read what was built. */
+	private static Object[] shownLines(Minecraft minecraft) {
+		long now = System.nanoTime();
+		Object[] lines = cached;
+		if (lines != null && now - cachedAt < REBUILD_NS) return lines;
+		// Built on the render thread, throttled to roughly once per game tick (50 ms).
+		lines = lines(minecraft).toArray();
+		cachedAt = now;
+		cached = lines;
+		return lines;
 	}
 
 	static List<String> lines(Minecraft minecraft) {
