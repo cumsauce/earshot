@@ -480,10 +480,10 @@ public final class SoundShaper {
 			if (efx && !ownVoice(target)) {
 				filter(target.source(), state, gains, boost);
 				send(target.source(), state, gains, ownSends[i] != null ? ownSends[i] : sends, spaceSlot,
-						portalShare((float) heard[at + 7]));
-				sendEarly(target.source(), state, earlySlots[i]);
+						portalShare((float) heard[at + 7]), boost);
+				sendEarly(target.source(), state, earlySlots[i], boost);
 			} else if (efx) {
-				sendEarly(target.source(), state, 0);
+				sendEarly(target.source(), state, 0, 1f);
 			}
 			AL10.alSource3f(target.source(), AL10.AL_POSITION, (float) heardFrom.x, (float) heardFrom.y,
 					(float) heardFrom.z);
@@ -923,10 +923,24 @@ public final class SoundShaper {
 		return slotOf;
 	}
 
-	/** Sends a source to its own early reflections, unfiltered: they come by their own ways, not the direct one. */
-	private static void sendEarly(int source, SourceState state, int slot) {
+	/**
+	 * Sends a source to its own early reflections, unshaped: they come by their own ways, not the direct one. The
+	 * ground's {@code lift} rides the source's gain, which OpenAL applies to every send as well as the direct path,
+	 * so above one a filter takes it back off here: the ground's reflection is the direct sound's, not the walls'.
+	 */
+	private static void sendEarly(int source, SourceState state, int slot, float lift) {
 		if (slot != 0) {
-			AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, slot, EarlyReflections.SEND, EXTEfx.AL_FILTER_NULL);
+			int filter = EXTEfx.AL_FILTER_NULL;
+			if (lift > 1) {
+				if (state.earlyFilter == 0) {
+					state.earlyFilter = EXTEfx.alGenFilters();
+					EXTEfx.alFilteri(state.earlyFilter, EXTEfx.AL_FILTER_TYPE, EXTEfx.AL_FILTER_LOWPASS);
+				}
+				EXTEfx.alFilterf(state.earlyFilter, EXTEfx.AL_LOWPASS_GAIN, 1f / lift);
+				EXTEfx.alFilterf(state.earlyFilter, EXTEfx.AL_LOWPASS_GAINHF, 1f);
+				filter = state.earlyFilter;
+			}
+			AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, slot, EarlyReflections.SEND, filter);
 		} else if (state.earlySent) {
 			AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, EXTEfx.AL_EFFECTSLOT_NULL, EarlyReflections.SEND,
 					EXTEfx.AL_FILTER_NULL);
@@ -951,7 +965,7 @@ public final class SoundShaper {
 	 * muffled sound behind a wall still fills the room a little.
 	 */
 	private static void send(int source, SourceState state, float[] gains, int[] slots, int spaceSlot,
-			float portalShare) {
+			float portalShare, float lift) {
 		if (state.sendFilter == 0) {
 			state.sendFilter = EXTEfx.alGenFilters();
 			EXTEfx.alFilteri(state.sendFilter, EXTEfx.AL_FILTER_TYPE, EXTEfx.AL_FILTER_LOWPASS);
@@ -959,7 +973,10 @@ public final class SoundShaper {
 		}
 		float low = (float) Math.sqrt(Math.clamp(gains[0], 0f, 1f));
 		float high = (float) Math.sqrt(Math.clamp(gains[2], 0f, 1f));
-		EXTEfx.alFilterf(state.sendFilter, EXTEfx.AL_LOWPASS_GAIN, low);
+		// The lift rides the source's gain, which OpenAL applies to the sends too: divided back out, so the
+		// ground's reflection, which belongs to the direct path, never raises the reverb. The ratio of the bands
+		// is unchanged by it.
+		EXTEfx.alFilterf(state.sendFilter, EXTEfx.AL_LOWPASS_GAIN, low / lift);
 		EXTEfx.alFilterf(state.sendFilter, EXTEfx.AL_LOWPASS_GAINHF, low > 0 ? Math.clamp(high / low, 0f, 1f) : 0f);
 		for (int send = 0; send < slots.length; send++) {
 			AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, slots[send], send,
@@ -974,7 +991,7 @@ public final class SoundShaper {
 			// Through the opening the sound comes by, as much of that space's reverb as the opening's size lets
 			// out. The gains are energy shares; the filter's gains are amplitude, so each band is square-rooted.
 			float direct = (float) Math.sqrt(Math.clamp(gains[0], 0f, 1f));
-			EXTEfx.alFilterf(state.spaceFilter, EXTEfx.AL_LOWPASS_GAIN, direct * portalShare);
+			EXTEfx.alFilterf(state.spaceFilter, EXTEfx.AL_LOWPASS_GAIN, direct * portalShare / lift);
 			EXTEfx.alFilterf(state.spaceFilter, EXTEfx.AL_LOWPASS_GAINHF,
 					direct > 0 ? Math.clamp((float) Math.sqrt(Math.clamp(gains[2], 0f, 1f)) / direct, 0f, 1f) : 0f);
 			AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, spaceSlot, SpaceReverb.SEND, state.spaceFilter);
@@ -1024,6 +1041,11 @@ public final class SoundShaper {
 			AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, EXTEfx.AL_EFFECTSLOT_NULL, SpaceReverb.SEND,
 					EXTEfx.AL_FILTER_NULL);
 		}
+		if (state.earlyFilter != 0) {
+			AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, EXTEfx.AL_EFFECTSLOT_NULL, EarlyReflections.SEND,
+					EXTEfx.AL_FILTER_NULL);
+			state.earlySent = false;
+		}
 		releaseFilters(state);
 	}
 
@@ -1040,6 +1062,10 @@ public final class SoundShaper {
 		if (state.spaceFilter != 0) {
 			EXTEfx.alDeleteFilters(state.spaceFilter);
 			state.spaceFilter = 0;
+		}
+		if (state.earlyFilter != 0) {
+			EXTEfx.alDeleteFilters(state.earlyFilter);
+			state.earlyFilter = 0;
 		}
 		// A delete that failed leaves its error in the context's shared state, where the next call could
 		// misread it as its own: drain it here.

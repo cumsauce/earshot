@@ -24,13 +24,14 @@ const MIN_DECAY: f64 = 0.1;
 /// About a cathedral's: past it a space is heard as echoes, not a longer
 /// tail.
 const MAX_DECAY: f64 = 8.0;
-/// The air's own absorption of energy, per metre, per band: about 1, 5 and
-/// 25 dB a kilometre at 250 Hz, 1 kHz and 4 kHz (ISO 9613-1, 20 °C, 50 %
-/// humidity). Eyring's loss takes it as `m · l`, the textbook Knudsen form
+/// The air's own absorption of energy, per metre, per band: ISO 9613-1's
+/// 1.31, 4.66 and 29.7 dB a kilometre at 250 Hz, 1 kHz and 4 kHz (20 °C,
+/// 50 % humidity; the table `ir`'s taps carry), in nepers of energy — dB
+/// over 10 log10 e. Eyring's loss takes it as `m · l`, the textbook Knudsen form
 /// `T60 = 24 ln 10 · V / (c · (−S ln(1 − ā) + 4 m V))`: divide through by
 /// `S` and `4V/S` is the mean free path. In a big space it shortens the
 /// highs' decay.
-const AIR: [f64; BANDS] = [0.000_25, 0.001_15, 0.005_8];
+const AIR: [f64; BANDS] = [0.000_302, 0.001_073, 0.006_84];
 /// Seconds per bin of the traced energy decay curve: a millisecond, fine
 /// enough to resolve the early part of a decay (the fit reads the first
 /// 10 dB) while a 4 s horizon covers the longest decay reported.

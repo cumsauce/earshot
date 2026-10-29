@@ -40,6 +40,8 @@ public final class SourceState {
 	boolean spaceSent;
 	/** Whether the source sends to an early-reflections slot of its own. */
 	boolean earlySent;
+	/** The OpenAL filter taking a ground lift back off that send, 0 until a lifted source first needs it. */
+	int earlyFilter;
 	/** Whether the source has Earshot's realistic distance falloff rather than the game's linear one. */
 	boolean realistic;
 	private boolean started;
