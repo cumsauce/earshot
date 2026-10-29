@@ -9,6 +9,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse.BodyHandlers;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Arrays;
@@ -113,26 +114,51 @@ public final class HrtfFiles {
 	 */
 	public static void ensure(Path target, String name, ProgressListener progress, BooleanSupplier cancelled)
 			throws IOException {
-		SofaSource source = SOFAS.get(name);
-		if (source == null) throw new IOException("Unknown SOFA: " + name);
-		if (cancelled.getAsBoolean()) throw new IOException("download cancelled");
-		if (Files.isRegularFile(target) && sha256Of(target).equalsIgnoreCase(source.sha256())) {
-			return; // already there and good
-		}
-		Files.deleteIfExists(target);
+		// Every failure, the early ones included, passes the one catch below: failed() once, whichever way.
+		Path partial = partialOf(target);
 		try {
-			streamExtract(source, target, progress, cancelled);
+			SofaSource source = SOFAS.get(name);
+			if (source == null) throw new IOException("Unknown SOFA: " + name);
 			if (cancelled.getAsBoolean()) throw new IOException("download cancelled");
-			if (!sha256Of(target).equalsIgnoreCase(source.sha256())) {
-				Files.deleteIfExists(target);
+			if (verified(target, name)) return; // already there and good
+			Files.deleteIfExists(target);
+			// Streamed into a sibling and moved into place only once it verifies: a download cut short (the
+			// game closed, a crash) never leaves a file at target that looks like the SOFA.
+			streamExtract(source, partial, progress, cancelled);
+			if (cancelled.getAsBoolean()) throw new IOException("download cancelled");
+			if (!sha256Of(partial).equalsIgnoreCase(source.sha256())) {
 				throw new IOException("SOFA SHA-256 mismatch: " + name);
 			}
+			Files.move(partial, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
 			progress.done();
 		} catch (IOException | RuntimeException e) {
-			Files.deleteIfExists(target);
+			try {
+				Files.deleteIfExists(partial);
+			} catch (IOException cleanup) {
+				e.addSuppressed(cleanup);
+			}
 			progress.failed(); // once per failed download, whichever way it failed
 			throw e;
 		}
+	}
+
+	/** Whether the SOFA for {@code name} is at {@code target} and matches its SHA-256. */
+	public static boolean verified(Path target, String name) {
+		SofaSource source = SOFAS.get(name);
+		if (source == null || !Files.isRegularFile(target)) return false;
+		try {
+			return sha256Of(target).equalsIgnoreCase(source.sha256());
+		} catch (IOException e) {
+			return false;
+		}
+	}
+
+	/**
+	 * Where a download of {@code target} streams to before it verifies. Unique per download, so a cancelled
+	 * download still unwinding cannot truncate or delete the file of one started after it.
+	 */
+	private static Path partialOf(Path target) {
+		return target.resolveSibling(target.getFileName() + "." + Long.toHexString(System.nanoTime()) + ".part");
 	}
 
 	private static void streamExtract(SofaSource source, Path target,
@@ -156,6 +182,8 @@ public final class HrtfFiles {
 			long read = 0;
 			byte[] buf = new byte[64 * 1024];
 			while ((entry = zipIn.getNextEntry()) != null) {
+				// Skipping an entry reads through it (several megabytes each), so a cancel is heeded here too.
+				if (cancelled.getAsBoolean()) return;
 				// The zip holds one SOFA per sample rate; only the pinned member matches.
 				if (!entry.getName().equals(source.entry())) continue;
 				// Opened only now, so a download with no matching member leaves no empty file behind.

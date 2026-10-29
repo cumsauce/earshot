@@ -433,8 +433,7 @@ pub unsafe extern "C" fn callback(user: *mut c_void, data: *mut c_void, bytes: i
             // produce samples (a null argument, or a panic caught below) must
             // leave silence, not the buffer's stale samples, which OpenAL
             // would re-mix as an audible repeat. The pull below overwrites
-            // this when it runs. `silence` slices `data` as floats, which a
-            // misaligned buffer would panic on — unwinding must stop here.
+            // this when it runs.
             // SAFETY: OpenAL hands `data` writable for `bytes` bytes;
             // `silence` writes nothing when `data` is null or there are no
             // samples.

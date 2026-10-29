@@ -162,6 +162,9 @@ class SoundShaperTest {
 		assertEquals(1.2f, SoundShaper.lift(new float[] {0.7f, 1.44f, 0.5f}), 1e-6f);
 		// Nothing lifts past the hard ground's double: energy 4 is amplitude 2.
 		assertEquals(2f, SoundShaper.lift(new float[] {4f, 0.1f, 0.1f}), 1e-6f);
+		// A broken share from the native side is silence, never a NaN gain.
+		assertEquals(1f, SoundShaper.lift(new float[] {Float.NaN, -1f, 0.5f}), 1e-6f);
+		assertEquals(0f, SoundShaper.amplitude(Float.NaN), 0f);
 	}
 
 	/**

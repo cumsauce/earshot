@@ -392,6 +392,8 @@ impl Engine {
         // How sound gets round corners depends on how shut in the listener is.
         let enclosure = self.room().map_or(0.0, |room| room.enclosure);
         let diffraction = quality.diffraction;
+        // One air for the whole batch, read once.
+        let speed = speed_of_sound(self.air_celsius());
         self.world_now(|world| {
             for (source, heard) in sources.iter().zip(out) {
                 *heard = hear_with_speed(
@@ -402,7 +404,7 @@ impl Engine {
                     rays,
                     enclosure,
                     diffraction,
-                    speed_of_sound(self.air_celsius()),
+                    speed,
                 );
             }
         });

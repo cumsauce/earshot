@@ -455,11 +455,10 @@ public final class SoundShaper {
 			}
 			Vec3 heardFrom = state.heardFrom(position);
 			double straight = position.distanceTo(ear);
-			// WALLED is an amplitude share of the mid band getting straight through; heard's gains are
-			// energy shares, so it squares onto them.
+			// WALLED is a threshold on heard's mid-band energy share, as it has always been compared:
+			// it is a classifier, not a gain, so it is not converted.
 			boolean elsewhere = spacesOn && straight > 3
-					&& (heard[at + 6] > straight + SpaceReverb.ROUND
-							|| heard[at + 1] < SpaceReverb.WALLED * SpaceReverb.WALLED);
+					&& (heard[at + 6] > straight + SpaceReverb.ROUND || heard[at + 1] < SpaceReverb.WALLED);
 			int spaceSlot = elsewhere ? spaces.slotFor(position, heardFrom, now) : 0;
 			// A sound that doesn't fade with distance (a placed bed) sets its own level: only walls and rooms shape it.
 			if (target.voice() == null && target.range() > 0) {
@@ -757,13 +756,19 @@ public final class SoundShaper {
 	 * for an ordinary gain, so nothing indoors changes.
 	 */
 	static float lift(float[] gains) {
-		// Each band clamps to the contract's energy bound before the square root, so a stray negative or
-		// NaN from the native side cannot become NaN's way through Math.max into the source's gain.
+		// Each band clamps to the contract's energy bound before the square root (amplitude), so a stray
+		// negative or NaN from the native side cannot reach the source's gain.
 		float most = Math.max(1f,
-				Math.max((float) Math.sqrt(Math.clamp(gains[0], 0f, 4f)),
-						Math.max((float) Math.sqrt(Math.clamp(gains[1], 0f, 4f)),
-								(float) Math.sqrt(Math.clamp(gains[2], 0f, 4f)))));
+				Math.max(amplitude(gains[0]), Math.max(amplitude(gains[1]), amplitude(gains[2]))));
 		return Math.min(most, MAX_LIFT);
+	}
+
+	/**
+	 * The amplitude of an energy share, clamped to the contract's [0, 4] first. Math.clamp passes a NaN through,
+	 * so the test is written to send NaN (and anything negative) to silence.
+	 */
+	static float amplitude(float energy) {
+		return energy >= 0 ? (float) Math.sqrt(Math.min(energy, 4f)) : 0f;
 	}
 
 	/**
@@ -786,8 +791,8 @@ public final class SoundShaper {
 		// The bands clamp to the contract's energy bound, not to one: the boost above free field lives in
 		// the energy past one, and lifting it onto the source's gain with the filter dividing it out would
 		// otherwise cancel back to free field.
-		float ampLow = (float) Math.sqrt(Math.clamp(gains[0], 0f, 4f));
-		float ampHigh = (float) Math.sqrt(Math.clamp(gains[2], 0f, 4f));
+		float ampLow = amplitude(gains[0]);
+		float ampHigh = amplitude(gains[2]);
 		float low = Math.clamp(ampLow / lift, 0f, 1f);
 		float highRatio = low > 0 ? Math.clamp(ampHigh / ampLow, 0f, 1f) : 0f;
 		EXTEfx.alFilterf(state.filter, EXTEfx.AL_LOWPASS_GAIN, low);

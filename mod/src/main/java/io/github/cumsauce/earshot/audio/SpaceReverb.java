@@ -31,7 +31,7 @@ final class SpaceReverb {
 	private static final int BOUNCES = 8;
 	/** How far round a sound's way must go, beyond the straight line, for it to be elsewhere. */
 	static final double ROUND = 2;
-	/** Or how little of the mid band gets straight through. */
+	/** Or how little of the mid band's energy gets straight through (heard's mid-band energy share). */
 	static final float WALLED = 0.3f;
 	/** How strongly the reverb comes from its sounds' direction, 0 (all round) to 1. */
 	private static final float PAN = 0.7f;

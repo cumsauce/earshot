@@ -171,10 +171,13 @@ pub fn hear_with_speed(
     let extra = detour(route.length, listener, source);
     let around = round_loss(extra, route.bend, enclosure, diffraction);
     let round_is_better = around[1] > direct[1];
-    // A route no longer than the straight run has gone round nothing, so
-    // it is not a second path: its loss describes the same straight line
-    // without the materials on it, and must not fill their bands back in.
-    if extra <= 0.0 {
+    // A route that never left the straight line (its opening is the
+    // source's own block, so it never turned) has gone round nothing: its
+    // loss describes the same line without the materials on it, and must
+    // not fill their bands back in. A zero detour alone is not that: the
+    // grid measures a way through a door off to the side as long as the
+    // line whenever the door sits on one of its shortest step paths.
+    if extra <= 0.0 && route.bend == 0.0 {
         return straight;
     }
     // Every band takes the better of the two paths. A curtain, cloth or
@@ -639,6 +642,38 @@ mod tests {
             route.length + 0.1 >= straight,
             "{route:?} against {straight}"
         );
+    }
+
+    #[test]
+    fn a_doorway_beside_a_diagonal_line_is_still_the_way_round() {
+        // The door at z = 4 lies on a shortest grid path to a source up the
+        // diagonal, so the way through it measures no detour at all; it
+        // still turns at the door, so it is a second path, not the line
+        // through the rock.
+        let world = wall(Some(4));
+        let source = Vec3::new(9.5, 0.5, 4.5);
+        let field = Field::build(&world, LISTENER, 16);
+        let sealed = hear(
+            &wall(None),
+            None,
+            LISTENER,
+            source,
+            5,
+            0.0,
+            DiffractionStandard::Iso9613_2,
+        );
+        let heard = hear(
+            &world,
+            Some(&field),
+            LISTENER,
+            source,
+            5,
+            0.0,
+            DiffractionStandard::Iso9613_2,
+        );
+        assert!(heard.gains[1] > 100.0 * sealed.gains[1], "{heard:?}");
+        assert_eq!(heard.aperture, 2.0, "{heard:?}");
+        assert_ne!(heard.heard_from, source, "{heard:?}");
     }
 
     #[test]

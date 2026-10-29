@@ -13,7 +13,6 @@ import io.github.cumsauce.earshot.openal.HrtfFiles;
 import io.github.cumsauce.earshot.openal.OpenAlProbe;
 import java.io.IOException;
 import java.lang.foreign.MemorySegment;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -271,7 +270,9 @@ public final class AcousticsScreen extends OptionsSubScreen {
 			return;
 		}
 		Path target = Path.of("").toAbsolutePath().resolve(newValue + ".sofa");
-		if (Files.isRegularFile(target)) {
+		// Only a file that verifies is applied as is: one cut short (the game closed mid-download) is
+		// fetched again by ensure(), which deletes it first.
+		if (HrtfFiles.verified(target, newValue)) {
 			EarshotClient.apply(EarshotClient.config().withHrtf(newValue));
 			return;
 		}
@@ -298,10 +299,12 @@ public final class AcousticsScreen extends OptionsSubScreen {
 				Minecraft.getInstance().execute(() -> {
 					if (sofaDownload == null) return; // the screen closed; nothing to roll back
 					sofaDownload = null;
-					// No rebuild needed: the dropdown reads the OptionInstance's value itself.
-					// The value does change here, so set() re-fires onHrtfPicked (its
-					// ValueUpdateListener), which applies the old value back to the engine.
+					// The value changes here, so set() re-fires onHrtfPicked (its
+					// ValueUpdateListener), which applies the old value back to the engine. The
+					// button keeps its own value (set() does not reach it), so the widgets are
+					// rebuilt to show the rollback; init() then sets the same value, a no-op.
 					hrtf.set(previousHrtf);
+					rebuildWidgets();
 				});
 			}
 		});

@@ -60,4 +60,21 @@ class HrtfFilesTest {
 				"cancellation should throw IOException: " + thrown.getMessage());
 		assertFalse(Files.exists(sofa), "cancelled-before-download leaves no partial file");
 	}
+
+	/** A download that fails before it starts still says so, once. */
+	@Test
+	void anEarlyFailureSignalsFailedOnce(@TempDir Path dir) {
+		int[] failed = {0};
+		HrtfFiles.ProgressListener listener = new HrtfFiles.ProgressListener() {
+			@Override
+			public void update(long bytesRead, long totalBytesOrZero) {}
+
+			@Override
+			public void failed() {
+				failed[0]++;
+			}
+		};
+		assertThrows(IOException.class, () -> HrtfFiles.ensure(dir.resolve("x.sofa"), "Not a real HRTF", listener));
+		assertEquals(1, failed[0]);
+	}
 }

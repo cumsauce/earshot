@@ -78,7 +78,16 @@ const GLIBC: &str = "2.17";
 fn natives(target: &str, out: &Path) -> Result<()> {
     // Each run's `out` holds exactly what this run staged: a platform
     // directory left by an earlier run (another `--target`, older source)
-    // would otherwise be re-hashed into the manifest and shipped.
+    // would otherwise be re-hashed into the manifest and shipped. Only a
+    // directory that is empty or was staged before (it has a manifest) is
+    // wiped: a mistyped `--out` must not take an unrelated tree with it.
+    if out.exists() && fs::read_dir(out)?.next().is_some() && !out.join("natives.sha256").is_file()
+    {
+        bail!(
+            "{} is not empty and holds no natives.sha256: refusing to clear it",
+            out.display()
+        );
+    }
     fresh_dir(out)?;
     stage_target(target, out)?;
     write_manifest(out)
