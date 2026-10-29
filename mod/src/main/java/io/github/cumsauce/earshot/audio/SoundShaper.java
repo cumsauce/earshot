@@ -317,6 +317,8 @@ public final class SoundShaper {
 			airAbsorption += (target - airAbsorption) * 0.05f;
 		}
 		call(() -> bridge.setAir(engine, celsius));
+		// The delays sounds are held back by take the same air.
+		Thunder.air(celsius);
 	}
 
 	/** The wanted reverb, if the game's OpenAL can do it, else the best it can; underwater, EAX's preset. */

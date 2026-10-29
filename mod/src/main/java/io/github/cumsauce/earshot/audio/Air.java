@@ -25,6 +25,15 @@ final class Air {
 				* (0.01275 * Math.exp(-2239.1 / t) / (frO + f2 / frO) + 0.1068 * Math.exp(-3352.0 / t) / (frN + f2 / frN)));
 	}
 
+	/**
+	 * Speed of sound in air at {@code celsius}, in blocks (metres) a second: the textbook {@code 331.3 + 0.606·T},
+	 * clamped as the native engine's {@code speed_of_sound} clamps it, so the delays here and the echoes there run
+	 * on the same air.
+	 */
+	static double speedOfSound(double celsius) {
+		return Math.clamp(331.3 + 0.606 * Math.clamp(celsius, -60, 60), 300, 370);
+	}
+
 	/** OpenAL's air absorption factor for air at {@code celsius} and {@code humidity} percent. */
 	static float factor(double celsius, double humidity) {
 		return (float) Math.clamp(absorptionDbPerMetre(HF_REFERENCE_HZ, celsius, humidity) / OPENAL_DB_PER_METRE, 0, 10);

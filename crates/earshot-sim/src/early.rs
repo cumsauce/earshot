@@ -186,6 +186,22 @@ pub fn edge_sources(
             let corners_v = [cv, cv + 1.0];
             for &eu in &corners_u {
                 for &ev in &corners_v {
+                    // A corner is an edge only where the wall stops there: one
+                    // of the four wall blocks meeting at it is open (a doorway,
+                    // the wall's end). On an unbroken face it is just a point
+                    // on the mirror, which the image source already carries.
+                    let mut wall_ends = false;
+                    for du in [-1, 0] {
+                        for dv in [-1, 0] {
+                            let mut c = cell;
+                            c[u] = eu as i32 + du;
+                            c[v] = ev as i32 + dv;
+                            wall_ends |= !world.block(c[0], c[1], c[2]).is_solid();
+                        }
+                    }
+                    if !wall_ends {
+                        continue;
+                    }
                     let edge = with(behind, u, eu);
                     let edge = with(edge, v, ev);
                     // The line from listener to edge, and edge to source, must be clear.
@@ -229,9 +245,6 @@ pub fn edge_sources(
                     });
                 }
             }
-            // Also include the parent reflection's image source as an upper bound on
-            // summed edge energy per band. Cap below.
-            let _ = (point, image, acoustics);
         }
     }
     // Drop edge sources that fuse with the direct sound: first, so edges that
@@ -393,6 +406,25 @@ mod tests {
             }
         }
         world
+    }
+
+    #[test]
+    fn an_unbroken_wall_has_no_edges() {
+        // A flat rock face in front of both ends: the reflection off it is
+        // the image source's alone, and the corners of the block it lands
+        // on are points on the mirror, not edges sound diffracts round.
+        let mut world = World::new();
+        for y in -20..20 {
+            for z in -20..20 {
+                world.set_block(5, y, z, Material::Rock);
+            }
+        }
+        let listener = Vec3::new(0.5, 0.5, 0.5);
+        let source = Vec3::new(0.5, 0.5, 3.5);
+        let taps = early_taps(&world, listener, source, crate::SPEED_OF_SOUND);
+        assert_eq!(taps.len(), 1, "{taps:?}");
+        let edges = edge_sources(&world, listener, source, &taps, crate::SPEED_OF_SOUND);
+        assert!(edges.is_empty(), "{edges:?}");
     }
 
     #[test]

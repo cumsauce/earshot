@@ -78,7 +78,7 @@ Earshot off and on again; your settings stay as they are.
 | Low | 256 rays × 4 bounces, 4 times a second | 1 | 16 blocks |
 | Medium | 1,024 × 8, 8 times a second | 5 | 24 blocks |
 | High | 4,096 × 16, 10 times a second | 9 | 32 blocks |
-| Ultra | 16,384 × 32, 10 times a second | 9 | 48 blocks; with convolution, the two loudest sounds get reverbs of their own, from the room round them, and the next four early echoes off the walls round them |
+| Ultra | 16,384 × 32, 10 times a second | 9 | 48 blocks; the four loudest sounds get early echoes off the walls round them, and with convolution the two loudest get reverbs of their own, from the room round them, with the next four taking the early echoes |
 
 **Auto** picks High on 8 or more cores, Medium on 4 to 7, and Low below that. At any quality the room trace has a
 share of the CPU (from a tenth of a core on Low to 1.2 cores on Ultra), and uses fewer rays when a big space would take
