@@ -76,6 +76,18 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const GLIBC: &str = "2.17";
 
 fn natives(target: &str, out: &Path) -> Result<()> {
+    // Each run's `out` holds exactly what this run staged: a platform
+    // directory left by an earlier run (another `--target`, older source)
+    // would otherwise be re-hashed into the manifest and shipped.
+    fresh_dir(out)?;
+    stage_target(target, out)?;
+    write_manifest(out)
+}
+
+/// Builds and stages every library `target` names. Only `stage_target`'s own
+/// platform directories are touched: `out` itself is left to `natives`, which
+/// may recurse through here for several targets at once.
+fn stage_target(target: &str, out: &Path) -> Result<()> {
     match target {
         "host" => {
             let lib = build_ffi(None)?;
@@ -87,7 +99,7 @@ fn natives(target: &str, out: &Path) -> Result<()> {
         "all" => match env::consts::OS {
             "linux" => {
                 for triple in ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] {
-                    natives(triple, out)?;
+                    stage_target(triple, out)?;
                 }
             }
             "macos" => {
@@ -104,7 +116,7 @@ fn natives(target: &str, out: &Path) -> Result<()> {
                     .arg(&universal))?;
                 println!("staged {}", universal.display());
             }
-            "windows" => natives("x86_64-pc-windows-msvc", out)?,
+            "windows" => stage_target("x86_64-pc-windows-msvc", out)?,
             other => bail!("no release targets for {other}"),
         },
         triple => {
@@ -113,7 +125,7 @@ fn natives(target: &str, out: &Path) -> Result<()> {
             stage(&lib, &out.join(format!("{os}-{arch}")))?;
         }
     }
-    write_manifest(out)
+    Ok(())
 }
 
 /// Builds earshot-ffi with the size-focused `dist` profile for `target` (or
@@ -249,8 +261,17 @@ fn dist(from: Option<&Path>) -> Result<()> {
                 if !platform.file_type()?.is_dir() {
                     continue;
                 }
+                // One fresh directory per platform, then every library in it:
+                // staging per file would empty the directory each time and
+                // keep only the last.
+                let dir = natives_dir.join(platform.file_name());
+                fresh_dir(&dir)?;
                 for lib in fs::read_dir(platform.path())? {
-                    stage(&lib?.path(), &natives_dir.join(platform.file_name()))?;
+                    let lib = lib?;
+                    let to = dir.join(lib.file_name());
+                    fs::copy(lib.path(), &to)
+                        .with_context(|| format!("copying {}", lib.path().display()))?;
+                    println!("staged {}", to.display());
                 }
             }
             write_manifest(&natives_dir)?;

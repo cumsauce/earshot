@@ -19,8 +19,10 @@ the direct path as a per-band real factor.
 
 - A per-band gain factor for the direct path over ground, from the ground's material and
   the two heights, at each band's centre frequency.
-- Hard ground gives the +6 dB Lloyd's-mirror boost at grazing; porous ground gives a
-  low-band null, deeper the lower the band.
+- Hard ground gives the +6 dB Lloyd's-mirror boost at grazing; porous ground gives band
+  nulls — the low band dips, and at the geometry the tests pin (1.6 m up each end, 20 m
+  apart) the deepest of the three lands in the 4 kHz band, where Miki's ground has gone
+  soft, not the low one.
 - Deterministic, bounded, and cheap (no per-ray work).
 
 ## Non-goals
@@ -134,7 +136,9 @@ the room trace already handles:
 
 In `crates/earshot-sim/src/hear.rs`, `hear(...)`: right after `let direct = occlusion(...)`,
 and before the direct-vs-round comparison, multiply `direct` band by band by the ground
-factor. The direct path over open ground is essentially free-field today (the straight
+factor. The factor itself is a *pressure* ratio while `hear`'s band gains are energy
+shares, so the fold squares it — hard ground's pressure double is an energy quadruple.
+The direct path over open ground is essentially free-field today (the straight
 line does not hit the ground), so this adds the reflected wave's interference to a free
 field, which is exactly what `EA` measures. The round-trip path (`field.route`) is not
 affected: it is a different path, and its own end reflecting off the ground is a second
@@ -155,8 +159,8 @@ Unit (`ground.rs`), pure functions, no world needed:
 1. `a_hard_ground_gives_the_six_decibel_boost_at_grazing` — `|Z| → ∞`, small heights:
    `EA = +6.02 dB`.
 2. `a_porous_ground_dips_the_low_band` — `σ = 200_000`, `h_s = h_r = 1.6` m, `d = 20` m:
-   the 250 Hz band's `EA` is a null (−2.44 dB), the mid band rides the crest
-   (+3.20 dB), and the deepest null of the three lands in the 4 kHz band (−3.81 dB),
+   the 250 Hz band's `EA` is a null (−2.47 dB), the mid band rides the crest
+   (+3.21 dB), and the deepest null of the three lands in the 4 kHz band (−3.82 dB),
    because Miki's ground stiffens toward low frequency; assert the band pattern and
    pin each dB against the model's own value.
 3. `grazing_over_a_porous_ground_stays_finite` — heights → 0: `EA` finite and above a

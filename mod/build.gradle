@@ -123,13 +123,23 @@ def compressNatives = tasks.register('compressNatives', CompressNatives) {
 // The SADIE II SOFA test fixtures are tracked via Git LFS. On a fresh clone
 // the working tree has 133-byte pointer files, not the real 36 MB SOFAs the
 // tests need. `git lfs pull` replaces the pointers with the real files; the
-// task runs before any test or build that consumes the fixtures.
+// task runs before any test or build that consumes the fixtures, and skips
+// itself when they are already real files, so those builds need neither
+// git-lfs nor the network.
 def lfsPull = tasks.register('lfsPull', Exec) {
 	description = 'Pulls LFS files so the SOFA test fixtures are real, not pointers.'
 	workingDir = rootDir.parentFile
 	commandLine 'git', 'lfs', 'pull'
-	// No inputs/outputs: always re-run; LFS tracks its own state and pull is cheap when up to date.
-	outputs.upToDateWhen { false }
+	// No outputs: LFS tracks its own state. The fixtures are declared as inputs
+	// and read at execution time — a real SOFA is tens of megabytes, an LFS
+	// pointer file ~130 bytes — so the task runs whenever one is missing or
+	// still a pointer, and fails the build if git lfs pull can't fetch them.
+	inputs.files(fileTree('src/test/resources/earshot/hrtf/test-fixtures') { include '*.sofa' })
+	def fixturesDir = file('src/test/resources/earshot/hrtf/test-fixtures').absolutePath
+	onlyIf {
+		def sofas = new File(fixturesDir).listFiles()?.findAll { it.name.endsWith('.sofa') }
+		sofas == null || sofas.isEmpty() || sofas.any { it.length() < 512 }
+	}
 }
 
 processTestResources {

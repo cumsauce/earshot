@@ -56,6 +56,11 @@ pub fn walk(
     if !origin.is_usable() || !finite.iter().all(|v| v.is_finite()) {
         return;
     }
+    // A negative reach would make the first step leave its block before it
+    // enters, so there is nothing to walk.
+    if max < 0.0 {
+        return;
+    }
     // A larger reach would walk the block coordinates toward an i32
     // overflow, so the bound holds whatever the caller passed.
     let max = max.min(MAX_REACH_METRES);
@@ -338,6 +343,11 @@ fn walk_solid(
     if !origin.is_usable() || !finite.iter().all(|v| v.is_finite()) {
         return;
     }
+    // A negative reach would make the first step leave its block before it
+    // enters, so there is nothing to walk.
+    if max < 0.0 {
+        return;
+    }
     // A larger reach would walk the block coordinates toward an i32
     // overflow, so the bound holds whatever the caller passed.
     let max = max.min(MAX_REACH_METRES);
@@ -374,7 +384,9 @@ fn walk_solid(
         }
         let Some(section) = section else {
             // Nothing here: on to where the ray leaves the section, the
-            // first of the crossings that leave it along each axis.
+            // first of the crossings that leave it along each axis; a tie
+            // between axes breaks toward the highest, as the per-block
+            // step below picks it.
             let mut leave = f64::INFINITY;
             let mut across = 3;
             for axis in 0..3 {
@@ -390,7 +402,7 @@ fn walk_solid(
                 for _ in 0..inside {
                     t += t_delta[axis];
                 }
-                if t < leave {
+                if t <= leave {
                     leave = t;
                     across = axis;
                 }
@@ -616,6 +628,22 @@ mod tests {
                 "{origin:?} {dir:?} {max}"
             );
         }
+    }
+
+    #[test]
+    fn a_jump_out_of_a_section_at_a_corner_ties_the_way_the_block_walk_does() {
+        let mut world = World::new();
+        // The diagonal from (0.5, 0.5, 0.5) in x and y crosses x = 16 and
+        // y = 16 at the same instant, on a section boundary in both axes.
+        // The block walk resolves the tie toward the higher axis, so it
+        // enters (15, 16) and never (16, 15); the jump over the absent
+        // section must land on the same corner block.
+        world.set_block(15, 16, 0, Material::Rock);
+        let from = Vec3::new(0.5, 0.5, 0.5);
+        let dir = Vec3::new(1.0, 1.0, 0.0).normalized();
+        let hit = cast(&world, from, dir, 32.0).unwrap();
+        assert_eq!(hit.block, [15, 16, 0]);
+        assert_eq!(hit, cast_by_walking(&world, from, dir, 32.0).unwrap());
     }
 
     #[test]
@@ -1108,6 +1136,15 @@ mod tests {
         let world = World::new();
         let nan = Vec3::new(f64::NAN, 0.0, 0.0);
         assert!(steps(&world, nan, Vec3::new(1.0, 0.0, 0.0), 10.0).is_empty());
+        // A negative reach would make the first step leave its block before
+        // it enters, and a consumer raising the loss to that negative length
+        // would gain energy from it.
+        let from = Vec3::new(0.5, 0.5, 0.5);
+        let dir = Vec3::new(1.0, 0.0, 0.0);
+        assert!(steps(&world, from, dir, -5.0).is_empty());
+        assert!(cast(&world, from, dir, -5.0).is_none());
+        // A zero reach still visits the one zero-length step it always did.
+        assert_eq!(steps(&world, from, dir, 0.0).len(), 1);
         let still = steps(&world, Vec3::ZERO, Vec3::ZERO, 10.0);
         assert_eq!(still.len(), 1);
     }

@@ -157,9 +157,21 @@ class SoundShaperTest {
 		// An ordinary gain takes no lift: the filter carries it all, as before.
 		assertEquals(1f, SoundShaper.lift(new float[] {0.5f, 0.3f, 0.2f}), 1e-6f);
 		assertEquals(1f, SoundShaper.lift(new float[] {1f, 1f, 1f}), 1e-6f);
-		// The soil ground's mid-band crest over open ground: the lift is the peak band.
-		assertEquals(1.44f, SoundShaper.lift(new float[] {0.7f, 1.44f, 0.5f}), 1e-6f);
-		// Nothing lifts past the hard ground's double.
-		assertEquals(2f, SoundShaper.lift(new float[] {2.5f, 0.1f, 0.1f}), 1e-6f);
+		// The soil ground's mid-band crest over open ground: the gains are energy shares, so the lift is
+		// the peak band's amplitude, square-rooted.
+		assertEquals(1.2f, SoundShaper.lift(new float[] {0.7f, 1.44f, 0.5f}), 1e-6f);
+		// Nothing lifts past the hard ground's double: energy 4 is amplitude 2.
+		assertEquals(2f, SoundShaper.lift(new float[] {4f, 0.1f, 0.1f}), 1e-6f);
+	}
+
+	/**
+	 * The reverb through an opening comes as an amplitude share: sound power passes in proportion to the opening's
+	 * area, so amplitude as its square root — a door's 2 is about -9 dB, not -18.
+	 */
+	@Test
+	void an_opening_shares_its_reverb_by_amplitude() {
+		assertEquals(1f, SoundShaper.portalShare(16), 1e-6f, "a 4 × 4 arch passes all of it");
+		assertEquals(0.3536f, SoundShaper.portalShare(2), 1e-4f, "a door's 2: sqrt(2/16), about -9 dB");
+		assertEquals(0.02f, SoundShaper.portalShare(0), 1e-6f, "a hairline still passes a little");
 	}
 }

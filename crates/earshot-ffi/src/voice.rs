@@ -42,6 +42,12 @@ const PRIME: usize = LAG_TARGET;
 const LEAD: Duration = Duration::from_millis(40);
 /// After a stall, this many frames are caught up at most.
 const MAX_BACKLOG_FRAMES: u32 = 5;
+/// Streams are never freed, so this caps how many may be made: new speakers
+/// (their UUIDs come from the network, through yakvc's frames and
+/// `earshot_voice_stream`) are refused past it instead of growing the map
+/// without bound. Aligned with the cap on Java's read side (its
+/// `MAX_VOICE_STREAMS`), which refuses the list past the same number.
+const MAX_STREAMS: usize = 4096;
 
 /// One frame as yakvc hands it over (yakvc's `YakVcVoiceFrame`).
 #[repr(C)]
@@ -180,10 +186,18 @@ impl Ring {
             .store(start + n.min(self.len()), Ordering::Release);
     }
 
-    /// The reader: takes up to `out.len()` into `out`; how many.
+    /// The reader: takes up to `out.len()` into `out`; how many. The range
+    /// comes from one load of `start` and one of `written`, so it cannot
+    /// follow the writer onto samples written after that snapshot — only a
+    /// push a whole ring ahead of the read loop (a stalled mixer) could
+    /// still overtake it.
     fn pop(&self, out: &mut [f32]) -> usize {
         let read = self.start();
-        let n = self.len().min(out.len());
+        let n = self
+            .written
+            .load(Ordering::Acquire)
+            .saturating_sub(read)
+            .min(out.len());
         for (i, out) in out[..n].iter_mut().enumerate() {
             *out = f32::from_bits(self.samples[(read + i) % CAPACITY].load(Ordering::Relaxed));
         }
@@ -217,8 +231,9 @@ pub struct Info {
 #[derive(Debug, Default)]
 struct Voice {
     /// Every speaker heard this session. Streams are never freed: OpenAL
-    /// may still be pulling from one, and there are only as many as players
-    /// met.
+    /// may still be pulling from one, so new ones are refused past
+    /// [`MAX_STREAMS`] rather than evicted; a speaker heard once keeps its
+    /// stream for the rest of the process.
     streams: Mutex<HashMap<[u8; 16], Arc<Stream>>>,
     clock: Mutex<Clock>,
 }
@@ -256,9 +271,24 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The stream for `uuid`, made if new.
-pub fn stream(uuid: [u8; 16]) -> Arc<Stream> {
-    lock(&VOICE.streams).entry(uuid).or_default().clone()
+/// The stream for `uuid`: the one already made, else a new one while fewer
+/// than `cap` streams exist, else none. A UUID heard once keeps its stream
+/// for the rest of the process.
+fn stream_capped(uuid: [u8; 16], cap: usize) -> Option<Arc<Stream>> {
+    let mut streams = lock(&VOICE.streams);
+    if let Some(stream) = streams.get(&uuid) {
+        return Some(stream.clone());
+    }
+    if streams.len() >= cap {
+        return None;
+    }
+    Some(streams.entry(uuid).or_default().clone())
+}
+
+/// The stream for `uuid`, made if new and there is room under
+/// [`MAX_STREAMS`]; none for an unknown UUID at the cap.
+pub fn stream(uuid: [u8; 16]) -> Option<Arc<Stream>> {
+    stream_capped(uuid, MAX_STREAMS)
 }
 
 /// Every stream heard this session, with what its latest frame said and how
@@ -281,8 +311,12 @@ pub fn pull(stream: &Stream, out: &mut [f32]) {
         }
         stream.primed.store(true, Ordering::Relaxed);
     }
-    if queue.len() > out.len() + MAX_LAG {
-        queue.skip(queue.len() - out.len() - LAG_TARGET);
+    // One load of `len`: `stream_end` advances `cut` from yakvc's thread
+    // between loads, and a queue shrunk past the guard must not underflow
+    // the subtraction below.
+    let len = queue.len();
+    if len > out.len() + MAX_LAG {
+        queue.skip(len.saturating_sub(out.len() + LAG_TARGET));
     }
     let n = queue.pop(out);
     out[n..].fill(0.0);
@@ -330,7 +364,12 @@ unsafe extern "C" fn frame(_user: *mut c_void, frame: *const YakVcVoiceFrame) {
                 // during the call.
                 unsafe { std::slice::from_raw_parts(frame.pcm, frame.samples) }
             };
-            let stream = stream(frame.uuid);
+            let Some(stream) = stream(frame.uuid) else {
+                // Past the `MAX_STREAMS` cap: no stream, and nothing
+                // playing one Java never got a pointer for, so the frame is
+                // dropped rather than making a new stream.
+                return;
+            };
             stream.queue.push(pcm, frame.volume);
             *lock(&stream.info) = Info {
                 flags: frame.flags,
@@ -384,19 +423,22 @@ unsafe extern "C" fn stream_end(_user: *mut c_void, uuid: *const u8) {
 /// `user` must be a pointer from [`stream_pointer`], and `data` writable for
 /// `bytes` bytes, as OpenAL guarantees.
 pub unsafe extern "C" fn callback(user: *mut c_void, data: *mut c_void, bytes: i32) -> i32 {
-    // Silence first: the paths that fail to produce samples (a null argument,
-    // or a panic caught below) must leave silence, not the buffer's stale
-    // samples, which OpenAL would re-mix as an audible repeat. The pull below
-    // overwrites this when it runs.
-    // SAFETY: OpenAL hands `data` writable for `bytes` bytes; `silence`
-    // writes nothing when `data` is null or there are no samples.
-    unsafe { silence(data, bytes) };
     // Behind the same barrier as every export: a panic must not unwind
     // through `extern "C"` into OpenAL's mixer thread (it would abort the
     // process). As on the null-argument path, the buffer counts as filled:
     // fewer bytes would end the source.
     guard_value(
         || {
+            // Silence first, inside the barrier: the paths that fail to
+            // produce samples (a null argument, or a panic caught below) must
+            // leave silence, not the buffer's stale samples, which OpenAL
+            // would re-mix as an audible repeat. The pull below overwrites
+            // this when it runs. `silence` slices `data` as floats, which a
+            // misaligned buffer would panic on — unwinding must stop here.
+            // SAFETY: OpenAL hands `data` writable for `bytes` bytes;
+            // `silence` writes nothing when `data` is null or there are no
+            // samples.
+            unsafe { silence(data, bytes) };
             let samples = usize::try_from(bytes).unwrap_or(0) / size_of::<f32>();
             if user.is_null() || data.is_null() || samples == 0 {
                 return bytes.max(0);
@@ -439,9 +481,9 @@ unsafe fn silence(data: *mut c_void, bytes: i32) {
 }
 
 /// A pointer to `uuid`'s stream for OpenAL's callback; valid for the rest of
-/// the process.
-pub fn stream_pointer(uuid: [u8; 16]) -> *mut c_void {
-    Arc::as_ptr(&stream(uuid)).cast_mut().cast()
+/// the process, and none for an unknown UUID at the [`MAX_STREAMS`] cap.
+pub fn stream_pointer(uuid: [u8; 16]) -> Option<*mut c_void> {
+    Some(Arc::as_ptr(&stream(uuid)?).cast_mut().cast())
 }
 
 #[cfg(test)]
@@ -486,7 +528,7 @@ mod tests {
         let uuid = [7; 16];
         deliver(uuid, &[1.0; FRAME], 0);
         deliver(uuid, &[0.5; FRAME], 0);
-        let stream = stream(uuid);
+        let stream = stream(uuid).unwrap();
         let mut out = vec![9.0; FRAME + 10];
         pull(&stream, &mut out);
         assert!(out[..FRAME].iter().all(|&s| s == 0.5), "at yakvc's volume");
@@ -506,7 +548,7 @@ mod tests {
         let uuid = [13; 16];
         deliver(uuid, &[1.0; FRAME], 0);
         deliver(uuid, &[1.0; FRAME], 0);
-        let stream = stream(uuid);
+        let stream = stream(uuid).unwrap();
         let mut out = vec![0.0; 3 * FRAME];
         pull(&stream, &mut out);
         assert_eq!(out[2 * FRAME - 1], 0.5, "played what there was");
@@ -526,7 +568,28 @@ mod tests {
         for _ in 0..100 {
             deliver(uuid, &[1.0; FRAME], 0);
         }
-        assert_eq!(stream(uuid).queue.len(), MAX_QUEUED);
+        assert_eq!(stream(uuid).unwrap().queue.len(), MAX_QUEUED);
+    }
+
+    #[test]
+    fn the_stream_cap_refuses_new_speakers_but_not_known_ones() {
+        // The map is shared by every test in the process, so the cap logic
+        // is exercised at cap 0 rather than by filling it: unknown UUIDs get
+        // no stream and leave nothing behind, while a UUID already heard
+        // keeps queueing for the rest of the process.
+        let uuid = [15; 16];
+        deliver(uuid, &[1.0; FRAME], 0);
+        assert!(
+            stream_capped([16; 16], 0).is_none(),
+            "no new stream at the cap"
+        );
+        assert!(
+            streams().iter().all(|&(id, ..)| id != [16; 16]),
+            "the refused speaker left no stream behind"
+        );
+        let known = stream_capped(uuid, 0).expect("a known stream outlives the cap");
+        deliver(uuid, &[1.0; FRAME], 0);
+        assert_eq!(known.queue.len(), 2 * FRAME, "its frames still queue");
     }
 
     #[test]
@@ -537,8 +600,8 @@ mod tests {
         }
         // 200 ms queued; OpenAL asks for 20 ms and gets the newest audio.
         let mut out = vec![0.0; FRAME];
-        pull(&stream(uuid), &mut out);
-        assert_eq!(stream(uuid).queue.len(), LAG_TARGET);
+        pull(&stream(uuid).unwrap(), &mut out);
+        assert_eq!(stream(uuid).unwrap().queue.len(), LAG_TARGET);
         assert!(out[0] >= 3.0 * 0.5, "{}", out[0]);
     }
 
@@ -548,9 +611,16 @@ mod tests {
         let mut out = [1.0f32; 8];
         let bytes = (out.len() * 4) as i32;
         let play = |out: &mut [f32; 8]| {
-            // SAFETY: the pointer comes from `stream_pointer` and `out` is
-            // writable for `bytes` bytes.
-            unsafe { callback(stream_pointer(uuid), out.as_mut_ptr().cast(), bytes) }
+            // SAFETY: the pointer comes from `stream_pointer` (the stream was
+            // made by the frames above) and `out` is writable for `bytes`
+            // bytes.
+            unsafe {
+                callback(
+                    stream_pointer(uuid).unwrap(),
+                    out.as_mut_ptr().cast(),
+                    bytes,
+                )
+            }
         };
         // Less than 40 ms queued: silence, holding back, but every byte.
         deliver(uuid, &[0.75; 4], 0);
@@ -633,7 +703,7 @@ mod tests {
         deliver(uuid, &[3.0; FRAME], 0);
         deliver(uuid, &[3.0; FRAME], 0);
         let mut out = vec![9.0; 2 * FRAME];
-        pull(&stream(uuid), &mut out);
+        pull(&stream(uuid).unwrap(), &mut out);
         assert!(
             out.iter().all(|&s| s == 1.5),
             "the frames after the end play, without silence or old audio"

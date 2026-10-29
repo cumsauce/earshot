@@ -70,7 +70,9 @@ fn eax_reference_wet(gain: f32, late_gain: f32, decay_time: f32, seed: u32) -> V
         state ^= state << 13;
         state ^= state >> 17;
         state ^= state << 5;
-        (state as f32 / (1u32 << 31) as f32) - 1.0
+        // Uniform on [−1, 1): power 1/3, scaled to the unit power the model's
+        // onset power is stated in.
+        ((state as f32 / (1u32 << 31) as f32) - 1.0) * 3.0f32.sqrt()
     };
     (0..n)
         .map(|i| {

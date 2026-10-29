@@ -70,11 +70,14 @@ public final class NativeBridge {
 	private static final int VOICE_DOUBLES = 10;
 	/**
 	 * The most floats an impulse response may ask the JVM to marshal. The API sizes one as
-	 * {@code maxSeconds × sample_rate × 4} channels (first-order ambisonics: W, X, Y, Z), and every call this mod
-	 * makes is 1.5 s × 48 000 × 4 = 288 000 floats; {@code 1 << 22} = 4 194 304 is that with room for about 21 s
-	 * of impulse response, so a native count above it is a corrupt value, never a length to allocate.
+	 * {@code maxSeconds × sample_rate × 4} channels (first-order ambisonics: W, X, Y, Z), and the native side
+	 * accepts sample rates 8 000…192 000 with lengths 0.1…10.0 s ({@code earshot_impulse_response}'s validation
+	 * in lib.rs), so the largest response the contract can return is 10 × 192 000 × 4 = 7 680 000 floats — this
+	 * bound, so a native count above it is a corrupt value, never a length to allocate. The largest call this mod
+	 * makes is the listener's reverb at {@code ConvolutionReverb.MAX_SECONDS} = 3 s × 48 000 × 4 = 576 000 floats
+	 * (own reverbs use the same).
 	 */
-	static final int MAX_IR_FLOATS = 1 << 22;
+	static final int MAX_IR_FLOATS = 10 * 192_000 * 4;
 	/**
 	 * The most voice streams {@link #voiceStreams} may be told there are at once: dozens in any real session, so
 	 * 4096 is an absurd ceiling that still keeps the {@code (int)} cast and the arrays made for it exact.
@@ -266,6 +269,11 @@ public final class NativeBridge {
 	public Trace tracePaths(MemorySegment engine, double[] origin, int rays, int bounces, double reach, long seed,
 			int maxSegments) {
 		requireLength(origin, 3, "origin");
+		// The allocation and the native cap must agree: a maxSegments whose doubles
+		// wrap an int would size a short array while the native side slices past it.
+		if (maxSegments < 0 || (long) maxSegments * SEGMENT_DOUBLES > Integer.MAX_VALUE) {
+			throw new IllegalArgumentException("tracePaths: " + maxSegments + " max segments is too many to draw");
+		}
 		double[] segments = new double[maxSegments * SEGMENT_DOUBLES];
 		long[] written = new long[1];
 		double[] stats = new double[4];
@@ -298,7 +306,9 @@ public final class NativeBridge {
 	 */
 	public void hear(MemorySegment engine, double[] listener, double[] sources, int count, double[] out) {
 		requireLength(listener, 3, "listener");
-		if (sources.length < 3 * count || out.length < HEARD_DOUBLES * count) {
+		// Long casts: with int arithmetic a count near 1 << 30 wraps both products,
+		// so any arrays would pass and the native side would slice far past them.
+		if (count < 0 || sources.length < 3L * count || out.length < (long) HEARD_DOUBLES * count) {
 			throw new IllegalArgumentException("hear: " + count + " sources, but " + sources.length + " and "
 					+ out.length + " doubles");
 		}
@@ -315,7 +325,8 @@ public final class NativeBridge {
 	/** The first reflections of each of {@code count} sources ({@value #EARLY_DOUBLES} doubles each into {@code out}). */
 	public void early(MemorySegment engine, double[] listener, double[] sources, int count, double[] out) {
 		requireLength(listener, 3, "listener");
-		if (sources.length < 3 * count || out.length < EARLY_DOUBLES * count) {
+		// Long casts, as in hear: int arithmetic wraps and lets a huge count through.
+		if (count < 0 || sources.length < 3L * count || out.length < (long) EARLY_DOUBLES * count) {
 			throw new IllegalArgumentException("early: " + count + " sources, but " + sources.length + " and "
 					+ out.length + " doubles");
 		}

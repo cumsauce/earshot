@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -21,7 +22,10 @@ class HrtfFilesTest {
 		Path sofa = dir.resolve("SADIE II KU100.sofa");
 		try (InputStream in = HrtfFiles.class.getResourceAsStream(
 				"/earshot/hrtf/test-fixtures/SADIE II KU100.sofa")) {
-			if (in == null) return; // fixture missing; skip
+			if (in == null) {
+				fail("no /earshot/hrtf/test-fixtures/SADIE II KU100.sofa on the test classpath — "
+						+ "run `git lfs pull` (the SOFAs are tracked via Git LFS)");
+			}
 			Files.copy(in, sofa, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
 		}
 		long beforeSize = Files.size(sofa);

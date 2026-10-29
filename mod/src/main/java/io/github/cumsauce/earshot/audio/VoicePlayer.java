@@ -42,9 +42,11 @@ public final class VoicePlayer {
 	private static final float OWN_VOICE_SEND = 0.5f;
 	/**
 	 * Speech carries best ahead of the mouth: behind and to the sides a voice is a little quieter and much duller.
-	 * Within {@value #CONE_INNER} degrees of where the speaker faces it is full; past {@value #CONE_OUTER}, at
-	 * {@value #BEHIND_GAIN} and its highs at {@value #BEHIND_HIGHS} more (about -4 dB and -12 dB, as measured for
-	 * human speech around 2 to 4 kHz).
+	 * OpenAL's cone angles are the full width of the cone, not a half-angle from the facing: the inner
+	 * {@value #CONE_INNER} keeps the voice full within 45 degrees of where the speaker faces, and the outer
+	 * {@value #CONE_OUTER} ends the fade at 135 degrees from the facing — 45 short of directly behind — where the
+	 * gain reaches {@value #BEHIND_GAIN} and stays, its highs at {@value #BEHIND_HIGHS} (about -4 dB and -12 dB,
+	 * as measured for human speech around 2 to 4 kHz).
 	 */
 	private static final float CONE_INNER = 90;
 	private static final float CONE_OUTER = 270;
@@ -346,6 +348,7 @@ public final class VoicePlayer {
 
 	/** Puts a voice at {@code eye}, fading out towards {@code range} as Yak VC's speakers do. */
 	private static void place(Voice voice, Vec3 eye, float range) {
+		unOwnVoice(voice);
 		if (voice.position == null || voice.centred) {
 			AL10.alSourcei(voice.source, AL10.AL_SOURCE_RELATIVE, AL10.AL_FALSE);
 			AL10.alSourcei(voice.source, AL10.AL_DISTANCE_MODEL, AL11.AL_LINEAR_DISTANCE_CLAMPED);
@@ -355,6 +358,26 @@ public final class VoicePlayer {
 		}
 		AL10.alSourcef(voice.source, AL10.AL_MAX_DISTANCE, maxDistance(range));
 		voice.position = eye;
+	}
+
+	/**
+	 * Takes a voice off the player's-own-voice setup, once its stream stops being unpositioned and it is placed:
+	 * {@link #reverbOnly} latched {@code own} and gave the source a direct filter whose gain is 0, so none of it
+	 * played dry, and SoundShaper leaves such a voice's filters and sends alone ({@code ownVoice}). Left latched,
+	 * that would silence the placed voice's dry sound for the rest of its stream's life and leave it sounding only
+	 * into the reverb, unshaped, so here the latch goes and the
+	 * filters {@link #reverbOnly} set come off and go; SoundShaper makes its own again and shapes the voice like
+	 * any other from this same update on.
+	 */
+	private static void unOwnVoice(Voice voice) {
+		if (!voice.own) return;
+		voice.own = false;
+		// The filters reverbOnly set go entirely, as stop() frees them: SoundShaper.releaseFilters detaches the
+		// direct and send filters from the source (a filter OpenAL still holds cannot be deleted) and deletes
+		// them, zeroing the state's names. SoundShaper makes them again this same update — send() setting the
+		// room rolloff it only sets at creation, filter() the gains — so the voice comes back shaped like any
+		// other, with neither its own-voice silence nor a rolloff left unset behind it.
+		SoundShaper.releaseFilters(voice.source, voice.state);
 	}
 
 	/**
@@ -402,12 +425,22 @@ public final class VoicePlayer {
 		SourceState state = voice.state;
 		if (!voice.own) {
 			voice.own = true;
-			state.filter = EXTEfx.alGenFilters();
-			EXTEfx.alFilteri(state.filter, EXTEfx.AL_FILTER_TYPE, EXTEfx.AL_FILTER_LOWPASS);
+			// Made only when the state has none: a voice shaped while placed keeps its filters when it is
+			// centred again, and regenerating here would leak the old names. Both gains are set either way,
+			// since a reused filter carries what SoundShaper last shaped on it (a fresh low-pass rests at
+			// gain and high-frequency gain 1).
+			if (state.filter == 0) {
+				state.filter = EXTEfx.alGenFilters();
+				EXTEfx.alFilteri(state.filter, EXTEfx.AL_FILTER_TYPE, EXTEfx.AL_FILTER_LOWPASS);
+			}
 			EXTEfx.alFilterf(state.filter, EXTEfx.AL_LOWPASS_GAIN, 0f);
-			state.sendFilter = EXTEfx.alGenFilters();
-			EXTEfx.alFilteri(state.sendFilter, EXTEfx.AL_FILTER_TYPE, EXTEfx.AL_FILTER_LOWPASS);
+			EXTEfx.alFilterf(state.filter, EXTEfx.AL_LOWPASS_GAINHF, 1f);
+			if (state.sendFilter == 0) {
+				state.sendFilter = EXTEfx.alGenFilters();
+				EXTEfx.alFilteri(state.sendFilter, EXTEfx.AL_FILTER_TYPE, EXTEfx.AL_FILTER_LOWPASS);
+			}
 			EXTEfx.alFilterf(state.sendFilter, EXTEfx.AL_LOWPASS_GAIN, OWN_VOICE_SEND);
+			EXTEfx.alFilterf(state.sendFilter, EXTEfx.AL_LOWPASS_GAINHF, 1f);
 		}
 		AL10.alSourcei(voice.source, EXTEfx.AL_DIRECT_FILTER, state.filter);
 		for (int send = 0; send < sends.length; send++) {

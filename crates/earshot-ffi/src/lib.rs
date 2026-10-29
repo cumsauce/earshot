@@ -190,7 +190,8 @@ pub unsafe extern "C" fn earshot_destroy(engine: *mut EarshotEngine) {
 /// exceeds `cap`, nothing is written and the caller retries.
 ///
 /// # Safety
-/// `buf` must be writable for `cap` bytes; `needed` must be writable.
+/// `buf` must be writable for `cap` bytes; `needed` must be writable; the
+/// `buf` and `needed` regions must not overlap.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn earshot_material_names(
     buf: *mut u8,
@@ -504,7 +505,8 @@ pub unsafe extern "C" fn earshot_room(engine: *mut EarshotEngine, out: *mut f64)
 /// # Safety
 /// `engine` must be live; `listener` must point to 3 doubles, `sources` to
 /// `3 * count` doubles, and `out` must be writable for
-/// `EARSHOT_EARLY_DOUBLES * count` doubles.
+/// `EARSHOT_EARLY_DOUBLES * count` doubles; the `sources` and `out` regions
+/// must not overlap.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn earshot_early(
     engine: *mut EarshotEngine,
@@ -615,7 +617,7 @@ fn write_room(room: &Room, out: &mut [f64], speed: f64) {
 ///
 /// # Safety
 /// `engine` must be live; `out` must be writable for `cap` floats; `needed`
-/// must be writable.
+/// must be writable; the `out` and `needed` regions must not overlap.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn earshot_impulse_response(
     engine: *mut EarshotEngine,
@@ -657,7 +659,8 @@ pub unsafe extern "C" fn earshot_impulse_response(
 ///
 /// # Safety
 /// `engine` must be live; `source` must point to 3 doubles; `out` must be
-/// writable for `cap` floats; `needed` must be writable.
+/// writable for `cap` floats; `needed` must be writable; the `out` and
+/// `needed` regions must not overlap.
 #[allow(clippy::too_many_arguments)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn earshot_impulse_response_for(
@@ -713,7 +716,8 @@ pub unsafe extern "C" fn earshot_impulse_response_for(
 /// # Safety
 /// `engine` must be live; `origin` must point to 3 doubles; `out` must be
 /// writable for `cap * EARSHOT_SEGMENT_DOUBLES` doubles; `written` must be
-/// writable; `stats` must be writable for 4 doubles.
+/// writable; `stats` must be writable for 4 doubles; the `out`, `written`
+/// and `stats` regions must not overlap.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn earshot_trace_paths(
     engine: *mut EarshotEngine,
@@ -826,7 +830,9 @@ pub extern "C" fn earshot_voice_callback() -> *const c_void {
 
 /// Writes to `*out` the pointer that `earshot_voice_callback` plays the
 /// voice of speaker `uuid` (16 bytes) from. It stays valid for the rest of
-/// the process.
+/// the process. A speaker heard before keeps its stream for the rest of the
+/// process; a new one once the voice-stream cap (Java's `MAX_VOICE_STREAMS`)
+/// is reached fails with [`EARSHOT_ERR_INVALID_ARGUMENT`] and writes null.
 ///
 /// # Safety
 /// `uuid` must point to 16 bytes; `out` must be writable.
@@ -837,7 +843,9 @@ pub unsafe extern "C" fn earshot_voice_stream(uuid: *const u8, out: *mut *mut c_
         let uuid: [u8; 16] = unsafe { array_arg(uuid, "uuid") }?;
         // SAFETY: the caller guarantees `out` is writable.
         let out = unsafe { out_arg(out, "out") }?;
-        *out = voice::stream_pointer(uuid);
+        *out = std::ptr::null_mut();
+        *out = voice::stream_pointer(uuid)
+            .ok_or_else(|| FfiError::invalid("voice stream cap reached"))?;
         Ok(())
     })
 }
@@ -848,7 +856,8 @@ pub unsafe extern "C" fn earshot_voice_stream(uuid: *const u8, out: *mut *mut c_
 ///
 /// # Safety
 /// `uuids` must be writable for `16 * cap` bytes, `info` for
-/// `EARSHOT_VOICE_DOUBLES * cap` doubles; `count` must be writable.
+/// `EARSHOT_VOICE_DOUBLES * cap` doubles; `count` must be writable; the
+/// `uuids`, `info` and `count` regions must not overlap.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn earshot_voice_streams(
     uuids: *mut u8,
@@ -992,8 +1001,10 @@ pub unsafe extern "C" fn earshot_stats(engine: *mut EarshotEngine, out: *mut f64
 }
 
 /// Copies this thread's last error message into `buf` (truncated to `cap`,
-/// at a character boundary) and returns its full length, or 0 if there is
-/// none.
+/// at a character boundary) and returns how many bytes it wrote, or 0 if
+/// there is none. The return never counts bytes `buf` did not receive, so a
+/// caller decoding exactly that many finds no stray characters past the
+/// message.
 ///
 /// # Safety
 /// `buf` must be writable for `cap` bytes.
@@ -1006,11 +1017,12 @@ pub unsafe extern "C" fn earshot_last_error(buf: *mut u8, cap: usize) -> usize {
         || {
             let message = guard::last_error();
             // SAFETY: the caller guarantees `buf` is writable for `cap` bytes.
-            if let Ok(buf) = unsafe { slice_mut_arg(buf, cap, "buf") } {
-                let n = message.floor_char_boundary(buf.len());
-                buf[..n].copy_from_slice(&message.as_bytes()[..n]);
-            }
-            message.len()
+            let Ok(buf) = (unsafe { slice_mut_arg(buf, cap, "buf") }) else {
+                return 0;
+            };
+            let n = message.floor_char_boundary(buf.len());
+            buf[..n].copy_from_slice(&message.as_bytes()[..n]);
+            n
         },
         0,
     )

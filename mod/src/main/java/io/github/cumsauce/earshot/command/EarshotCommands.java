@@ -137,7 +137,11 @@ public final class EarshotCommands {
 	}
 
 	private static String db(float share) {
-		return share >= 1 ? "0 dB" : String.format(Locale.ROOT, "%.1f dB", 10 * Math.log10(Math.max(share, 1e-12)));
+		// Shares over unity are real (a lift or ground gain can exceed 1), so print the value; only the
+		// log of a near-unity share would come out as "-0.0", which the snap to 0 hides.
+		double db = 10 * Math.log10(Math.max(share, 1e-12));
+		if (Math.abs(db) < 0.05) db = 0;
+		return String.format(Locale.ROOT, "%.1f dB", db);
 	}
 
 	private static int sources(SoundShaper shaper, FabricClientCommandSource source) {

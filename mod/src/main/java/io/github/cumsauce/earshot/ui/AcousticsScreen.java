@@ -104,6 +104,11 @@ public final class AcousticsScreen extends OptionsSubScreen {
 		if (report != null) {
 			report.hrtfs().stream().filter(h -> !h.equals(ContextAttributes.BUILT_IN_HRTF)).forEach(hrtfs::add);
 		}
+		// OpenAL only lists the 256-tap SOFAs once they are on disk, so add their bare names here; picking
+		// one that is missing downloads it (onHrtfPicked). The bundled 64-tap MHRs carry the " 64-tap" suffix.
+		for (String name : HrtfFiles.NAMES) {
+			if (!hrtfs.contains(name)) hrtfs.add(name);
+		}
 		if (!hrtfs.contains(config.hrtf())) hrtfs.add(config.hrtf());
 		hrtf = new OptionInstance<>("earshot.settings.hrtf",
 				OptionInstance.cachedConstantTooltip(Component.translatable("earshot.settings.hrtf.tooltip")),
@@ -194,7 +199,7 @@ public final class AcousticsScreen extends OptionsSubScreen {
 	private void updateActive() {
 		boolean on = !preset.get().equals(Preset.OFF.key());
 		for (OptionInstance<?> effect : List.of(occlusion, airAbsorption, realisticFalloff, doppler, underwater,
-				reverb)) {
+				reverb, diffraction)) {
 			setActive(effect, on);
 		}
 		setActive(pathing, on && occlusion.get());
@@ -273,15 +278,12 @@ public final class AcousticsScreen extends OptionsSubScreen {
 		sofaDownload = newValue;
 		previousHrtf = prePick;
 		sofaCancel.set(false);
-		rebuildWidgets(); // shows the progress bar
 		String captured = newValue;
 		CompletableFuture.runAsync(() -> {
 			try {
 				HrtfFiles.ensure(target, captured, (read, total) -> {
-					// Progress callback. The UI re-reads the file size on tick(); we just
-					// flag that bytes have arrived by storing the read count via a
-					// re-render. A simpler approach: do nothing here, since the file
-					// grows on disk and the byte count is informational.
+					// No progress UI: the file grows on disk meanwhile, and the dropdown keeps
+					// showing the pick; ensure() verifies the SHA-256 before it is applied.
 				}, sofaCancel::get);
 				Minecraft.getInstance().execute(() -> {
 					if (sofaDownload == null) return; // the screen closed and cancelled it
@@ -296,8 +298,10 @@ public final class AcousticsScreen extends OptionsSubScreen {
 				Minecraft.getInstance().execute(() -> {
 					if (sofaDownload == null) return; // the screen closed; nothing to roll back
 					sofaDownload = null;
+					// No rebuild needed: the dropdown reads the OptionInstance's value itself.
+					// The value does change here, so set() re-fires onHrtfPicked (its
+					// ValueUpdateListener), which applies the old value back to the engine.
 					hrtf.set(previousHrtf);
-					rebuildWidgets();
 				});
 			}
 		});
@@ -307,14 +311,19 @@ public final class AcousticsScreen extends OptionsSubScreen {
 	public void removed() {
 		// A download outliving the screen must not apply a setting afterwards: the
 		// user is no longer looking at the dropdown that started it. Ask the read
-		// loop to stop (it deletes the partial file), and save the HRTF from before the pick, not the one that never
-		// arrived.
+		// loop to stop; ensure() deletes the partial file, so the next pick retries.
+		boolean wasDownloading = sofaDownload != null;
 		sofaCancel.set(true);
-		String hrtfChosen = sofaDownload != null ? previousHrtf : hrtf.get();
 		sofaDownload = null;
+		// A cancelled pick was never applied and its SOFA never landed on disk (ensure() deletes the
+		// partial file), so saving it would stick: coming back to the screen, init() only does
+		// hrtf.set on a dropdown already holding that same value, and OptionInstance.set calls its
+		// listener (onHrtfPicked) only when the value changes, so the download never restarts.
+		// Save what the engine is still on instead, so re-picking the SOFA retries the download.
+		String chosenHrtf = wasDownloading ? previousHrtf : hrtf.get();
 		EarshotConfig next = new EarshotConfig(Preset.valueOf(preset.get().toUpperCase(Locale.ROOT)), occlusion.get(),
 				pathing.get(), Reverb.valueOf(reverb.get().toUpperCase(Locale.ROOT)), airAbsorption.get(),
-				underwater.get(), doppler.get(), voice.get(), hrtfChosen, ownVoice.get(), realisticFalloff.get(),
+				underwater.get(), doppler.get(), voice.get(), chosenHrtf, ownVoice.get(), realisticFalloff.get(),
 				Diffraction.valueOf(diffraction.get().toUpperCase(Locale.ROOT)));
 		if (!next.equals(initial)) EarshotClient.apply(next);
 		super.removed();

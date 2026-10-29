@@ -312,12 +312,18 @@ public final class ConvolutionReverb {
 				// Re-checked as soon as the lock is held, before any AL call: release() or contextClosing() may have
 				// run while the response was being made. There is no separate "context closed" flag — both of them
 				// bump the generation, so this covers a context dying mid-load.
-				if (forGeneration != generation || ir.length == 0) {
-					// Only the current generation's load may clear the flag: a stale one would unlatch a load
-					// the next context has in flight.
-					if (forGeneration == generation) loading = false;
+				if (forGeneration != generation) {
+					// A stale load (its context closed while it ran) clears nothing the generation now holds: not
+					// the flag (that would unlatch a load the next context has in flight), and not madeFrom (the
+					// new generation's tick() records its room as soon as it starts a load, and this empty result
+					// belongs to the room the dead context asked about).
+					return;
+				}
+				if (ir.length == 0) {
+					// Only the current generation's load clears the flag.
+					loading = false;
 					// Nothing to make it from yet: try again next time.
-					if (ir.length == 0) madeFrom = new double[0];
+					madeFrom = new double[0];
 					return;
 				}
 				int slot = slots[into];

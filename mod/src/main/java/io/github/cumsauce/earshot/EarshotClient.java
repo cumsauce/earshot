@@ -82,7 +82,10 @@ public final class EarshotClient implements ClientModInitializer {
 	 * again on Ultra, whose budget absorbs the cost and whose players build halls over a hundred blocks across.
 	 */
 	private static double roomReach() {
-		var level = net.minecraft.client.Minecraft.getInstance().level;
+		// Guarded because onInitializeClient calls this before a world (and, depending on loader timing,
+		// possibly before the game instance) exists; with no level it is the ceiling-less reach.
+		var minecraft = net.minecraft.client.Minecraft.getInstance();
+		var level = minecraft == null ? null : minecraft.level;
 		boolean ceiling = level != null && level.dimensionType().hasCeiling();
 		double base = config.preset().resolve() == EarshotConfig.Preset.ULTRA ? 96 : 64;
 		return ceiling ? base * 2 : base;
@@ -161,7 +164,10 @@ public final class EarshotClient implements ClientModInitializer {
 			WorldMirror mirror = new WorldMirror(bridge, engine);
 			mirror.materials().setOverrides(MaterialOverrides.load(materialsFile()));
 			shaper = new SoundShaper(bridge, engine);
-			bridge.setQuality(engine, config.quality(64));
+			// The real reach, not a bare 64: followDimension() early-returns while the level matches the
+			// ceiling sentinel (false on the title screen), so an Ultra preset would otherwise keep 64
+			// until the first ceiling dimension. level is null here, so this is the ceiling-less reach.
+			bridge.setQuality(engine, config.quality(roomReach()));
 			shaper.configure(config);
 			shaper.voice().configure(config.voice(), config.ownVoice());
 			// Registered only once everything fallible is behind us: their handlers

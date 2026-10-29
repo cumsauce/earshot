@@ -258,7 +258,7 @@ mod tests {
             let [low, mid, high] = material.acoustics().transmission;
             assert!(low >= mid && mid >= high && high > 0.0, "{material:?}");
         }
-        // 18 dB through a block of rock at low frequencies.
+        // 35 dB through a block of rock at low frequencies.
         let rock = Material::Rock.acoustics().transmission[0];
         assert!((rock - 0.000_316).abs() < 1e-5, "{rock}");
     }

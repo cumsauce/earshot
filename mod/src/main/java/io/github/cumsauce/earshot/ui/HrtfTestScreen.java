@@ -48,6 +48,11 @@ public final class HrtfTestScreen extends OptionsSubScreen {
 		if (report != null) {
 			report.hrtfs().stream().filter(h -> !h.equals(ContextAttributes.BUILT_IN_HRTF)).forEach(hrtfs::add);
 		}
+		// The 256-tap SOFAs, which OpenAL only lists once on disk; playing one before that falls back to its
+		// bundled 64-tap MHR (tick() counts that as the set wanted), so the test needs their bare names too.
+		for (String name : HrtfFiles.NAMES) {
+			if (!hrtfs.contains(name)) hrtfs.add(name);
+		}
 	}
 
 	@Override

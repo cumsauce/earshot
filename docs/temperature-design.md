@@ -24,6 +24,12 @@ exactly as they are, confines the change to what is heard rather than measured, 
 defensible line: the decay of a room is a measured property, the timing of its echoes is
 the air's.
 
+Two more paths stay on the fixed constant on purpose, outside the sim: thunder's
+propagation delay in Java, which uses its own `SPEED_OF_SOUND` of 343 m/s
+(`Thunder.java`), and the pitch OpenAL's Doppler gives, which keeps OpenAL Soft's own
+fixed speed of sound — the mod never calls `AL_SPEED_OF_SOUND`. The climate moves
+neither.
+
 ## The ABI (v15 → v16)
 
 The sim cannot know the temperature without Java telling it. Cleanest fit with the
@@ -62,8 +68,8 @@ than reaching for the constant:
 - `ir.rs`: `impulse_response[_for]` takes `c` for its length/onset and the early taps'
   travel-time maths.
 - `eax.rs`: `eax_reverb(room, c)` for the three delay figures.
-- `ground.rs`: `excess_attenuation_db` takes `c` (it already builds `k0 = 2π f / c` from a
-  constant `C0`; that becomes the parameter), and `hear` passes it down.
+- `ground.rs`: `excess_attenuation_db` takes `c` (it built `k0 = 2π f / c` from a
+  constant `C0`; that is the parameter now), and `hear` passes it down.
 - `reverb.rs`: unchanged — `SPEED_OF_SOUND` stays the constant its decay maths uses.
 
 `Engine` reads `temperature` where it assembles a `Room` or an IR and passes
@@ -79,6 +85,7 @@ than reaching for the constant:
    temperature differ in the expected direction.
 4. A scene or `hear` test: the ground reflection's null at a band shifts direction with the
    temperature (the wavelength changes), asserted as a monotonic move, not a pinned value.
+   It landed as a `ground.rs` unit test, walking the temperatures weather produces.
 5. The golden scenes and BRAS **do not move** (the measurement is untouched) — the existing
    tests are the regression proof, run unchanged.
 6. `Engine::set_air` clamps and is readable; the FFI extern rejects a non-finite or

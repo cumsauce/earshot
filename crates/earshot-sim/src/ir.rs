@@ -232,19 +232,24 @@ pub fn impulse_response(
 /// ISO 9613-1 atmospheric absorption of air at 20 °C and 50 % relative
 /// humidity, in dB per metre, at each band's representative frequency (the
 /// low at 250 Hz, the mid at 1 kHz, the high at 4 kHz: the standard's
-/// coefficient table reads 0.0002, 0.0013 and 0.0124 dB/m there — the same
-/// ISO 9613-1 model the Java side's `Air` applies to sounds travelling to
-/// the listener, where OpenAL's air absorption factor 1 is about 0.05 dB/m
-/// at its 5 kHz reference). Taps carry it over their whole path, so a far
-/// echo arrives darker than a near one instead of ringing as bright.
-const AIR_DB_PER_METRE: [f32; BANDS] = [0.0002, 0.0013, 0.0124];
+/// model reads 0.0013, 0.0047 and 0.0297 dB/m there — the same ISO 9613-1
+/// model the Java side's `Air` applies to sounds travelling to the
+/// listener, which its `AirTest` pins at about 4.7 dB/km at 1 kHz and
+/// 28 dB/km at 4 kHz, where OpenAL's air absorption factor 1 is about
+/// 0.05 dB/m at its 5 kHz reference). Taps carry it over their whole
+/// path, so a far echo arrives darker than a near one instead of ringing
+/// as bright.
+const AIR_DB_PER_METRE: [f32; BANDS] = [0.0013, 0.0047, 0.0297];
 
-/// Each band's energy kept over `path` metres of air: those dB figures are
-/// power levels by tens, so the energy gain is 10^(−dB/10). Modest at
-/// block scale — a near tap loses nothing — and cumulative out to the
-/// hundreds of metres a tap over open water can travel.
+/// Each band's amplitude kept over `path` metres of air: those dB figures
+/// are power levels by tens, so the factor on a tap's samples —
+/// amplitudes — is 10^(−dB/20): squared back to power that is exactly the
+/// stated `dB`, where a 10^(−dB/10) power gain on an amplitude would take
+/// twice it. Modest at block scale — a near tap loses nothing — and
+/// cumulative out to the hundreds of metres a tap over open water can
+/// travel.
 fn air_absorption(path: f32) -> [f32; BANDS] {
-    std::array::from_fn(|band| 10.0f32.powf(-AIR_DB_PER_METRE[band] * path / 10.0))
+    std::array::from_fn(|band| 10.0f32.powf(-AIR_DB_PER_METRE[band] * path / 20.0))
 }
 
 /// Within this long, reflections from about the same direction are one.

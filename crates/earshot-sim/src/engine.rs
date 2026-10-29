@@ -6,8 +6,9 @@ use std::time::{Duration, Instant};
 use earshot_world::{Vec3, World};
 
 use crate::{
-    Field, Heard, Quality, Reflection, Room, Stats, early_taps, echoes, edge_sources, hear,
-    impulse_response, measure, measure_threads, measure_with_early, speed_of_sound,
+    Field, Heard, Quality, Reflection, Room, Stats, early_taps, echoes, edge_sources,
+    hear_with_speed, impulse_response, measure, measure_threads, measure_with_early,
+    speed_of_sound,
 };
 
 /// The field is rebuilt once the listener moves this far from where it was
@@ -31,8 +32,9 @@ const ROOM_TIME_CONSTANT: f32 = 0.46;
 const MIN_RAY_SCALE: f32 = 1.0 / 16.0;
 const MIN_ROOM_RAYS: u32 = 64;
 /// Once the listener has stayed within this many blocks, with the world
-/// unchanged, for [`SETTLED`] measurements in a row, the room has converged
-/// on what's there: it isn't traced again until something moves or changes.
+/// unchanged and the quality the same, for [`SETTLED`] measurements in a
+/// row, the room has converged on what's there: it isn't traced again until
+/// something moves or changes.
 const STILL: f64 = 0.1;
 const SETTLED: u32 = 16;
 
@@ -281,14 +283,17 @@ impl Engine {
     /// Where the listener is now; the pathing field follows. A listener the
     /// sim can't carry (not finite, or out of [`Vec3::is_usable`] range) is
     /// refused rather than overflowing the field's block arithmetic on the
-    /// worker.
+    /// worker, and the last good one stands: the worker's maintenance of the
+    /// field and room would otherwise stop dead for as long as the bad
+    /// reading is set.
     pub fn set_listener(&self, listener: Vec3) {
-        let listener = listener.is_usable().then_some(listener);
-        *self
-            .shared
-            .listener
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = listener;
+        if listener.is_usable() {
+            *self
+                .shared
+                .listener
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(listener);
+        }
     }
 
     /// The room around the listener, smoothed, once it has been measured.
@@ -389,7 +394,7 @@ impl Engine {
         let diffraction = quality.diffraction;
         self.world_now(|world| {
             for (source, heard) in sources.iter().zip(out) {
-                *heard = hear(
+                *heard = hear_with_speed(
                     world,
                     field,
                     listener,
@@ -397,6 +402,7 @@ impl Engine {
                     rays,
                     enclosure,
                     diffraction,
+                    speed_of_sound(self.air_celsius()),
                 );
             }
         });
@@ -541,8 +547,9 @@ struct RoomTrace {
     scale: f32,
     /// The measurement's share of one core, smoothed.
     cost: Option<f32>,
-    /// Where the last measurement was made, and of which world.
-    last: Option<(Vec3, u64)>,
+    /// Where the last measurement was made, of which world, and at which
+    /// quality.
+    last: Option<(Vec3, u64, Quality)>,
     /// Measurements in a row made there, of that world.
     still: u32,
 }
@@ -570,12 +577,15 @@ impl RoomTrace {
     fn measure(&mut self, shared: &Shared, listener: Vec3, quality: Quality) {
         let start = Instant::now();
         let version = shared.world_version.load(Ordering::Acquire);
-        let same = self
-            .last
-            .is_some_and(|(at, world)| world == version && (at - listener).length() < STILL);
+        // A new quality is a change to what would be measured — a preset
+        // switched while the listener stands still settles the room again,
+        // and one set to the same figures does not.
+        let same = self.last.is_some_and(|(at, world, measured_at)| {
+            world == version && measured_at == quality && (at - listener).length() < STILL
+        });
         self.still = if same { self.still + 1 } else { 0 };
         if !same {
-            self.last = Some((listener, version));
+            self.last = Some((listener, version, quality));
         }
         if self.still >= SETTLED {
             // Settled: nothing new to hear, and nothing spent.
@@ -775,6 +785,40 @@ mod tests {
         }
         let stats = engine.stats();
         assert!(stats.room_rays > 0 && stats.room_cost > 0.0, "{stats:?}");
+    }
+
+    #[test]
+    fn a_quality_change_unsettles_a_settled_room() {
+        let engine = Engine::start();
+        engine.set_listener(Vec3::new(0.5, 0.5, 0.5));
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while engine.stats().room_rays == 0 {
+            assert!(Instant::now() < deadline, "no measurement");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // Until the room has settled there: it stops spending anything (see
+        // [`SETTLED`]).
+        while engine.stats().room_cost != 0.0 {
+            assert!(Instant::now() < deadline, "never settled");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // A new quality is a change to what would be measured: the room
+        // settles again and the new ray count lands, though the listener has
+        // not moved and the world is unchanged. At 64 rays the budget's
+        // scale can't move the count, so it either becomes exactly this or
+        // the settled room ignored the preset.
+        engine.set_quality(Quality {
+            room_rays: 64,
+            ..Quality::DEFAULT
+        });
+        while engine.stats().room_rays != 64 {
+            assert!(
+                Instant::now() < deadline,
+                "the settled room ignored the preset: {:?}",
+                engine.stats()
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]
@@ -979,6 +1023,37 @@ mod tests {
                 Instant::now() < deadline,
                 "no field: the worker never recovered"
             );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn the_worker_keeps_the_last_good_listener() {
+        let engine = Engine::start();
+        engine.set_listener(Vec3::new(0.5, 0.5, 0.5));
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while engine.field().is_none() {
+            assert!(Instant::now() < deadline, "no field");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // A listener the sim can't carry is refused, and the last good one
+        // stands: the worker keeps maintaining round it, so a change to the
+        // world still reaches the field with no good reading in between.
+        engine.set_listener(Vec3::new(f64::NAN, 0.0, 0.0));
+        engine.world_mut(|world| {
+            for (x, y, z) in [
+                (1, 0, 0),
+                (-1, 0, 0),
+                (0, 1, 0),
+                (0, -1, 0),
+                (0, 0, 1),
+                (0, 0, -1),
+            ] {
+                world.set_block(x, y, z, Material::Rock);
+            }
+        });
+        while engine.field().unwrap().distance([3, 0, 0]).is_some() {
+            assert!(Instant::now() < deadline, "the field never saw the walls");
             std::thread::sleep(Duration::from_millis(5));
         }
     }

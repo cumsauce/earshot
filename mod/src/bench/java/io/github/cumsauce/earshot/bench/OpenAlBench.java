@@ -31,7 +31,8 @@ import org.lwjgl.openal.SOFTLoopback;
  *
  * <p>Each configuration plays looping noise from moving sources around the listener and renders {@value #SECONDS} s
  * of 48 kHz stereo. The share of one core it took is the cost of that mix in the game. It also times swapping a
- * convolution slot's impulse response, which Earshot does whenever the room changes.
+ * convolution slot's impulse response, which Earshot does whenever the room changes, less the run's per-block render
+ * cost (applying the swap takes one block's render, which the share already paid for).
  */
 public final class OpenAlBench {
 	private static final int RATE = 48_000;
@@ -181,11 +182,15 @@ public final class OpenAlBench {
 		double swapMillis = Double.NaN;
 		if (!irs.isEmpty()) {
 			int fresh = impulseResponse(config.irSeconds, random);
+			// The error window covers the swap alone, so a render error below can't be blamed on it.
+			AL10.alGetError();
 			long swapStart = System.nanoTime();
 			EXTEfx.alAuxiliaryEffectSloti(slots.get(slots.size() - 1), AL10.AL_BUFFER, fresh);
-			render(device, out, sources, angles, radii, 1);
-			swapMillis = (System.nanoTime() - swapStart) / 1e6;
 			if (AL10.alGetError() != AL10.AL_NO_ERROR) note = "swapping an IR on a live slot failed";
+			// The render is what applies the swap to the live mix; the run's per-block cost comes
+			// back off, so the column reads as the swap and not the block around it.
+			render(device, out, sources, angles, radii, 1);
+			swapMillis = Math.max(0, (System.nanoTime() - swapStart) / 1e6 - elapsed / blocks * 1e3);
 			irs.add(fresh);
 		}
 

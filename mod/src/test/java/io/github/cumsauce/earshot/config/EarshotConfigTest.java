@@ -49,6 +49,16 @@ class EarshotConfigTest {
 		EarshotConfig maekawa = new EarshotConfig(EarshotConfig.Preset.HIGH, true, true, EarshotConfig.Reverb.AUTO, true,
 				true, true, true, "", false, false, EarshotConfig.Diffraction.HJ_2_4);
 		assertEquals(1.0, maekawa.quality(64)[7]);
+		// Occlusion off zeroes its rays and their reach; the same config with occlusion on keeps
+		// both (High: 9 rays, 32 blocks).
+		EarshotConfig occluded = new EarshotConfig(EarshotConfig.Preset.HIGH, true, true, EarshotConfig.Reverb.AUTO,
+				true, true, true, true, "", false, false, EarshotConfig.Diffraction.ISO_9613_2);
+		EarshotConfig noOcclusion = new EarshotConfig(EarshotConfig.Preset.HIGH, false, true,
+				EarshotConfig.Reverb.AUTO, true, true, true, true, "", false, false, EarshotConfig.Diffraction.ISO_9613_2);
+		assertEquals(9, occluded.quality(64)[3]);
+		assertEquals(32, occluded.quality(64)[4]);
+		assertEquals(0, noOcclusion.quality(64)[3]);
+		assertEquals(0, noOcclusion.quality(64)[4]);
 		EarshotConfig off = new EarshotConfig(EarshotConfig.Preset.OFF, true, true, EarshotConfig.Reverb.AUTO, true,
 				true, true, true, "", false, false, EarshotConfig.Diffraction.ISO_9613_2);
 		assertFalse(off.active());

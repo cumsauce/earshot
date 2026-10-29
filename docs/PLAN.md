@@ -6,7 +6,7 @@ Draft, 2026-10-11. "Earshot" (mod id `earshot`) is a working name; renaming befo
 
 A client-only Fabric mod for Minecraft 26.3 that makes the game's own sounds behave like sound in a real space. Sounds are muffled through walls and bend around corners and through doorways. A cave, a wooden house and a stone hall each sound different, cliffs echo, and everything is binaural on headphones. Yak VC voice goes through the same processing, so a player talking behind a wall sounds like their footsteps do. It ships as one jar for macOS, Linux and Windows. It runs comfortably on an M-series MacBook, and raytracing is at its core.
 
-Non-goals: replacing vanilla's sound assets, server-side anything, changing gameplay-relevant loudness by default (vanilla distance falloff stays unless the player opts in).
+Non-goals: replacing vanilla's sound assets, server-side anything, changing gameplay-relevant loudness by default (vanilla distance falloff stays unless the player opts in). The last of these was superseded on 2026-10-12 (alpha.19): realistic distance falloff became the default and vanilla's linear one the opt-out, settled under Resolved questions 5 below.
 
 ## What I checked (2026-10-11)
 
@@ -110,7 +110,7 @@ What every positional game sound now gets:
 - **Direct path:** the mean of five rays to points 0.35 blocks around the source, so edges muffle gradually. The blocks at either end don't count.
 - **Pathing:** a 49³ shortest-air-path field around the listener (Dial's algorithm, 26 neighbours, no corner cutting), rebuilt on the engine's own thread when the listener moves half a block, or 200 ms after blocks change.
 - **Round the corner:** a blocked sound is heard round the corner when that loses less in the mid band. It is then heard from the last opening the listener can see, at the path's length, and bending costs 3 / 6 / 12 dB per right angle in the low / mid / high bands.
-- **OpenAL:** each source gets a low-pass direct filter (gain = low band, HF gain = high / low) and OpenAL's air absorption. Underwater, everything is multiplied by 0.7 / 0.2 / 0.05.
+- **OpenAL:** each source gets a low-pass direct filter (amplitude gain = √ of the low band's share, HF gain = the √ high over the √ low ratio — the bands' gains are energy shares and OpenAL's filter gains are amplitude) and OpenAL's air absorption. Underwater, everything is multiplied by 0.7 / 0.2 / 0.05.
 - **Smoothing:** about 100 ms on gains and on the heard-from offset, so moving sources aren't dragged behind.
 - **The context** now asks for 4 auxiliary sends (`Library.createAttributes`), and the probe confirms it gets 4.
 
@@ -148,7 +148,8 @@ The gametest checks a looping beacon hum in three states:
 
 ## M3 results so far (2026-10-11): convolution reverb
 
-**Impulse responses** (`earshot-sim/src/ir.rs`) are first-order ambisonics (FuMa W, X, Y, Z) in world axes, up to 1.5 s.
+**Impulse responses** (`earshot-sim/src/ir.rs`) are first-order ambisonics (FuMa W, X, Y, Z) in world axes, up to 1.5 s
+(3.0 s since the 2026-10-18 reverb-levels retune; the cap is Java's `ConvolutionReverb.MAX_SECONDS`).
 - **Early reflections:** each ray's first bounce becomes a tap from its direction, after the trip there and back. Its energy is its share of the wall's image source, `(1 − a) · cos² θ / (2r)² · 12 / rays`; a test checks that one big wall's taps add up to its image source within 35 %.
 - **Diffuse tail:** decorrelated noise per channel, split into three bands (two-pole crossovers at 500 Hz and 2 kHz), each band decaying at the room's measured rate. It starts after one mean free path, and its level follows the diffuse field, `16π / R`, with the room constant `R = S·a / (1 − a)` from a roughly cubic space of side 1.5 × the mean free path, times enclosure².
 
@@ -191,7 +192,7 @@ The gametest checks a looping beacon hum in three states:
 ## After M6 (2026-10-12)
 
 - **Threaded room trace:** split over up to 4 threads (`trace_directions` per chunk of the sphere, sums merged), only from 2048 rays. In a stone hall on the M3 VM, High's measurement went from 26 ms to 6.9 ms of wall time. The budget counts every thread's time, so it still means a share of one core; Ultra's budget is 1.2 cores. trace_bench now times High and Ultra room measurements on CI's runners: Ultra's full trace costs 1–2 cores in enclosed spaces there, which the budget scales down.
-- **Realistic Falloff** (off by default): the game's sounds go on `AL_INVERSE_DISTANCE_CLAMPED` from 2 blocks, with a fade over the last quarter of their range through the direct filter, so they don't stop dead where the game stops them.
+- **Realistic Falloff** (off by default as written here; on by default since alpha.19, `0b3597d`, the same evening, and from 3 blocks rather than 2): the game's sounds go on `AL_INVERSE_DISTANCE_CLAMPED`, with a fade over the last 15 % of their range through the direct filter, so they don't stop dead where the game stops them.
 - **Thunder** is held back by distance over the speed of sound (`SoundEngine.play` → `playDelayed`).
 - **Ceilinged dimensions** (the Nether, modded ones with `hasCeiling`): room rays reach 128 blocks instead of 64 (FFI ABI 11 adds the reach to the quality).
 - **Settings screen** in sections, with greyed-out settings that can't take effect, a live cost line, which reverb plays, the game's Directional Audio beside HRTF, Yak VC's options only with Yak VC, and a hint for the bypass key. The gametest screenshots both ends of it.
@@ -211,7 +212,7 @@ The gametest checks a looping beacon hum in three states:
 
 - **HRTF listening test** (alpha.11), from the Acoustics screen. For each HRTF: switch to it, restarting the sound engine, then once the probe reports it in use, play a snare relative to the head (ahead, right, behind, left, above, below, 0.6 s apart) and let the player keep the one that places it best. Directional Audio is on for the test, and Directional Audio and the HRTF go back as they were if none is kept. The gametest plays the KEMAR through it and checks leaving puts things back.
 
-- **Edge diffraction** (alpha.12): the way round loses ISO 9613-2's barrier attenuation (after Maekawa), `10 log10(3 + 20 δ/λ)` dB per band at 250 Hz, 1 kHz and 4 kHz, capped at 25 dB. Here δ is the detour: the field's way, scaled by how much longer its grid steps run than a straight line with nothing in the way, minus the straight line. That model is for the open. Shut in, sound gets round corners mostly by reflecting off the walls, so the loss is the earlier 3/6/12 dB per right angle; in between, the two are blended in dB by the room's enclosure. On open ground, a sound in a stone hut heard round to its far doorway comes through at about -9/-12/-14 dB, where the stone passes under -23 dB.
+- **Edge diffraction** (alpha.12): the way round loses ISO 9613-2's barrier attenuation (after Maekawa), `10 log10(3 + 20 δ/λ)` dB per band at 250 Hz, 1 kHz and 4 kHz, capped at 25 dB. Here δ is the detour: the field's way, scaled by how much longer its grid steps run than a straight line with nothing in the way, minus the straight line. That model is for the open. Shut in, sound gets round corners mostly by reflecting off the walls, so the loss is the earlier 3/6/12 dB per right angle; in between, the two are blended in dB by the room's enclosure. On open ground, a sound in a stone hut heard round to its far doorway comes through at about -9/-12/-14 dB, where the stone wall itself passes -35/-45/-55 dB a block — the mass-law table's own per-band figure for rock.
 
 - **Climate air absorption** (alpha.13): OpenAL's air absorption factor follows ISO 9613-1's absorption at its 5 kHz reference (0.05 dB/m per unit), from the air where the listener is, smoothed over about a second. The temperature is about 20 °C per unit of the biome's. The humidity is 95 % in rain, 15 % where it never rains (desert, savanna, badlands, the Nether), 80 % where it's hot and rains (jungle), and 55 % elsewhere. Humidity uses public biome data; the game keeps its downfall private. Unit tests check the formula against ISO's tables at 20 °C and 50 % (about 4.7 dB/km at 1 kHz and 28 dB/km at 4 kHz). The debug overlay shows the factor.
 
@@ -295,9 +296,9 @@ would be (it jumps −1.15 → −2.08 a second on the old code, near a doubling
 BRAS seminar room reproduce exactly: the change is confined to the IR's mid-tail shape, not the measured
 room.
 
-Still worth a glance: the intended 5-tick crossfade during a room change (`ConvolutionReverb.java:258`)
-feeds one source two convolvers for ~250 ms; the tint was steady so this is not it, but it may be audible
-on room changes.
+Still worth a glance: the intended 5-tick crossfade during a room change (`ConvolutionReverb.java:380`,
+`crossfade()`) feeds one source two convolvers for ~250 ms; the tint was steady so this is not it, but it may be
+audible on room changes.
 
 ### R1. Outdoor ground reflection (done)
 
@@ -481,7 +482,7 @@ Java owns everything that touches game state and makes the OpenAL calls on the s
   - Sources behind walls send through the same transmission filter. A cave behind a wall still rumbles, just muffled.
   - Send level follows distance more slowly than the direct path, so far sources sound more reverberant than near ones. That direct-to-reverberant ratio is the main cue the ear uses for distance.
 - **Later (Ultra, M5).** Up to two source-space slots. Loud sources in a different space (a ghast in a cave you're standing outside) get the reverb of the space they are in.
-- **Requested OpenAL context attributes:** 4 auxiliary sends per source (listener slot A and B for the crossfade, plus two source-space slots).
+- **Requested OpenAL context attributes:** 4 auxiliary sends per source (listener slots A and B for the crossfade, the source-space reverb on the third, per-source early reflections on the fourth — both shared across their slots, one send index each).
 
 ### 7. Rendering through OpenAL
 
@@ -537,7 +538,7 @@ Java owns everything that touches game state and makes the OpenAL calls on the s
 | Client thread | < 0.5 ms per tick (section uploads within budget, writing source poses) |
 | Sound thread | < 0.5 ms per tick (reading the table, changed AL calls only) |
 | Simulation | about 1 core on average, spread over 2–4 utility-QoS workers |
-| OpenAL Soft (measured, M0) | HRTF + filters + EAX: about 4–5 % of a core. One convolution slot with a 1.5 s B-format IR: about 10 %, about 17 % while two run during a crossfade |
+| OpenAL Soft (measured, M0) | HRTF + filters + EAX: about 4–5 % of a core. One convolution slot with a 1.5 s B-format IR: about 10 %, about 17 % while two run during a crossfade; two slots at 3 s cost 32 % (M0's own 3 s row). IRs have run up to 3.0 s since 2026-10-18, so a long room's reverb sits nearer the 32 % figure than the 17 % |
 | Memory | world mirror ~4 KiB per non-empty section, so ~10–20 MiB at 12-chunk render distance |
 
 The simulation measures its own time and scales ray counts down to stay inside the budget, the way dynamic resolution works for graphics.
@@ -546,8 +547,12 @@ The simulation measures its own time and scales ray counts down to stay inside t
 | --- | --- | --- | --- | --- |
 | Low | 256 × 4 @ 4 Hz | 1 @ 10 Hz | 32³ @ 4 Hz | EAX |
 | Medium | 1 024 × 8 @ 8 Hz | 5 @ 20 Hz | 64³ @ 5 Hz | EAX |
-| High (Apple Silicon default) | 4 096 × 16 @ 10 Hz | 9 @ 20 Hz | 64³ @ 10 Hz | convolution, 1.5 s B-format IR (EAX fallback) |
-| Ultra | 16 384 × 32 @ 10 Hz | 9 @ 20 Hz | 96³ @ 10 Hz | convolution, 3 s IR, source-space slots |
+| High (Apple Silicon default) | 4 096 × 16 @ 10 Hz | 9 @ 20 Hz | 64³ @ 10 Hz | EAX under Auto; convolution when chosen, B-format IR up to 3.0 s |
+| Ultra | 16 384 × 32 @ 10 Hz | 9 @ 20 Hz | 96³ @ 10 Hz | EAX under Auto; source-space slots, and per-source convolution when chosen (IR up to 3.0 s) |
+
+Only the room-trace interval is implemented as a rate. Occlusion runs every client tick (20 Hz) at every preset, and
+the pathing field rebuilds when the listener moves half a block or 200 ms after blocks change — never faster than its
+last build took — so the occlusion and field rates above say what each preset *means*, not what a timer schedules.
 
 ## Repository, build and release
 
@@ -644,4 +649,4 @@ All five are settled now; each says where it was settled.
 2. **yakvc — resolved: the upstream request was accepted and merged.** The sink went in as #177 and own voice as #186 on 2026-10-12, and the maintainer's follow-up #191 (the sink pacing itself to real time, ending each stream when a sink is replaced) is what Earshot now builds against. It touches no wire protocol, so a patched client still talks to stock yakvc users, and if a future change is declined, voice keeps yakvc's own stereo panning while Earshot processes game sounds only — the fallback costs nothing to keep.
 3. **License — resolved: MIT OR Apache-2.0.** `workspace.package.license` in `Cargo.toml` says exactly that, `LICENSE-MIT` and `LICENSE-APACHE` both ship, the README offers either at your option, and Yak VC — whose build setup and native loader this adapts — carries the same two.
 4. **Distribution — resolved: both, with Modrinth optional.** A `v*` tag always publishes a GitHub prerelease with the jar (`gh release create`, `--prerelease` whenever the version carries a hyphen); the same job then POSTs that jar to Modrinth when the repository has a `MODRINTH_TOKEN` secret, against a project that already exists (`project_id: GnuooDgr`, with Fabric `P7dR8mSH` as its required dependency) and typed `alpha`/`beta`/`release` from the version string. No token, no Modrinth upload, and the release still ships.
-5. **Distance falloff — resolved: realistic falloff on by default, vanilla's linear one the opt-out.** `EarshotConfig.realisticFalloff` defaults to true — a config written before the key existed gets it on — and `EarshotConfigTest` pins "realistic falloff unless turned off". `SoundShaper.falloff` puts a source on `AL_INVERSE_DISTANCE_CLAMPED` with `REFERENCE_DISTANCE` 3 blocks and `AL_MAX_DISTANCE` at `range × REACH`, so a sound holds full volume for three blocks then loses 6 dB a doubling and fades over the last quarter of its range; turning the option off puts it back on `AL_LINEAR_DISTANCE` with the game's own range. `SoundEngineMixin` and `SoundEventMixin` widen what the server sends so the extra reach is real, and Options → Music & Sounds → Acoustics… carries the toggle beside the rest.
+5. **Distance falloff — resolved: realistic falloff on by default, vanilla's linear one the opt-out.** `EarshotConfig.realisticFalloff` defaults to true — a config written before the key existed gets it on — and `EarshotConfigTest` pins "realistic falloff unless turned off". `SoundShaper.falloff` puts a source on `AL_INVERSE_DISTANCE_CLAMPED` with `REFERENCE_DISTANCE` 3 blocks and `AL_MAX_DISTANCE` at `range × REACH`, so a sound holds full volume for three blocks then loses 6 dB a doubling and fades over the last 15 % of its range; turning the option off puts it back on `AL_LINEAR_DISTANCE` with the game's own range. `SoundEngineMixin` and `SoundEventMixin` widen what the server sends so the extra reach is real, and Options → Music & Sounds → Acoustics… carries the toggle beside the rest.

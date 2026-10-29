@@ -291,12 +291,15 @@ mod tests {
 
     use super::*;
 
-    /// A hollow rock box, inside from 0 to `size` on every axis.
+    /// A hollow rock box two blocks thick, inside from 0 to `size` on every
+    /// axis: a hit then finds rock behind it, not air, so no leg can draw a
+    /// leaky crossing out of the room — the tests on it pin energy
+    /// bookkeeping and leg budgets, never transmission.
     fn rock_box(size: i32) -> World {
         let mut world = World::new();
-        for a in -1..=size {
-            for b in -1..=size {
-                for wall in [-1, size] {
+        for a in -2..=size + 1 {
+            for b in -2..=size + 1 {
+                for wall in [-2, -1, size, size + 1] {
                     world.set_block(wall, a, b, Material::Rock);
                     world.set_block(a, wall, b, Material::Rock);
                     world.set_block(a, b, wall, Material::Rock);

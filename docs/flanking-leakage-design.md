@@ -16,7 +16,7 @@ passing *= material.transmission.powf(length * fill)
 ```
 
 with `material.transmission` the material's whole-block share
-(`crates/earshot-world/src/material.rs:54-62`, "a real wall's ... rather than a
+(`crates/earshot-world/src/material.rs:63-72`, "a real wall's ... rather than a
 solid metre's"). Head on that is right: the ray crosses the wall's thickness
 once and pays the wall's loss once.
 
@@ -41,9 +41,11 @@ search: `through = t`, `along = t·tanθ`.
 
 New material property, `Acoustics::structure: Bands`: the share of energy kept
 per metre of lateral run *inside* the material. Dense and stiff conducts well
-(metal, glass, rock), soft and porous does not (snow, cloth, leaves). It is
-never below the material's own wall crossing, so a relay never costs more than
-the crossing does.
+(metal, glass, rock), soft and porous does not (snow, cloth, leaves). The table
+holds it at or above the material's own wall crossing everywhere but water — a
+water crossing loses a thousandth of a decibel, a share just under one that no
+relay rate could sit above — so a per-block max in `flank_transmission` carries
+the rest of the guarantee: a relay never costs more than the crossing does.
 
 New function in `crates/earshot-world/src/trace.rs`:
 
@@ -59,17 +61,22 @@ normal, `n`, the face the ray entered *the run* through. Per block:
 across  = |dir . n|                    // 1 head on, 0 grazing
 through = length * across              // the thickness it pays a crossing for
 along   = length * sqrt(1 - across^2)  // the run inside the material's plane
-passing *= material.transmission.powf(through * fill)
-         * material.structure.powf(along * fill)
+cost    = material.transmission.powf(through * fill)
+        * material.structure.powf(along * fill)
+passing *= cost.max(material.transmission.powf(length * fill))  // the mass-law floor
 ```
 
 Head on, `along` is 0 and this is bit for bit `transmission`. Grazing, the
-thickness pays the wall's loss and the long way along it pays the structure's.
+thickness pays the wall's loss and the long way along it pays the structure's —
+never less than the mass law would charge for the same block, which is what the
+`.max(...)` holds: the table cannot promise that on its own, since water's relay
+rate sits under its crossing share, and a run the ray starts inside has no face
+to charge a crossing against.
 
 `transmission` itself is untouched. `hear::occlusion` switches to
 `flank_transmission`; `early.rs`'s clear-line gates and everything else keep
 calling `transmission`. That matters: cheaper grazing lines would otherwise
-flip `early.rs:112-117`'s `transmission(...)[1] < CLEAR` gate open and spawn
+flip `early.rs:119-120`'s `transmission(...)[1] < CLEAR` gate open and spawn
 early reflections *through* walls, which is a much larger behaviour change than
 a golden drifting.
 
@@ -79,14 +86,16 @@ a golden drifting.
 among the visited steps. A new run starts when a step's `enter` is not the
 previous step's `exit` (a gap: air, or a jumped section), and the first step of
 a run sets `n = step.normal`. `Step::normal` is the face the block was entered
-through (`trace.rs:110-111`), so this is the wall's normal for every block in
+through (`trace.rs:115-116`), so this is the wall's normal for every block in
 the run, which is what makes the split correct for a grazing ray.
 
 ## The values
 
 `structure` is the share kept per metre, low to high band. Ordered by how well
-the material conducts, and always `>= transmission` for the same material and
-band (a test enforces it).
+the material conducts, and `>= transmission` for the same material and band
+everywhere but water, where the crossing share is just under one (a test
+enforces it, skipping that row). Water's relay sits within a hair of its
+crossing, and the per-block max above holds the floor there.
 
 | material | structure | material | structure |
 | --- | --- | --- | --- |

@@ -29,8 +29,12 @@ import org.jspecify.annotations.Nullable;
  * block change after that is passed on as it happens. Runs on the client thread.
  */
 public final class WorldMirror {
-	/** How far from the player chunks are mirrored, in chunks: farther than any sound path. */
-	public static final int RADIUS = 8;
+	/**
+	 * How far from the player chunks are mirrored, in chunks: at least the room's farthest reach, so no room ray
+	 * runs past the mirror into absent sections (which read as air) — 192 blocks for Ultra under a ceiling, which
+	 * is 12 chunks, and 64 to 128 for every other preset.
+	 */
+	public static final int RADIUS = 12;
 	/** Mirrored chunks this much farther away are dropped again. */
 	private static final int EVICT_MARGIN = 2;
 	/** Copying time per tick, so loading a world never hitches. */
@@ -145,7 +149,14 @@ public final class WorldMirror {
 			ChunkPos pos = ChunkPos.unpack(key);
 			pending.remove(key);
 			LevelChunk chunk = level.getChunkSource().getChunk(pos.x(), pos.z(), ChunkStatus.FULL, false);
-			if (chunk == null) continue;
+			if (chunk == null) {
+				// The chunk has gone (or is not whole yet) since it was pended: keep it waiting, or it
+				// leaves both sets at once and is never copied again until the server sends it anew —
+				// blockChanged only passes changes for chunks the mirror holds. It retries next tick, the
+				// same one key, so the set does not grow; the unload event still takes it out of pending.
+				pending.add(key);
+				continue;
+			}
 			if (call(() -> copy(level, chunk))) mirrored.add(key);
 		}
 	}

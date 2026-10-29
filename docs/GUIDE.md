@@ -9,8 +9,9 @@ only how you hear it:
   direction. Out in the open it bends round edges as real sound does, low rumbles far better than highs; in caves and
   corridors, the walls carry it round each turn.
 - **Reverb and echo**, measured from the space around you by tracing rays: a stone hall rings for seconds, a small
-  wooden room barely at all, an open field not at all. Where the game's OpenAL can do it, the reverb is a convolution
-  with an impulse response made from the room, with early echoes from where the walls actually are. On High and Ultra,
+  wooden room barely at all, an open field not at all. Under Auto the game's OpenAL plays it as an EAX reverb where it
+  has one — a convolution with an impulse response made from the room only when you choose it — and early echoes come
+  from where the walls actually are. On High and Ultra,
   a sound in another space (a cave you stand outside, the next room) rings with that space's reverb, coming from its
   direction, as much of it as the opening lets through: a door lets out a little, a wide arch nearly all.
 - **Air absorption, underwater muffling and Doppler.**
@@ -56,10 +57,11 @@ picked and what tracing costs right now; under Reverb, which reverb is playing. 
 | Quality | How much Earshot traces (below). Off leaves the game's sounds as they are. |
 | Occlusion | Blocks in the way muffle sounds. |
 | Round Corners | Sounds come round through openings. |
-| Reverb | Auto (convolution where the game's OpenAL has it, else EAX), Convolution, EAX, or Off. |
+| Diffraction | Which curve bends sound round edges and over walls: ISO 9613-2 (the default), or China's HJ 2.4, a little steeper near the edge. |
+| Reverb | Auto (EAX reverb, where the game's OpenAL has it — convolution only when chosen), Convolution, EAX, or Off. |
 | Air Absorption | Far sounds lose their highs, as much as the air where you are takes: more in a dry desert, less in a jungle or in rain (ISO 9613-1, from the biome's temperature and rain). |
 | Underwater | Everything is muffled while your head is underwater. |
-| Realistic Falloff | Off by default. Sounds fade as in real air, halving with each doubling of distance past two blocks, instead of the game's straight line to silence. |
+| Realistic Falloff | On by default. Sounds fade as in real air, halving with each doubling of distance past three blocks, instead of the game's straight line to silence. |
 | Doppler | Sounds moving towards or away from you shift in pitch. |
 | Voice Chat | Plays Yak VC's voice through Earshot. Off gives it back to Yak VC's own speakers. |
 | Own Voice Echo | Off by default. Your own voice in Yak VC echoes off the room around you (only the echo, never your voice itself). For headphones, and needs a Yak VC that sends your own voice; with an older one Earshot notices and leaves it off. |
@@ -79,9 +81,9 @@ Earshot off and on again; your settings stay as they are.
 | Ultra | 16,384 × 32, 10 times a second | 9 | 48 blocks; with convolution, the two loudest sounds get reverbs of their own, from the room round them, and the next four early echoes off the walls round them |
 
 **Auto** picks High on 8 or more cores, Medium on 4 to 7, and Low below that. At any quality the room trace has a
-share of the CPU (from a tenth of a core on Low to six tenths on Ultra), and uses fewer rays when a big space would take
-more. The room trace splits over up to four threads, so on Ultra it can take over a core in all without slowing any
-one. On an M3 MacBook, High costs about a quarter of a core, plus about a tenth for the convolution reverb.
+share of the CPU (from a tenth of a core on Low to 1.2 cores on Ultra), and uses fewer rays when a big space would take
+more. The room trace splits over up to four threads, so on Ultra it can take all 1.2 cores without slowing any one
+thread. On an M3 MacBook, High costs about a quarter of a core, plus about a tenth for the convolution reverb.
 
 ## Voice chat
 
@@ -100,8 +102,8 @@ speakers, as if Earshot weren't there.
 ## Materials
 
 Earshot decides what each block is made of from its sound, its tags and its shape, so modded blocks get something
-sensible without a list. The materials are air, rock, wood, glass, cloth, leaves, soil, sand, metal, water, lava, ice
-and snow.
+sensible without a list. The materials are air, rock, wood, glass, cloth, leaves, soil, sand, metal, water, lava, ice,
+snow and rug (carpets, moss carpets and snow layers).
 
 To check a block, look at it and run `/earshot material`. To change one, write `config/earshot/materials.json`,
 mapping block ids or block tags (with `#`) to materials, then run `/earshot materials reload`:
@@ -115,8 +117,9 @@ mapping block ids or block tags (with `#`) to materials, then run `/earshot mate
 }
 ```
 
-Block ids win over tags. Blocks that let sound through (open doors, fences, carpets and other thin shapes) stay open
-unless you set them to something else.
+Block ids win over tags. Blocks that let sound through (open doors, fences and other thin shapes) stay open
+unless you set them to something else. A rug (carpet or snow layer) is not one of them: it is near-transparent to
+sound but soaks the highs out of a room's ring, which is what a real carpet does.
 
 ## Commands
 
@@ -148,6 +151,8 @@ unless you set them to something else.
 
 Earshot is an alpha.
 
-Earshot puts the two SADIE II HRTFs (`SADIE II KU100.mhr`, `SADIE II KEMAR.mhr`) in the top of your game folder at
-startup, because that is where the game's OpenAL looks for them. They're about 750 KB each. Deleting them is harmless:
-they come back next time, and the built-in HRTF is always there.
+Earshot puts the two SADIE II HRTFs (`SADIE II KU100 64-tap.mhr`, `SADIE II KEMAR 64-tap.mhr`) in the top of your game
+folder at startup, because that is where the game's OpenAL looks for them. They're about 750 KB each. The bare
+`SADIE II KU100` and `SADIE II KEMAR` entries in the HRTF list are the full 256-tap files from the same database,
+about 36 MB each, downloaded the first time you pick one. Deleting the 64-tap files is harmless: they come back next
+time, and the built-in HRTF is always there.

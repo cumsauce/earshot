@@ -52,7 +52,7 @@ public final class SoundShaper {
 	/** OpenAL's air absorption: 1 is about 0.05 dB lost per metre at 5 kHz. */
 	private static final float AIR_ABSORPTION = 1.0f;
 	private static final float[] NO_VELOCITY = {0, 0, 0};
-	/** Underwater, everything sounds like this, low to high. */
+	/** Underwater, everything sounds like this, low to high: amplitude shares, squared onto the energy gains. */
 	private static final float[] UNDERWATER = {0.7f, 0.2f, 0.05f};
 	/**
 	 * How fast the reverb send falls with distance, against the direct sound's 1: far sounds are more reverberant
@@ -77,7 +77,8 @@ public final class SoundShaper {
 	private final EarlyReflections early;
 	/**
 	 * On Ultra with convolution, the loudest sounds' own reverbs: each made from the room round the sound and its
-	 * reflections off its own walls, in place of the listener's.
+	 * reflections off its own walls, in place of the listener's, at the listener's own response length
+	 * ({@link ConvolutionReverb#MAX_SECONDS}).
 	 */
 	private final ConvolutionReverb[] ownReverbs = new ConvolutionReverb[OWN_REVERBS];
 	private static final int OWN_REVERBS = 2;
@@ -116,7 +117,7 @@ public final class SoundShaper {
 	/** How far the heard reverb moves towards the measured each tick: about a third of a second. */
 	private static final float EAX_GLIDE = 0.15f;
 	private volatile double[] lastRoom = new double[0];
-	/** The reverb asked for, or null for the best the game's OpenAL has. */
+	/** The reverb asked for, or null for auto: the EAX reverb where the game's OpenAL has it, else none. */
 	private volatile @Nullable ReverbMode wantedMode;
 	private volatile ReverbMode mode = ReverbMode.OFF;
 	private volatile boolean failed;
@@ -175,7 +176,8 @@ public final class SoundShaper {
 		this.early = new EarlyReflections(bridge, engine);
 		for (int i = 0; i < OWN_REVERBS; i++) {
 			ownReverbs[i] = new ConvolutionReverb(
-					(at, seed) -> bridge.impulseResponseFor(engine, at, 1024, 8, 48_000, 1.5f, seed),
+					(at, seed) -> bridge.impulseResponseFor(engine, at, 1024, 8, 48_000, ConvolutionReverb.MAX_SECONDS,
+							seed),
 					(madeFrom, at) -> Math.hypot(Math.hypot(at[0] - madeFrom[0], at[1] - madeFrom[1]),
 							at[2] - madeFrom[2]) > OWN_REVERB_MOVE);
 		}
@@ -211,7 +213,7 @@ public final class SoundShaper {
 		return mode;
 	}
 
-	/** Asks for a reverb; null for the best the game's OpenAL has. */
+	/** Asks for a reverb; null for auto, which takes the EAX reverb where OpenAL has it, never convolution. */
 	public void wantMode(@Nullable ReverbMode wanted) {
 		wantedMode = wanted;
 	}
@@ -447,17 +449,24 @@ public final class SoundShaper {
 					new Vec3(heard[at + 3], heard[at + 4], heard[at + 5]), position);
 			float[] gains = state.gains();
 			if (underwater) {
-				for (int band = 0; band < gains.length; band++) gains[band] *= UNDERWATER[band];
+				// The heard gains are energy shares, so the amplitude figures square onto them: what is
+				// heard is still multiplied 0.7 / 0.2 / 0.05 per band.
+				for (int band = 0; band < gains.length; band++) gains[band] *= UNDERWATER[band] * UNDERWATER[band];
 			}
 			Vec3 heardFrom = state.heardFrom(position);
 			double straight = position.distanceTo(ear);
+			// WALLED is an amplitude share of the mid band getting straight through; heard's gains are
+			// energy shares, so it squares onto them.
 			boolean elsewhere = spacesOn && straight > 3
-					&& (heard[at + 6] > straight + SpaceReverb.ROUND || heard[at + 1] < SpaceReverb.WALLED);
+					&& (heard[at + 6] > straight + SpaceReverb.ROUND
+							|| heard[at + 1] < SpaceReverb.WALLED * SpaceReverb.WALLED);
 			int spaceSlot = elsewhere ? spaces.slotFor(position, heardFrom, now) : 0;
 			// A sound that doesn't fade with distance (a placed bed) sets its own level: only walls and rooms shape it.
 			if (target.voice() == null && target.range() > 0) {
 				float fade = falloff(target.source(), state, target.range(), (float) straight);
-				for (int band = 0; band < gains.length; band++) gains[band] *= fade;
+				// The gains are energy shares; the fade is the amplitude curve it has always been, so it
+				// squares onto them, as the underwater figures do.
+				for (int band = 0; band < gains.length; band++) gains[band] *= fade * fade;
 			}
 			// The ground's reflection can bring the direct sound above free field, and the mixer's low-pass cannot
 			// pass one: the lift rides the source's own gain (times the game's volume) and the filter takes the rest.
@@ -744,17 +753,25 @@ public final class SoundShaper {
 	/**
 	 * How much of a direct gain above one must ride the source's own gain rather than the filter: an EFX low-pass
 	 * cannot pass more than one, so the ground's reflection (which can bring the direct sound above free field) has
-	 * nowhere else to go. One for an ordinary gain, so nothing indoors changes.
+	 * nowhere else to go. The gains are energy shares, so the lift is their amplitude crest, square-rooted — one
+	 * for an ordinary gain, so nothing indoors changes.
 	 */
 	static float lift(float[] gains) {
-		float most = Math.max(1f, Math.max(gains[0], Math.max(gains[1], gains[2])));
+		// Each band clamps to the contract's energy bound before the square root, so a stray negative or
+		// NaN from the native side cannot become NaN's way through Math.max into the source's gain.
+		float most = Math.max(1f,
+				Math.max((float) Math.sqrt(Math.clamp(gains[0], 0f, 4f)),
+						Math.max((float) Math.sqrt(Math.clamp(gains[1], 0f, 4f)),
+								(float) Math.sqrt(Math.clamp(gains[2], 0f, 4f)))));
 		return Math.min(most, MAX_LIFT);
 	}
 
 	/**
 	 * Sets the source's direct filter: a low-pass whose gain is the low band and whose high-frequency gain brings the
-	 * high band down to its own value, with any `lift` already taken out of the source's own gain. OpenAL copies a
-	 * filter when it is attached, so it is attached again each time.
+	 * high band down to its own value, with any `lift` already taken out of the source's own gain. The gains are
+	 * energy shares; the filter's gains are amplitude, so each band is square-rooted before it is set, and the
+	 * high-frequency gain is a ratio of amplitude gains. OpenAL copies a filter when it is attached, so it is
+	 * attached again each time.
 	 */
 	private void filter(int source, SourceState state, float[] gains, float lift) {
 		if (state.filter == 0) {
@@ -762,8 +779,17 @@ public final class SoundShaper {
 			EXTEfx.alFilteri(state.filter, EXTEfx.AL_FILTER_TYPE, EXTEfx.AL_FILTER_LOWPASS);
 		}
 		AL10.alSourcef(source, EXTEfx.AL_AIR_ABSORPTION_FACTOR, airAbsorption);
-		float low = Math.clamp(gains[0] / lift, 0f, 1f);
-		float highRatio = low > 0 ? Math.clamp(gains[2] / gains[0], 0f, 1f) : 0f;
+		// The response at every frequency is sqrt(energy) / lift: the low band's amplitude sets it, and the
+		// high-frequency gain — the high band's amplitude over the low band's — carries the top to its own.
+		// That gain cannot pass one, so a high band above the low one comes through at the low band's level,
+		// and a low band of zero silences the highs with it.
+		// The bands clamp to the contract's energy bound, not to one: the boost above free field lives in
+		// the energy past one, and lifting it onto the source's gain with the filter dividing it out would
+		// otherwise cancel back to free field.
+		float ampLow = (float) Math.sqrt(Math.clamp(gains[0], 0f, 4f));
+		float ampHigh = (float) Math.sqrt(Math.clamp(gains[2], 0f, 4f));
+		float low = Math.clamp(ampLow / lift, 0f, 1f);
+		float highRatio = low > 0 ? Math.clamp(ampHigh / ampLow, 0f, 1f) : 0f;
 		EXTEfx.alFilterf(state.filter, EXTEfx.AL_LOWPASS_GAIN, low);
 		EXTEfx.alFilterf(state.filter, EXTEfx.AL_LOWPASS_GAINHF, highRatio);
 		AL10.alSourcei(source, EXTEfx.AL_DIRECT_FILTER, state.filter);
@@ -771,7 +797,7 @@ public final class SoundShaper {
 
 	/**
 	 * Puts a game sound on realistic falloff (1/distance past {@value #REFERENCE_DISTANCE} blocks) or back on the
-	 * game's linear one, and returns the extra gain realistic falloff needs: a fade to silence over the last quarter
+	 * game's linear one, and returns the extra gain realistic falloff needs: a fade to silence over the last 15 %
 	 * of the sound's range, so it doesn't stop dead where the game stops it.
 	 */
 	private float falloff(int source, SourceState state, float range, float distance) {
@@ -820,8 +846,9 @@ public final class SoundShaper {
 	}
 
 	/**
-	 * The early-reflections slot for each target (0 for none): the {@value EarlyReflections#SOURCES} loudest, by how
-	 * much of their mid band gets through over how far they are.
+	 * The early-reflections slot for each target (0 for none): the {@value EarlyReflections#SOURCES} loudest by
+	 * mid-band energy per unit distance — how loud their mid band (an energy share) is at the listener for each
+	 * block of the way they are heard from.
 	 */
 	private int[] earlySlots(List<Target> targets, double[] heard, double[] listener, Vec3 ear, Axes axes,
 			boolean efx, boolean underwater, boolean convolution, float[] orientation, int[][] ownSends) {
@@ -903,19 +930,21 @@ public final class SoundShaper {
 	}
 
 	/**
-	 * Sends a source to the reverb slots. What reaches the listener's space excites its reverb, so the send follows
-	 * the direct gains, but softened (square root): a muffled sound behind a wall still fills the room a little.
-	 */
-	/**
-	 * How much of another space's reverb gets through an opening of {@code aperture} square blocks: in proportion to
-	 * its area, all of it from {@value #OPEN_PORTAL} up (a 4 × 4 arch), a door's 2 about -9 dB.
+	 * How much of another space's reverb gets through an opening of {@code aperture} square blocks, as an amplitude
+	 * share: sound power comes through in proportion to the opening's area, so amplitude as its square root — all
+	 * of it from {@value #OPEN_PORTAL} up (a 4 × 4 arch), a door's 2 about -9 dB.
 	 */
 	static float portalShare(float aperture) {
-		return Math.clamp(aperture / OPEN_PORTAL, 0.02f, 1f);
+		return Math.max(0.02f, (float) Math.sqrt(Math.clamp(aperture / OPEN_PORTAL, 0f, 1f)));
 	}
 
 	private static final float OPEN_PORTAL = 16;
 
+	/**
+	 * Sends a source to the reverb slots. What reaches the listener's space excites its reverb, so the send follows
+	 * the direct gains: energy shares, converted to the amplitude gains the filters take by square root — a
+	 * muffled sound behind a wall still fills the room a little.
+	 */
 	private static void send(int source, SourceState state, float[] gains, int[] slots, int spaceSlot,
 			float portalShare) {
 		if (state.sendFilter == 0) {
@@ -937,11 +966,12 @@ public final class SoundShaper {
 				state.spaceFilter = EXTEfx.alGenFilters();
 				EXTEfx.alFilteri(state.spaceFilter, EXTEfx.AL_FILTER_TYPE, EXTEfx.AL_FILTER_LOWPASS);
 			}
-			// Through the opening the sound comes by, as much of that space's reverb as the opening's size lets out.
-			float direct = Math.clamp(gains[0], 0f, 1f);
+			// Through the opening the sound comes by, as much of that space's reverb as the opening's size lets
+			// out. The gains are energy shares; the filter's gains are amplitude, so each band is square-rooted.
+			float direct = (float) Math.sqrt(Math.clamp(gains[0], 0f, 1f));
 			EXTEfx.alFilterf(state.spaceFilter, EXTEfx.AL_LOWPASS_GAIN, direct * portalShare);
 			EXTEfx.alFilterf(state.spaceFilter, EXTEfx.AL_LOWPASS_GAINHF,
-					direct > 0 ? Math.clamp(gains[2] / direct, 0f, 1f) : 0f);
+					direct > 0 ? Math.clamp((float) Math.sqrt(Math.clamp(gains[2], 0f, 1f)) / direct, 0f, 1f) : 0f);
 			AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, spaceSlot, SpaceReverb.SEND, state.spaceFilter);
 		} else if (state.spaceSent) {
 			AL11.alSource3i(source, EXTEfx.AL_AUXILIARY_SEND_FILTER, EXTEfx.AL_EFFECTSLOT_NULL, SpaceReverb.SEND,

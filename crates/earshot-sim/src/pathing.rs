@@ -32,8 +32,9 @@ pub struct Route {
     /// Where it seems to come from: in the direction of the last opening on
     /// its way that the listener can see, as far away as the way is long.
     pub heard_from: Vec3,
-    /// How far that direction turns from the straight line to the source, in
-    /// radians: 0 when the way is straight.
+    /// How far the way turns at the opening, in radians: the angle at the
+    /// opening between the leg in from the source and the leg out to the
+    /// listener, 0 when the way is straight.
     pub bend: f64,
     /// How big the narrowest opening on the way is, in square blocks, across
     /// the way the sound goes through it: a door is 2, an arch 9 or so, and
@@ -131,11 +132,17 @@ impl Field {
                 return None;
             }
         }
+        // The flood measures block centre to block centre from the
+        // listener's own block; the way starts at the listener, so their
+        // stance inside that block joins the length along the way's first
+        // step (see `listener_leg`).
         let length = f64::from(self.dist[self.index(cell)]) / PER_BLOCK
-            + (source - self.centre(cell)).length();
+            + (source - self.centre(cell)).length()
+            + self.listener_leg(source, cell);
         // Walk back towards the listener until the listener can see the way,
         // noting the narrowest opening the way squeezes through.
-        let mut opening = self.centre(cell);
+        let start = self.centre(cell);
+        let mut opening = start;
         let mut narrowest = MAX_APERTURE;
         while !self.visible(world, opening) {
             let next = NEIGHBOURS
@@ -161,12 +168,65 @@ impl Field {
                 aperture: MAX_APERTURE,
             });
         }
+        // The turn the way itself takes, at the opening: between the leg in
+        // from the source and the leg out to the listener. What a corridor
+        // reflects is charged on that — the angle at the listener would read
+        // half a right angle where the way turns a full one. The source's own
+        // block still in view means the way never left the line, so it never
+        // turned, however the source sits inside its block.
+        let bend = if opening == start {
+            0.0
+        } else {
+            let arrived = (opening - source).normalized();
+            let leaving = (self.listener - opening).normalized();
+            if arrived == Vec3::ZERO || leaving == Vec3::ZERO {
+                0.0
+            } else {
+                arrived.dot(leaving).clamp(-1.0, 1.0).acos()
+            }
+        };
         Some(Route {
             length,
             heard_from: self.listener + towards * length,
-            bend: towards.dot(straight).clamp(-1.0, 1.0).acos(),
+            bend,
             aperture: narrowest,
         })
+    }
+
+    /// How much of the way covers the listener's own stance inside their
+    /// block: the flood starts at the block's centre, so the leg from that
+    /// centre out to the listener joins `route`'s length, projected onto the
+    /// way's first step — a fraction of a block sideways is not a detour,
+    /// while a fraction stood ahead of the centre shortens the way by it.
+    /// Zero in the listener's own block, where the source's own leg already
+    /// carries the whole distance.
+    fn listener_leg(&self, source: Vec3, cell: [i32; 3]) -> f64 {
+        let home = match self.local(block_of(self.listener)) {
+            Some(home) if home != cell => home,
+            _ => return 0.0,
+        };
+        // The first step of the way: a neighbour the flood charged its
+        // direct step cost for (two steps could never come cheaper), the
+        // one passing nearest the source.
+        let first = NEIGHBOURS
+            .iter()
+            .map(|&(step, cost)| {
+                let next = [home[0] + step[0], home[1] + step[1], home[2] + step[2]];
+                (next, cost)
+            })
+            .filter(|&(next, cost)| self.contains(next) && self.dist[self.index(next)] == cost)
+            .min_by(|&(next, _), &(other, _)| {
+                (self.centre(next) - source)
+                    .length()
+                    .total_cmp(&(self.centre(other) - source).length())
+            });
+        match first {
+            Some((next, _)) => {
+                let step = (self.centre(next) - self.centre(home)).normalized();
+                (self.centre(home) - self.listener).dot(step)
+            }
+            None => 0.0,
+        }
     }
 
     /// The world block of local cell `local`.
@@ -215,15 +275,23 @@ impl Field {
 /// The size of the opening at block `at`, in square blocks: the open blocks
 /// joined to it (through faces) across the plane facing `through`, the way
 /// the sound passes, out to [`APERTURE_REACH`], at most [`MAX_APERTURE`].
+/// A diagonal step ties its components, and the plane such a tie names may
+/// lie along the wall the way pierces — the flood would run through the
+/// doorway into both rooms and read the cap — so each tied axis's plane is
+/// measured and the narrowest kept: the wall's own plane always has the hole.
 fn aperture(world: &World, at: [i32; 3], through: Vec3) -> f32 {
     let d = [through.x.abs(), through.y.abs(), through.z.abs()];
-    let axis = if d[0] >= d[1] && d[0] >= d[2] {
-        0
-    } else if d[1] >= d[2] {
-        1
-    } else {
-        2
-    };
+    let far = d[0].max(d[1]).max(d[2]);
+    (0..3)
+        .filter(|&axis| d[axis] == far)
+        .map(|axis| plane_aperture(world, at, axis))
+        .fold(f32::INFINITY, f32::min)
+}
+
+/// The size of the opening at block `at` across the plane perpendicular to
+/// `axis`, in square blocks: the open blocks joined to it (through faces)
+/// within that plane, out to [`APERTURE_REACH`], at most [`MAX_APERTURE`].
+fn plane_aperture(world: &World, at: [i32; 3], axis: usize) -> f32 {
     let (u, v) = ((axis + 1) % 3, (axis + 2) % 3);
     let open = |a: i32, b: i32| {
         let mut cell = at;
@@ -490,6 +558,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_diagonal_step_through_a_doorway_still_measures_two() {
+        // The same 1 × 2 door, but in a wall along z = 2 across x, y in
+        // -8..8: an edge or corner step through the door ties two or three
+        // components of its direction, and the plane such a tie names may
+        // run along the wall — the door column open into both rooms —
+        // rather than across it. The wall's own plane still measures the
+        // two-block hole, and the narrowest reading is the opening.
+        let mut world = World::new();
+        for x in -8..8 {
+            for y in -8..8 {
+                world.set_block(x, y, 2, Material::Rock);
+            }
+        }
+        world.set_block(0, 0, 2, Material::Air);
+        world.set_block(0, 1, 2, Material::Air);
+        // Face on, along the wall's own normal.
+        assert_eq!(aperture(&world, [0, 0, 2], Vec3::new(0.0, 0.0, 1.0)), 2.0);
+        // An edge step, tying y and z, and a corner step, tying all three.
+        assert_eq!(aperture(&world, [0, 0, 2], Vec3::new(0.0, -1.0, -1.0)), 2.0);
+        assert_eq!(
+            aperture(&world, [0, 0, 2], Vec3::new(-1.0, -1.0, -1.0)),
+            2.0
+        );
+    }
+
     /// Rock ground at y = -1, and a rock wall on it at x = 5 from z = -10
     /// to 10 and y = 0 to 9 (too high to go over), with a doorway two high at
     /// z = `door` if any.
@@ -535,6 +629,20 @@ mod tests {
         // It is heard from the doorway's side (+z), not straight ahead.
         assert!(route.heard_from.z > 3.0, "{route:?}");
         assert!(route.bend > 0.4, "{route:?}");
+    }
+
+    #[test]
+    fn the_bend_is_the_way_turn_at_the_opening() {
+        // With the door off the straight line the way comes in from the
+        // source east of the wall and leaves north-west for the listener:
+        // the turn between those legs at the doorway is the quarter-ish turn
+        // of a corridor corner, what the enclosed loss charges per right
+        // angle. Read at the listener the same way only leans about 39°,
+        // which would halve that charge down every corridor.
+        let world = wall(Some(4));
+        let field = Field::build(&world, LISTENER, 16);
+        let route = field.route(&world, SOURCE).unwrap();
+        assert!((route.bend - 1.46).abs() < 0.15, "{route:?}");
     }
 
     #[test]
@@ -721,5 +829,27 @@ mod tests {
             crate::quality::DiffractionStandard::Iso9613_2,
         );
         assert_eq!(heard.aperture, 2.0, "{heard:?}");
+    }
+
+    #[test]
+    fn a_diagonal_way_to_the_doorway_reads_two_not_open_air() {
+        // A wall along z = 2 spanning the whole field, with a 1 × 2 door at
+        // x = 0, and the source up and behind the wall: the walk back drops
+        // down its side and meets the door over a corner step, whose tied
+        // planes run along the wall from the door into both rooms. The way
+        // still squeezes through the two-block door.
+        let mut world = World::new();
+        for x in -12..=12 {
+            for y in -12..=8 {
+                world.set_block(x, y, 2, Material::Rock);
+            }
+        }
+        world.set_block(0, 0, 2, Material::Air);
+        world.set_block(0, 1, 2, Material::Air);
+        let field = Field::build(&world, LISTENER, 12);
+        let route = field.route(&world, Vec3::new(0.5, 5.5, 4.5)).unwrap();
+        // Down to the door and through it, never over the wall top.
+        assert!(route.length > 7.0 && route.length < 9.0, "{route:?}");
+        assert_eq!(route.aperture, 2.0, "{route:?}");
     }
 }

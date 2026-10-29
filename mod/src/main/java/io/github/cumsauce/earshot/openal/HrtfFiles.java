@@ -40,19 +40,25 @@ public final class HrtfFiles {
 	 */
 	public static final String MHR_SUFFIX = " 64-tap";
 
-	/** Where each SOFA comes from. The SHA-256 is the in-jar / on-disk fingerprint. */
-	public record SofaSource(String url, String sha256) {}
+	/**
+	 * Where each SOFA comes from: the zip's URL, the exact member to take from it (the zip holds one SOFA per
+	 * sample rate, named after its format, not after the set's display name), and the SHA-256 fingerprint — the
+	 * in-jar / on-disk fingerprint of that member's contents.
+	 */
+	public record SofaSource(String url, String entry, String sha256) {}
 
 	/**
-	 * The two SADIE II 48 kHz 24-bit 256-tap SOFAs Earshot can fetch on first use, with their source URLs and
-	 * SHA-256 fingerprints (Apache 2.0, from Zenodo record 12092466).
+	 * The two SADIE II 48 kHz 24-bit 256-tap SOFAs Earshot can fetch on first use, with their source URLs, the
+	 * zip member each lives in, and SHA-256 fingerprints (Apache 2.0, from Zenodo record 12092466).
 	 */
 	public static final Map<String, SofaSource> SOFAS = Map.of(
 			"SADIE II KU100", new SofaSource(
 					"https://zenodo.org/records/12092466/files/D1_HRIR_SOFA.zip",
+					"D1_HRIR_SOFA/D1_48K_24bit_256tap_FIR_SOFA.sofa",
 					"9af7cb19531e52fb7ae8ec92621e6ab62b1d5fe584b3742be36699a0ddb0ccd4"),
 			"SADIE II KEMAR", new SofaSource(
 					"https://zenodo.org/records/12092466/files/D2_HRIR_SOFA.zip",
+					"D2_HRIR_SOFA/D2_48K_24bit_256tap_FIR_SOFA.sofa",
 					"bb4f3d4126e686f438c4dcd8c11541e62393c0d90db1da6f17d1dd13d01c8ef7"));
 
 	/** Receives progress updates: {@code bytesRead} so far, {@code totalBytesOrZero} if known. */
@@ -97,8 +103,8 @@ public final class HrtfFiles {
 	/**
 	 * Ensures the SOFA for {@code name} is on disk at {@code target} with a matching SHA-256. If the file is
 	 * already on disk and verifies, returns immediately. Otherwise streams the Zenodo zip, extracts the
-	 * 48 kHz 24-bit 256-tap SOFA, verifies SHA-256, and writes to {@code target}. On any failure (network,
-	 * mismatched SHA, cancelled), the partial file is deleted and {@link IOException} is thrown.
+	 * 48 kHz 24-bit 256-tap SOFA member, verifies SHA-256, and writes to {@code target}. On any failure (network,
+	 * missing member, mismatched SHA, cancelled), the partial file is deleted and {@link IOException} is thrown.
 	 *
 	 * @param target the path to write the SOFA to (used by tests; production passes the CWD)
 	 * @param name the SOFA's display name (a key in {@link #SOFAS})
@@ -114,49 +120,46 @@ public final class HrtfFiles {
 			return; // already there and good
 		}
 		Files.deleteIfExists(target);
-		Path temp = Files.createTempFile("earshot-sofa-", ".zip");
 		try {
-			streamExtract(source.url(), target, temp, name, progress, cancelled);
+			streamExtract(source, target, progress, cancelled);
 			if (cancelled.getAsBoolean()) throw new IOException("download cancelled");
 			if (!sha256Of(target).equalsIgnoreCase(source.sha256())) {
 				Files.deleteIfExists(target);
-				progress.failed();
 				throw new IOException("SOFA SHA-256 mismatch: " + name);
 			}
 			progress.done();
 		} catch (IOException | RuntimeException e) {
 			Files.deleteIfExists(target);
-			if (!(e instanceof IOException)) progress.failed();
+			progress.failed(); // once per failed download, whichever way it failed
 			throw e;
-		} finally {
-			Files.deleteIfExists(temp);
 		}
 	}
 
-	private static void streamExtract(String url, Path target, Path tempZip, String name,
+	private static void streamExtract(SofaSource source, Path target,
 			ProgressListener progress, BooleanSupplier cancelled) throws IOException {
 		HttpClient client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).build();
-		HttpRequest request = HttpRequest.newBuilder(URI.create(url))
+		HttpRequest request = HttpRequest.newBuilder(URI.create(source.url()))
 				.header("User-Agent", "Earshot/SOFA-fetch").GET().build();
 		try {
-			streamExtractInner(client, request, target, name, progress, cancelled);
+			streamExtractInner(client, request, source, target, progress, cancelled);
 		} catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
 			throw new IOException("interrupted", e);
 		}
 	}
 
-	private static void streamExtractInner(HttpClient client, HttpRequest request, Path target, String name,
+	private static void streamExtractInner(HttpClient client, HttpRequest request, SofaSource source, Path target,
 			ProgressListener progress, BooleanSupplier cancelled) throws IOException, InterruptedException {
 		try (var in = client.send(request, BodyHandlers.ofInputStream()).body();
-				var zipIn = new ZipInputStream(in);
-				var out = Files.newOutputStream(target)) {
+				var zipIn = new ZipInputStream(in)) {
 			ZipEntry entry;
 			long read = 0;
 			byte[] buf = new byte[64 * 1024];
 			while ((entry = zipIn.getNextEntry()) != null) {
-				String entryName = entry.getName();
-				if (entryName.endsWith("/" + name + ".sofa") || entryName.equals(name + ".sofa")) {
+				// The zip holds one SOFA per sample rate; only the pinned member matches.
+				if (!entry.getName().equals(source.entry())) continue;
+				// Opened only now, so a download with no matching member leaves no empty file behind.
+				try (var out = Files.newOutputStream(target)) {
 					int n;
 					while ((n = zipIn.read(buf)) > 0) {
 						if (cancelled.getAsBoolean()) {
@@ -167,11 +170,11 @@ public final class HrtfFiles {
 						read += n;
 						progress.update(read, 0);
 					}
-					zipIn.closeEntry();
-					return;
 				}
-				// skip other entries (other sample rates etc.)
+				zipIn.closeEntry();
+				return;
 			}
+			throw new IOException("no " + source.entry() + " in " + source.url());
 		}
 	}
 

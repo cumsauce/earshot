@@ -11,7 +11,8 @@ import org.lwjgl.system.MemoryStack;
  * The game's context attributes plus what Earshot needs:
  * <ul>
  * <li>{@value #SENDS} auxiliary sends per source: the game asks for none, which leaves OpenAL Soft's default of 2, and
- * reverb needs 4 (two listener slots to crossfade, two for the spaces sources are in; docs/PLAN.md);
+ * reverb needs 4 (2 listener sends to crossfade A/B, 1 for the space a source is in — both spaces share it in
+ * different slots — and 1 for its early reflections);
  * <li>{@value #VOICE_SOURCES} sources for Yak VC's voices beyond what the game takes. The game sizes its source pools
  * from the context's mono sources and takes all of them up to {@value #GAME_SOURCES} (255 for sounds, 8 for streams),
  * so asking for that many more leaves those free;

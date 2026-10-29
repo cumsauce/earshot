@@ -10,7 +10,8 @@ const SPREAD: f64 = 0.35;
 /// The bands' wavelengths, in blocks (metres): about 250 Hz, 1 kHz and 4 kHz.
 const WAVELENGTH: Bands = [343.0 / 250.0, 343.0 / 1000.0, 343.0 / 4000.0];
 /// In an enclosed space, sound gets round a corner mostly by reflecting off
-/// the walls, as down a corridor: this much per right angle turned, per band.
+/// the walls, as down a corridor: this much per right angle the way turns
+/// at the opening (see `Route::bend`), per band.
 const ENCLOSED_TURN_DB: Bands = [3.0, 6.0, 12.0];
 /// The most diffraction round edges takes, in dB (ISO 9613-2's limit for a
 /// double edge): past it, sound that far round is reverb, not a path.
@@ -34,7 +35,8 @@ pub struct Heard {
     /// The share of the energy that arrives, per band, besides distance.
     /// Over open ground the direct share can rise above full: the
     /// ground's reflection meets the straight line and adds to it, up to
-    /// the hard ground's double (see `crate::ground`).
+    /// four times the energy — twice the pressure, the hard ground's
+    /// mirror doubling the line (see `crate::ground`).
     pub gains: Bands,
     /// Where it seems to come from: the source itself, or a point towards the
     /// opening it comes round through.
@@ -85,13 +87,11 @@ pub fn occlusion(world: &World, listener: Vec3, source: Vec3, rays: u32) -> Band
     sum.map(|s| s / offsets.len() as f32)
 }
 
-/// How a sound at `source` reaches `listener`: straight through whatever is in
-/// the way (over `rays` occlusion rays), or round it along `field`'s shortest
-/// path. Each band takes the better of the two; the mid band decides where it
-/// seems to come from, since that is where direction is judged. Round, it
-/// loses what [`round_loss`] says for how `enclosure`d the listener's space is.
-/// With no rays, nothing is in the way. The `diffraction` standard selects
-/// which curve the way round an edge follows.
+/// How a sound at `source` reaches `listener`: [`hear_with_speed`] at the
+/// room's fixed [`crate::SPEED_OF_SOUND`]. A caller whose air knows its own
+/// temperature — the engine, reading the listener's biome — passes
+/// [`crate::speed_of_sound`]'s result to `hear_with_speed` instead, since
+/// only the ground's wavenumber cares (docs/temperature-design.md).
 pub fn hear(
     world: &World,
     field: Option<&Field>,
@@ -100,6 +100,39 @@ pub fn hear(
     rays: u32,
     enclosure: f32,
     diffraction: DiffractionStandard,
+) -> Heard {
+    hear_with_speed(
+        world,
+        field,
+        listener,
+        source,
+        rays,
+        enclosure,
+        diffraction,
+        crate::SPEED_OF_SOUND,
+    )
+}
+
+/// How a sound at `source` reaches `listener`: straight through whatever is in
+/// the way (over `rays` occlusion rays), or round it along `field`'s shortest
+/// path. Each band takes the better of the two; the mid band decides where it
+/// seems to come from, since that is where direction is judged. Round, it
+/// loses what [`round_loss`] says for how `enclosure`d the listener's space is.
+/// With no rays, nothing is in the way. The `diffraction` standard selects
+/// which curve the way round an edge follows, and `speed` sets the wavelength
+/// the ground reflection interferes on.
+// The eight arguments are each set independently by the engine's quality and
+// air state; bundling the scalar four into a struct would only move the wiring.
+#[allow(clippy::too_many_arguments)]
+pub fn hear_with_speed(
+    world: &World,
+    field: Option<&Field>,
+    listener: Vec3,
+    source: Vec3,
+    rays: u32,
+    enclosure: f32,
+    diffraction: DiffractionStandard,
+    speed: f64,
 ) -> Heard {
     let path_length = (source - listener).length();
     if rays == 0 {
@@ -114,11 +147,13 @@ pub fn hear(
     // Outdoors the ground answers the sound that crosses it: its
     // reflection meets the straight line with a phase set by both
     // heights, which is exactly the excess attenuation the ground model
-    // measures, so the direct bands take the ground's factor. The way
-    // round is a different path with its own reflections, and is left
-    // alone (docs/ground-reflection-design.md, "The fold").
-    let direct = match ground_gain(world, listener, source, enclosure) {
-        Some(factor) => std::array::from_fn(|band| direct[band] * factor[band]),
+    // measures. That factor is a pressure ratio and these shares are
+    // energy, so it joins them squared — hard ground's pressure double is
+    // an energy quadruple. The way round is a different path with its own
+    // reflections, and is left alone (docs/ground-reflection-design.md,
+    // "The fold").
+    let direct = match ground_gain(world, listener, source, enclosure, speed) {
+        Some(factor) => std::array::from_fn(|band| direct[band] * factor[band] * factor[band]),
         None => direct,
     };
     let straight = Heard {
@@ -139,7 +174,7 @@ pub fn hear(
     // A route no longer than the straight run has gone round nothing, so
     // it is not a second path: its loss describes the same straight line
     // without the materials on it, and must not fill their bands back in.
-    if !round_is_better && extra <= 0.0 {
+    if extra <= 0.0 {
         return straight;
     }
     // Every band takes the better of the two paths. A curtain, cloth or
@@ -165,7 +200,9 @@ pub fn hear(
 /// How much farther than the straight line the way round goes, in blocks.
 /// The field counts its way in grid steps, which run longer than a straight
 /// line except along an axis; the way is scaled by how much longer the steps
-/// would be with nothing in the way, so only the real detour remains.
+/// would be with nothing in the way, so only the real detour remains. Both
+/// lengths start at the listener — the field's way carries the leg from
+/// their block's centre to them — so they measure from one place.
 fn detour(way: f64, listener: Vec3, source: Vec3) -> f64 {
     let straight = (source - listener).length();
     let [a, b, c] = {
@@ -181,8 +218,8 @@ fn detour(way: f64, listener: Vec3, source: Vec3) -> f64 {
 
 /// What getting round costs, per band: in the open, diffraction over the
 /// detour ([`diffraction`]); shut in, reflections round each turn
-/// ([`ENCLOSED_TURN_DB`] per right angle of `bend`); in between, the two
-/// blended in dB by `enclosure` (0 to 1).
+/// ([`ENCLOSED_TURN_DB`] per right angle `bend` turns the way at the
+/// opening); in between, the two blended in dB by `enclosure` (0 to 1).
 fn round_loss(detour: f64, bend: f64, enclosure: f32, standard: DiffractionStandard) -> Bands {
     let enclosure = enclosure.clamp(0.0, 1.0);
     let right_angles = (bend / std::f64::consts::FRAC_PI_2) as f32;
@@ -569,6 +606,75 @@ mod tests {
     }
 
     #[test]
+    fn a_listener_off_their_block_centre_on_an_open_line_is_no_detour() {
+        // A player stands a fraction inside their own block, but the field
+        // counts from that block's centre: the way only measures against the
+        // straight line if it carries the leg out to the listener, or the
+        // stance alone reads as a detour `hear` could bill diffraction for.
+        // The source sits on its own centre, so the listener's stance is the
+        // only thing under test, and `route.length` is what `hear` would
+        // report as the path length if it ever routed this line.
+        let world = World::new();
+        let source = Vec3::new(9.5, 1.5, 0.5);
+        // Stood ahead of the centre along the line: the leg joins the way and
+        // the two lengths meet exactly.
+        let along = Vec3::new(1.1, 1.5, 0.5);
+        let field = Field::build(&world, along, 16);
+        let route = field.route(&world, source).unwrap();
+        let straight = (source - along).length();
+        assert!(detour(route.length, along, source) < 1e-9, "{route:?}");
+        assert!(
+            route.length + 1e-9 >= straight,
+            "{route:?} against {straight}"
+        );
+        // Stood a whisker above the line, as an eye is: a stance across the
+        // way cannot join it, so the way may fall short of the line by that
+        // fraction and no more — and still reads as no detour at all.
+        let raised = Vec3::new(0.5, 1.12, 0.5);
+        let field = Field::build(&world, raised, 16);
+        let route = field.route(&world, source).unwrap();
+        let straight = (source - raised).length();
+        assert!(detour(route.length, raised, source) < 1e-9, "{route:?}");
+        assert!(
+            route.length + 0.1 >= straight,
+            "{route:?} against {straight}"
+        );
+    }
+
+    #[test]
+    fn a_route_no_longer_than_the_line_never_fills_a_ground_null_back_in() {
+        // Open soil under an otherwise clear line: the ground's mid-band dip
+        // pulls a band below the clear-through gate, so the way round is
+        // looked for — and with HJ 2.4 a zero detour costs nothing, which
+        // describes that same straight line without the soil's own loss on
+        // it. Taking it for a second path would refill the null with
+        // free-field sound and hand the route the source's direction.
+        let mut world = World::new();
+        for x in -40..40 {
+            for z in -40..40 {
+                world.set_block(x, -1, z, Material::Soil);
+            }
+        }
+        let source = Vec3::new(3.5, 0.5, 0.5);
+        let field = Field::build(&world, LISTENER, 16);
+        let heard = hear(
+            &world,
+            Some(&field),
+            LISTENER,
+            source,
+            5,
+            0.0,
+            DiffractionStandard::Hj24,
+        );
+        assert!(heard.gains[1] < CLEAR, "the null survives: {heard:?}");
+        assert_eq!(heard.heard_from, source, "{heard:?}");
+        assert!(
+            (heard.path_length - (source - LISTENER).length()).abs() < 1e-9,
+            "{heard:?}"
+        );
+    }
+
+    #[test]
     fn gains_stay_between_silence_and_full_however_it_gets_there() {
         let mut rng = crate::Rng::new(0x9e37_79b9_7f4a_7c15);
         let mut world = World::new();
@@ -598,10 +704,11 @@ mod tests {
                 );
                 for gain in heard.gains {
                     // The direct bands carry the ground's factor outdoors,
-                    // and hard ground's mirror can double them, so the
-                    // bound is silence to that ceiling rather than to free
-                    // field alone; the round path never exceeds full.
-                    assert!((0.0..=2.0).contains(&gain), "{heard:?}");
+                    // squared into energy: hard ground's pressure double
+                    // is an energy quadruple, so the bound is silence to
+                    // that ceiling rather than to free field alone; the
+                    // round path never exceeds full.
+                    assert!((0.0..=4.0).contains(&gain), "{heard:?}");
                 }
                 assert!(
                     [heard.heard_from.x, heard.heard_from.y, heard.heard_from.z]
@@ -675,8 +782,8 @@ mod tests {
         let field = Field::build(&world, LISTENER, 16);
         let enclosure = 0.5;
         let direct = occlusion(&world, LISTENER, SOURCE, 5);
-        let direct = match ground_gain(&world, LISTENER, SOURCE, enclosure) {
-            Some(factor) => std::array::from_fn(|band| direct[band] * factor[band]),
+        let direct = match ground_gain(&world, LISTENER, SOURCE, enclosure, crate::SPEED_OF_SOUND) {
+            Some(factor) => std::array::from_fn(|band| direct[band] * factor[band] * factor[band]),
             None => direct,
         };
         let route = field.route(&world, SOURCE).unwrap();
@@ -727,8 +834,8 @@ mod tests {
         let field = Field::build(&world, listener, 16);
         let enclosure = 0.6;
         let direct = occlusion(&world, listener, source, 5);
-        let direct = match ground_gain(&world, listener, source, enclosure) {
-            Some(factor) => std::array::from_fn(|band| direct[band] * factor[band]),
+        let direct = match ground_gain(&world, listener, source, enclosure, crate::SPEED_OF_SOUND) {
+            Some(factor) => std::array::from_fn(|band| direct[band] * factor[band] * factor[band]),
             None => direct,
         };
         // The scene must be one the mid gate closes on, or it proves

@@ -140,7 +140,8 @@ void earshot_destroy(struct EarshotEngine *engine);
  * exceeds `cap`, nothing is written and the caller retries.
  *
  * # Safety
- * `buf` must be writable for `cap` bytes; `needed` must be writable.
+ * `buf` must be writable for `cap` bytes; `needed` must be writable; the
+ * `buf` and `needed` regions must not overlap.
  */
 int32_t earshot_material_names(uint8_t *buf, size_t cap, size_t *needed);
 
@@ -270,7 +271,8 @@ int32_t earshot_room(struct EarshotEngine *engine, double *out);
  * # Safety
  * `engine` must be live; `listener` must point to 3 doubles, `sources` to
  * `3 * count` doubles, and `out` must be writable for
- * `EARSHOT_EARLY_DOUBLES * count` doubles.
+ * `EARSHOT_EARLY_DOUBLES * count` doubles; the `sources` and `out` regions
+ * must not overlap.
  */
 int32_t earshot_early(struct EarshotEngine *engine,
                       const double *listener,
@@ -306,7 +308,7 @@ int32_t earshot_room_at(struct EarshotEngine *engine,
  *
  * # Safety
  * `engine` must be live; `out` must be writable for `cap` floats; `needed`
- * must be writable.
+ * must be writable; the `out` and `needed` regions must not overlap.
  */
 int32_t earshot_impulse_response(struct EarshotEngine *engine,
                                  uint32_t sample_rate,
@@ -325,7 +327,8 @@ int32_t earshot_impulse_response(struct EarshotEngine *engine,
  *
  * # Safety
  * `engine` must be live; `source` must point to 3 doubles; `out` must be
- * writable for `cap` floats; `needed` must be writable.
+ * writable for `cap` floats; `needed` must be writable; the `out` and
+ * `needed` regions must not overlap.
  */
 int32_t earshot_impulse_response_for(struct EarshotEngine *engine,
                                      const double *source,
@@ -349,7 +352,8 @@ int32_t earshot_impulse_response_for(struct EarshotEngine *engine,
  * # Safety
  * `engine` must be live; `origin` must point to 3 doubles; `out` must be
  * writable for `cap * EARSHOT_SEGMENT_DOUBLES` doubles; `written` must be
- * writable; `stats` must be writable for 4 doubles.
+ * writable; `stats` must be writable for 4 doubles; the `out`, `written`
+ * and `stats` regions must not overlap.
  */
 int32_t earshot_trace_paths(struct EarshotEngine *engine,
                             const double *origin,
@@ -395,7 +399,9 @@ const void *earshot_voice_callback(void);
 /**
  * Writes to `*out` the pointer that `earshot_voice_callback` plays the
  * voice of speaker `uuid` (16 bytes) from. It stays valid for the rest of
- * the process.
+ * the process. A speaker heard before keeps its stream for the rest of the
+ * process; a new one once the voice-stream cap (Java's `MAX_VOICE_STREAMS`)
+ * is reached fails with [`EARSHOT_ERR_INVALID_ARGUMENT`] and writes null.
  *
  * # Safety
  * `uuid` must point to 16 bytes; `out` must be writable.
@@ -409,7 +415,8 @@ int32_t earshot_voice_stream(const uint8_t *uuid, void **out);
  *
  * # Safety
  * `uuids` must be writable for `16 * cap` bytes, `info` for
- * `EARSHOT_VOICE_DOUBLES * cap` doubles; `count` must be writable.
+ * `EARSHOT_VOICE_DOUBLES * cap` doubles; `count` must be writable; the
+ * `uuids`, `info` and `count` regions must not overlap.
  */
 int32_t earshot_voice_streams(uint8_t *uuids, double *info, size_t cap, size_t *count);
 
@@ -435,8 +442,10 @@ int32_t earshot_stats(struct EarshotEngine *engine, double *out);
 
 /**
  * Copies this thread's last error message into `buf` (truncated to `cap`,
- * at a character boundary) and returns its full length, or 0 if there is
- * none.
+ * at a character boundary) and returns how many bytes it wrote, or 0 if
+ * there is none. The return never counts bytes `buf` did not receive, so a
+ * caller decoding exactly that many finds no stray characters past the
+ * message.
  *
  * # Safety
  * `buf` must be writable for `cap` bytes.

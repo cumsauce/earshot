@@ -66,7 +66,9 @@ public final class DebugOverlay implements HudElement {
 			String text = (String) line;
 			int width = font.width(text);
 			int x = 2;
-			graphics.fill(x - 1, y - 1, x + width + 1, y + font.lineHeight - 1, BACKGROUND);
+			// fill's x2/y2 are exclusive, so this covers one pixel beyond the text on every
+			// side: rows y-1 .. y+lineHeight around the text's y .. y+lineHeight-1.
+			graphics.fill(x - 1, y - 1, x + width + 1, y + font.lineHeight + 1, BACKGROUND);
 			graphics.text(font, text, x, y, TEXT, false);
 			y += font.lineHeight;
 		}
@@ -135,6 +137,10 @@ public final class DebugOverlay implements HudElement {
 	}
 
 	private static String db(float energy) {
-		return energy >= 0.999f ? "0" : String.format(Locale.ROOT, "%.0f", 10 * Math.log10(Math.max(energy, 1e-6)));
+		// Gains over unity are real (ground reflection reaches MAX_GAIN 2, lift MAX_LIFT 2), so print the
+		// value; only the log of a near-unity gain would come out as "-0", which the snap to 0 hides.
+		double db = 10 * Math.log10(Math.max(energy, 1e-6));
+		if (Math.abs(db) < 0.5) db = 0;
+		return String.format(Locale.ROOT, "%.0f", db);
 	}
 }

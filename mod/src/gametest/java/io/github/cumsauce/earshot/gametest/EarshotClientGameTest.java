@@ -195,6 +195,12 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 				if (!voice.playing() || voice.queuedSeconds() > 0.15) {
 					throw new AssertionError("the voice isn't played as it comes: " + voice);
 				}
+				// The speaker isn't a player in the world, so their voice has no head to face
+				// with: checked while it still streams, before leaving this block withdraws it.
+				if (shaper.voice().status().stream().anyMatch(v -> v.speaker().equals(speaker) && v.directional())) {
+					throw new AssertionError("a speaker not in the world can't face a way: "
+							+ shaper.voice().status());
+				}
 			}
 			try {
 				context.waitFor(mc -> shaper.voice().status().stream().noneMatch(v -> v.speaker().equals(speaker)),
@@ -211,9 +217,6 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 							.anyMatch(v -> v.speaker().equals(self) && v.playing() && v.directional()), 5 * 20);
 				} catch (RuntimeException | AssertionError e) {
 					throw new AssertionError("the voice doesn't face its speaker's way: " + shaper.voice().status(), e);
-				}
-				if (shaper.voice().status().stream().anyMatch(v -> v.speaker().equals(speaker) && v.directional())) {
-					throw new AssertionError("a speaker not in the world can't face a way");
 				}
 			}
 
@@ -344,13 +347,20 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 	/** Waits up to 5 s for the shaped sound at {@code at} to be {@code wanted}, and returns it. */
 	private static SoundShaper.Snapshot awaitSound(ClientGameTestContext context, SoundShaper shaper, Vec3 at,
 			Predicate<SoundShaper.Snapshot> wanted, String what) {
+		// The sound thread swaps the snapshots every tick: keep the one the wait saw rather than
+		// re-reading afterwards, which could find the sound gone.
+		SoundShaper.Snapshot[] matched = new SoundShaper.Snapshot[1];
 		try {
-			context.waitFor(mc -> find(shaper, at).filter(wanted).isPresent(), 5 * 20);
+			context.waitFor(mc -> find(shaper, at).filter(wanted).map(found -> matched[0] = found).isPresent(), 5 * 20);
 		} catch (RuntimeException | AssertionError e) {
 			throw new AssertionError("the sound " + what + ": "
 					+ find(shaper, at).map(SoundShaper.Snapshot::toString).orElse("not playing"), e);
 		}
-		return find(shaper, at).orElseThrow();
+		if (matched[0] == null) {
+			throw new AssertionError("the sound " + what + ": "
+					+ find(shaper, at).map(SoundShaper.Snapshot::toString).orElse("not playing"));
+		}
+		return matched[0];
 	}
 
 	/** Waits up to 10 s for the room the reverb uses to be {@code wanted}, and returns it. */
@@ -378,7 +388,7 @@ public class EarshotClientGameTest implements FabricClientGameTest {
 				float low = bridge.transmission(engine, LISTENER, SOURCE)[0];
 				return low >= min && low <= max;
 			}, 5 * 20);
-		} catch (RuntimeException e) {
+		} catch (RuntimeException | AssertionError e) {
 			float[] through = context.computeOnClient(mc -> bridge.transmission(engine, LISTENER, SOURCE));
 			throw new AssertionError("through " + what + ": " + Arrays.toString(through) + ", wanted the low band in "
 					+ min + ".." + max, e);

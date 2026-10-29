@@ -114,8 +114,10 @@ impl World {
         self.set_block_raw(x, y, z, material.id())
     }
 
-    /// [`World::set_block`] with a fill fraction (0 to 1) packed into the
-    /// high nibble.
+    /// [`World::set_block`] with a fill fraction (0 to 1] packed into the
+    /// high nibble. The packing holds sixteenths and cannot hold zero (code
+    /// 0 means full), so a fill that is not finite or not above zero leaves
+    /// the block unchanged.
     pub fn set_block_fill(
         &mut self,
         x: i32,
@@ -124,6 +126,9 @@ impl World {
         material: Material,
         fill: f32,
     ) -> bool {
+        if !fill.is_finite() || fill <= 0.0 {
+            return false;
+        }
         let code = if fill >= 1.0 {
             0
         } else {
@@ -294,6 +299,22 @@ mod tests {
                 .abs()
                 < 1e-6
         );
+    }
+
+    #[test]
+    fn a_fill_the_packing_cannot_hold_leaves_the_block_alone() {
+        let mut world = World::new();
+        // Code 0 means full, so the packing cannot express zero thickness,
+        // and a fill that is not finite has no thickness either; neither
+        // may be stored as some small fill.
+        for fill in [0.0, -0.5, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(
+                !world.set_block_fill(1, 2, 3, Material::Wood, fill),
+                "{fill}"
+            );
+        }
+        assert_eq!(world.block(1, 2, 3), Material::Air);
+        assert_eq!(world.sections(), 0);
     }
 
     #[test]

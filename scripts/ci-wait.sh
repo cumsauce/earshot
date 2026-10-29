@@ -20,7 +20,8 @@ filter='.[0].databaseId // empty'
 [ -n "$ref" ] && filter="[.[] | select(.headBranch == \"$ref\")][0].databaseId // empty"
 id=""
 for _ in $(seq 1 60); do
-	id=$(gh run list -R "$repo" --commit "$sha" --json databaseId,headBranch -q "$filter")
+	id=$(gh run list -R "$repo" --commit "$sha" --json databaseId,headBranch -q "$filter") \
+		|| { echo "RESULT none gh-error"; exit 3; }
 	[ -n "$id" ] && break
 	sleep 5
 done
@@ -35,6 +36,10 @@ for _ in $(seq 1 120); do
 	[ "$status" = error ] && { echo "RESULT $id gh-error"; exit 3; }
 	sleep 30
 done
-read -r conclusion url < <(gh run view "$id" -R "$repo" --json conclusion,url -q '"\(.conclusion) \(.url)"')
+if ! view=$(gh run view "$id" -R "$repo" --json conclusion,url -q '"\(.conclusion) \(.url)"'); then
+	echo "RESULT $id gh-error"
+	exit 3
+fi
+read -r conclusion url <<<"$view"
 echo "RESULT $id $conclusion $url"
 [ "$conclusion" = success ]

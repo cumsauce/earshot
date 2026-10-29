@@ -10,7 +10,8 @@
 //! half, a room that stops being enclosed, a doorway that stops routing.
 
 use earshot_sim::{
-    DiffractionStandard, MAX_APERTURE, Room, SPEED_OF_SOUND, hear, impulse_response, measure,
+    DiffractionStandard, IR_CHANNELS, MAX_APERTURE, Room, SPEED_OF_SOUND, hear, impulse_response,
+    measure,
 };
 use earshot_world::{Material, Vec3, World};
 
@@ -150,9 +151,10 @@ fn scenes() -> Vec<Scene> {
                 // The direct path over open soil is free field plus the
                 // ground's reflected wave. Over soil that reflection lifts
                 // the mid band by about 3.2 dB (the Lloyd's-mirror crest):
-                // the free-field gain this held before the ground
-                // reflection, about 0.97, is now about 1.44.
-                outside_mid_gain: (1.30, 1.60),
+                // a pressure factor of about 1.48, and these shares are
+                // energy — so the free-field gain this held before the
+                // ground, about 0.97, carries 1.48² and lands about 2.1.
+                outside_mid_gain: (1.90, 2.35),
             },
         },
         Scene {
@@ -259,7 +261,10 @@ fn the_scenes_measure_as_recorded() {
         // The scene's response: long enough for its decay, at its rate, and
         // holding no more energy than the room sent in.
         let ir = impulse_response(&room, &[], &[], 48_000, 2.0, SPEED_OF_SOUND, 1);
-        let seconds = ir.len() as f32 / 48_000.0;
+        // `impulse_response` interleaves `IR_CHANNELS` (W, X, Y, Z) samples
+        // a second per channel, so the length in seconds is frames, not
+        // floats.
+        let seconds = (ir.len() / IR_CHANNELS) as f32 / 48_000.0;
         // `impulse_response` clamps the room's decay to `1.5 * max_seconds`
         // and caps the response length at `max_seconds`. With max_seconds =
         // 2.0 the response is at least `room.decay[1].min(2.0)` long, and
@@ -289,7 +294,6 @@ fn the_scenes_measure_as_recorded() {
 /// past it.
 #[test]
 fn a_short_max_seconds_caps_the_response_at_the_clamped_decay() {
-    use earshot_sim::IR_CHANNELS;
     let room = Room {
         decay: [2.0, 1.0, 0.5],
         early_decay: [2.0, 1.0, 0.5],
@@ -465,9 +469,12 @@ fn a_slab_walled_hut_leaks_more_than_a_solid_one() {
         DiffractionStandard::Iso9613_2,
     );
     // The mass law end to end: half the wall, the square root of the loss.
+    // The tolerance is a tenth of what is expected of the slab, never of
+    // what the slab measures — anchored to the measured side it would
+    // widen the moment the slab drifted up.
     assert!(
         (f64::from(slab.gains[1]) - f64::from(solid.gains[1]).sqrt()).abs()
-            < 0.1 * f64::from(slab.gains[1]).sqrt(),
+            < 0.1 * f64::from(solid.gains[1]).sqrt(),
         "{slab:?} against {solid:?}"
     );
     // And the room: still enclosed, but its decay is shorter for the leak.
@@ -550,7 +557,7 @@ fn rooms_come_out_sane_wherever_they_are_measured() {
 /// baseline, and the comparison below fails.
 #[test]
 fn a_doorway_leaks_high_band_around_its_edges() {
-    use earshot_sim::{Engine, IR_CHANNELS, early_taps, edge_sources, impulse_response, measure};
+    use earshot_sim::{Engine, early_taps, edge_sources, impulse_response, measure};
     // A 3×3 rock wall at x=4 (in the +x direction from the source, so the
     // wall is *behind* the source relative to the listener). A 1×1 doorway
     // at (4, 1, 0) lets the source's reflection back to the listener pass

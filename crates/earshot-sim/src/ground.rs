@@ -11,10 +11,8 @@ use std::sync::LazyLock;
 
 use earshot_world::{BANDS, Bands, Material, Vec3, World};
 
-/// Speed of sound in air, metres per second: the design fixes it, and the
-/// band centres below are the ones hear's `WAVELENGTH` was built from.
-const C0: f64 = 343.0;
-/// The bands' centre frequencies, in hertz, low to high.
+/// The bands' centre frequencies, in hertz, low to high: the ones hear's
+/// `WAVELENGTH` was built from.
 const BAND_HZ: [f64; BANDS] = [250.0, 1000.0, 4000.0];
 /// Above this enclosure the listener is shut in: their floor is the room
 /// trace's business and the open ground must not double count it (the
@@ -208,13 +206,12 @@ fn wofz(z: Complex) -> Complex {
 /// Miki's one-parameter surface impedance, normalised by rho0 c0, at
 /// frequency `f` over a surface of flow resistivity `sigma` (Pa s/m^2).
 ///
-/// `X = f / sigma`, `Z = 1 + 0.070 X^(-0.632) + i 0.107 X^(-0.632)`. The
-/// sign is the design's stated `e^(-iwt)` convention: a passive ground's
-/// impedance leans positive-imaginary there, which is what turns the
-/// porous ground's reflection into the low-band null the tests pin. The
-/// design's formula line shows the published `-i` form instead; the
-/// parenthetical and the whole test plan ask for `+i`, and the limits
-/// below only pass with it.
+/// `X = f / sigma`, `Z = 1 + 0.070 X^(-0.632) + i 0.107 X^(-0.632)`, as
+/// the design's formula line shows it. The sign is the design's stated
+/// `e^(-iwt)` convention: a passive ground's impedance leans
+/// positive-imaginary there, which is what turns the porous ground's
+/// reflection into the low-band null the tests pin, and the limits below
+/// only pass with it.
 ///
 /// An infinite `sigma` is the rigid limit; the caller checks for it before
 /// dividing, because infinity arithmetic would turn `1/Z` into a NaN.
@@ -226,12 +223,15 @@ fn surface_impedance(sigma: f64, f: f64) -> Complex {
 
 /// The excess attenuation of the ground effect, in dB re free field, for
 /// source height `h_s` and receiver height `h_r` (both metres above the
-/// ground plane), horizontal separation `d`, frequency `f` and the
-/// surface's flow resistivity `sigma`.
+/// ground plane), horizontal separation `d`, frequency `f`, the surface's
+/// flow resistivity `sigma` and the speed of sound `speed` in metres per
+/// second: the wavenumber it builds is the air's own, so the interference
+/// the heights set moves with the temperature
+/// (docs/temperature-design.md).
 ///
 /// Weyl-Van der Pol: the specular reflection with a ground wave correction
 /// that keeps grazing finite, as in the design doc's model section.
-fn excess_attenuation_db(sigma: f64, h_s: f64, h_r: f64, d: f64, f: f64) -> f64 {
+fn excess_attenuation_db(sigma: f64, h_s: f64, h_r: f64, d: f64, f: f64, speed: f64) -> f64 {
     let r1 = d.hypot(h_s - h_r);
     let r2 = d.hypot(h_s + h_r);
     if r2 == 0.0 {
@@ -248,7 +248,7 @@ fn excess_attenuation_db(sigma: f64, h_s: f64, h_r: f64, d: f64, f: f64) -> f64 
     } else {
         Complex::ZERO
     };
-    let k0 = 2.0 * std::f64::consts::PI * f / C0;
+    let k0 = 2.0 * std::f64::consts::PI * f / speed;
     let cos_theta = Complex::new(cos_theta, 0.0);
     let rp = if beta == Complex::ZERO {
         // Rigid ground reflects everything, at every angle including
@@ -265,11 +265,12 @@ fn excess_attenuation_db(sigma: f64, h_s: f64, h_r: f64, d: f64, f: f64) -> f64 
 }
 
 /// The per-band ground factor for one geometry: the excess attenuation as
-/// an energy-style multiplier, clamped between silence and the hard
-/// ground's +6.02 dB ceiling, since nothing reflects harder than rigid.
-fn band_gains(sigma: f64, h_s: f64, h_r: f64, d: f64) -> Bands {
+/// a pressure multiplier (`hear` squares it into the energy shares it
+/// keeps), clamped between silence and the hard ground's +6.02 dB
+/// ceiling, since nothing reflects harder than rigid.
+fn band_gains(sigma: f64, h_s: f64, h_r: f64, d: f64, speed: f64) -> Bands {
     std::array::from_fn(|band| {
-        let db = excess_attenuation_db(sigma, h_s, h_r, d, BAND_HZ[band]);
+        let db = excess_attenuation_db(sigma, h_s, h_r, d, BAND_HZ[band], speed);
         10.0_f64.powf(db / 20.0).clamp(0.0, MAX_GAIN).max(0.0) as f32
     })
 }
@@ -317,6 +318,7 @@ pub(crate) fn ground_gain(
     listener: Vec3,
     source: Vec3,
     enclosure: f32,
+    speed: f64,
 ) -> Option<Bands> {
     if enclosure >= OPEN {
         return None;
@@ -340,7 +342,7 @@ pub(crate) fn ground_gain(
     }
     let d = (source.x - listener.x).hypot(source.z - listener.z);
     let sigma = flow_resistivity(material);
-    Some(band_gains(sigma, h_s, h_r, d))
+    Some(band_gains(sigma, h_s, h_r, d, speed))
 }
 
 #[cfg(test)]
@@ -356,9 +358,9 @@ mod tests {
         // Rigid ground, both ends a whisker above it: the mirror image
         // lands on top of the source, the two arrive as one, and twice the
         // pressure is +6.02 dB in every band.
-        let db = excess_attenuation_db(f64::INFINITY, 1e-3, 1e-3, 10.0, 250.0);
+        let db = excess_attenuation_db(f64::INFINITY, 1e-3, 1e-3, 10.0, 250.0, 343.0);
         assert!((db - SIX_DB).abs() < 0.01, "{db}");
-        let gains = band_gains(f64::INFINITY, 1e-3, 1e-3, 10.0);
+        let gains = band_gains(f64::INFINITY, 1e-3, 1e-3, 10.0, 343.0);
         for gain in gains {
             assert!((f64::from(gain) - MAX_GAIN).abs() < 0.01, "{gains:?}");
         }
@@ -370,9 +372,9 @@ mod tests {
         // apart. The low band sits in the ground's null, the mid band on
         // the interference crest, and the high band dips again where the
         // ground has gone soft under Miki's model.
-        let low = excess_attenuation_db(200_000.0, 1.6, 1.6, 20.0, 250.0);
-        let mid = excess_attenuation_db(200_000.0, 1.6, 1.6, 20.0, 1000.0);
-        let high = excess_attenuation_db(200_000.0, 1.6, 1.6, 20.0, 4000.0);
+        let low = excess_attenuation_db(200_000.0, 1.6, 1.6, 20.0, 250.0, 343.0);
+        let mid = excess_attenuation_db(200_000.0, 1.6, 1.6, 20.0, 1000.0, 343.0);
+        let high = excess_attenuation_db(200_000.0, 1.6, 1.6, 20.0, 4000.0, 343.0);
         assert!(low.is_finite() && mid.is_finite() && high.is_finite());
         assert!(low < 0.0, "the low band is a null: {low}");
         assert!(mid > 0.0, "the mid band rides the crest: {mid}");
@@ -381,9 +383,9 @@ mod tests {
         // in the high band, where the ground is softest, not the low one
         // the design's prose expected; Miki's ground stiffens towards low
         // frequencies, so the low band stays closer to the hard boost.
-        assert!((low - (-2.4375)).abs() < 0.05, "{low}");
-        assert!((mid - 3.1960).abs() < 0.05, "{mid}");
-        assert!((high - (-3.8149)).abs() < 0.05, "{high}");
+        assert!((low - (-2.4691)).abs() < 0.05, "{low}");
+        assert!((mid - 3.2089).abs() < 0.05, "{mid}");
+        assert!((high - (-3.8190)).abs() < 0.05, "{high}");
         let deepest = [low, mid, high]
             .into_iter()
             .enumerate()
@@ -392,13 +394,32 @@ mod tests {
         assert_eq!(deepest.0, 2, "the deepest null lands in the high band");
         // Softer ground takes more out of the high band, where its pores
         // actually move: rigid, then soil, then snow.
-        let rigid = excess_attenuation_db(f64::INFINITY, 1.6, 1.6, 20.0, 4000.0);
-        let sand = excess_attenuation_db(100_000.0, 1.6, 1.6, 20.0, 4000.0);
-        let snow = excess_attenuation_db(20_000.0, 1.6, 1.6, 20.0, 4000.0);
+        let rigid = excess_attenuation_db(f64::INFINITY, 1.6, 1.6, 20.0, 4000.0, 343.0);
+        let sand = excess_attenuation_db(100_000.0, 1.6, 1.6, 20.0, 4000.0, 343.0);
+        let snow = excess_attenuation_db(20_000.0, 1.6, 1.6, 20.0, 4000.0, 343.0);
         assert!(
             rigid > high && high > sand && sand > snow,
             "{rigid} {high} {sand} {snow}"
         );
+    }
+
+    #[test]
+    fn the_ground_null_slides_with_the_air_it_meets() {
+        // The same geometry across the temperatures weather produces: the
+        // interference runs on the air's own wavelength, so as the air
+        // warms the low band's dip walks monotonically. Asserted as a
+        // direction, never as a pinned number (docs/temperature-design.md,
+        // test plan item 4).
+        let mut warmest = f64::NEG_INFINITY;
+        for celsius in [-60.0, -20.0, 0.0, 20.0, 40.0, 60.0] {
+            let speed = crate::reverb::speed_of_sound(celsius);
+            let db = excess_attenuation_db(200_000.0, 1.6, 1.6, 20.0, 250.0, speed);
+            assert!(
+                db.is_finite() && db > warmest,
+                "at {celsius} °C ({speed} m/s): {db} dB is not above {warmest}"
+            );
+            warmest = db;
+        }
     }
 
     #[test]
@@ -408,7 +429,7 @@ mod tests {
         // term saves the sum from minus infinity, exactly as the design's
         // limit requires.
         for f in BAND_HZ {
-            let db = excess_attenuation_db(200_000.0, 0.0, 0.0, 20.0, f);
+            let db = excess_attenuation_db(200_000.0, 0.0, 0.0, 20.0, f, 343.0);
             assert!(db.is_finite(), "{f} Hz: {db}");
             assert!(db > -60.0, "{f} Hz below a sane floor: {db}");
             assert!(db <= SIX_DB + 0.05, "{f} Hz beats rigid ground: {db}");
@@ -424,8 +445,8 @@ mod tests {
             for (h_s, h_r) in [(0.0, 1.6), (0.5, 4.0), (1.6, 1.6)] {
                 for d in [1.0, 20.0, 100.0] {
                     for f in BAND_HZ {
-                        let there = excess_attenuation_db(sigma, h_s, h_r, d, f);
-                        let back = excess_attenuation_db(sigma, h_r, h_s, d, f);
+                        let there = excess_attenuation_db(sigma, h_s, h_r, d, f, 343.0);
+                        let back = excess_attenuation_db(sigma, h_r, h_s, d, f, 343.0);
                         assert!((there - back).abs() < 1e-12, "{there} vs {back}");
                     }
                 }
@@ -442,7 +463,7 @@ mod tests {
             let sigma = flow_resistivity(material);
             for (h_s, h_r) in [(0.0, 0.0), (0.5, 1.6), (1.6, 1.6), (4.0, 0.2), (10.0, 10.0)] {
                 for d in [1.0, 6.5, 20.0, 100.0] {
-                    let gains = band_gains(sigma, h_s, h_r, d);
+                    let gains = band_gains(sigma, h_s, h_r, d, 343.0);
                     for gain in gains {
                         assert!(gain.is_finite(), "{material:?}: {gains:?}");
                         assert!((0.0..=2.0).contains(&gain), "{material:?}: {gains:?}");
@@ -473,7 +494,7 @@ mod tests {
             Some(65.0),
             "the scan finds the block the source is in"
         );
-        let reflected = ground_gain(&world, listener, inside, 0.0);
+        let reflected = ground_gain(&world, listener, inside, 0.0, 343.0);
         assert!(
             reflected.is_none(),
             "a source inside a block gets no reflection: {reflected:?}"
@@ -482,7 +503,7 @@ mod tests {
         // the gate rejects only the inside-the-block case.
         let above = Vec3::new(10.5, 65.2, 0.5);
         let reflected =
-            ground_gain(&world, listener, above, 0.0).expect("air above ground reflects");
+            ground_gain(&world, listener, above, 0.0, 343.0).expect("air above ground reflects");
         assert!(
             reflected.iter().any(|gain| (gain - 1.0).abs() > 1e-4),
             "{reflected:?}"
